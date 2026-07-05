@@ -12,29 +12,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Micromamba
-        uses: mamba-org/setup-micromamba@v1
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8
         with:
-          environment-file: environment-dev.yml
-          cache-environment: true
-          cache-downloads: true
-          init-shell: bash
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.10
 
       - name: Ruff report
-        shell: bash -l {0}
         run: |
-          ruff check . || true
-          ruff format --check . --exclude "*.ipynb" || true
+          uvx ruff check . || true
+          uvx ruff format --check . --exclude "*.ipynb" || true
 
       - name: Mypy report
-        shell: bash -l {0}
         run: |
-          mypy . || true
+          uvx mypy src || true
 
       - name: Complexity report
-        shell: bash -l {0}
         run: |
-          python - << 'EOF'
+          uvx --from radon python - << 'PY'
           import json
           import subprocess
 
@@ -63,11 +63,16 @@ jobs:
           grade_sort_order = {"F": 0, "E": 1, "D": 2, "C": 3, "B": 4, "A": 5}
 
           result = subprocess.run(
-              ["radon", "cc", "-j", "."],
+              ["radon", "cc", "-j", "src"],
               capture_output=True,
               text=True,
               check=False,
           )
+
+          if not result.stdout.strip():
+              print("No complexity output produced by radon.")
+              raise SystemExit(0)
+
           data = json.loads(result.stdout)
 
           all_blocks = [block for file in data for block in data[file]]
@@ -144,4 +149,4 @@ jobs:
                   print(f"  {block['name']:<40} {block['rank']}({complexity_text})")
 
           print("============================================================")
-          EOF
+          PY
