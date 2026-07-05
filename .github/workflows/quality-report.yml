@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   quality-report:
     runs-on: ubuntu-latest
@@ -13,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v8
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
         with:
           enable-cache: true
           cache-dependency-glob: |
@@ -34,9 +37,11 @@ jobs:
 
       - name: Complexity report
         run: |
-          uvx --from radon python - << 'PY'
+          uvx --from radon radon cc -j src > /tmp/radon_complexity.json || true
+
+          python - << 'PY'
           import json
-          import subprocess
+          from pathlib import Path
 
 
           def format_complexity(value: float) -> str:
@@ -60,20 +65,12 @@ jobs:
               return "F"
 
 
-          grade_sort_order = {"F": 0, "E": 1, "D": 2, "C": 3, "B": 4, "A": 5}
-
-          result = subprocess.run(
-              ["radon", "cc", "-j", "src"],
-              capture_output=True,
-              text=True,
-              check=False,
-          )
-
-          if not result.stdout.strip():
+          path = Path("/tmp/radon_complexity.json")
+          if not path.exists() or not path.read_text(encoding="utf-8").strip():
               print("No complexity output produced by radon.")
               raise SystemExit(0)
 
-          data = json.loads(result.stdout)
+          data = json.loads(path.read_text(encoding="utf-8"))
 
           all_blocks = [block for file in data for block in data[file]]
           total_files = sum(1 for file in data if data[file])
@@ -85,20 +82,15 @@ jobs:
           )
           global_grade = complexity_grade(average_complexity)
 
+          grade_sort_order = {"F": 0, "E": 1, "D": 2, "C": 3, "B": 4, "A": 5}
+
           file_rows: list[tuple[str, str, float, list[dict]]] = []
           for file, blocks in data.items():
               if not blocks:
                   continue
 
               worst_block = max(blocks, key=lambda block: block["complexity"])
-              file_rows.append(
-                  (
-                      file,
-                      worst_block["rank"],
-                      worst_block["complexity"],
-                      blocks,
-                  )
-              )
+              file_rows.append((file, worst_block["rank"], worst_block["complexity"], blocks))
 
           file_rows.sort(
               key=lambda row: (
@@ -121,7 +113,6 @@ jobs:
           for file, rank, complexity, _blocks in file_rows:
               if previous_rank is not None and rank != previous_rank:
                   print("-------------------------------------------------------------------------------")
-
               print(f"{rank:<6} {format_complexity(complexity):<10} {file}")
               previous_rank = rank
 
