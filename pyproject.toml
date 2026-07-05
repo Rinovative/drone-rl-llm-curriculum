@@ -1,0 +1,205 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone-rl-llm-curriculum"
+version = "0.1.0"
+description = "Reinforcement-learning framework for quadrotor trajectory tracking with LLM-guided curriculum generation."
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+authors = [{ name = "Rino M. Albertin" }]
+dependencies = [
+  # Core numerical stack
+  "numpy",
+  "scipy",
+  "pandas",
+  "matplotlib",
+  "tqdm",
+  "rich",
+  "pyyaml",
+
+  # RL stack
+  "torch==2.11.0",
+  "torchvision==0.26.0",
+  "torchaudio==2.11.0",
+  "gymnasium",
+  "stable-baselines3[extra]",
+
+  # Drone simulation
+  "gym-pybullet-drones @ git+https://github.com/learnsyslab/gym-pybullet-drones.git",
+
+  # Experiment tracking / HPO
+  "wandb",
+  "optuna",
+
+  # LLM + schema validation
+  "requests",
+  "pydantic",
+  "jsonschema",
+
+  # Rendering / media
+  "imageio",
+  "imageio-ffmpeg",
+  "opencv-python-headless",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff",
+  "mypy",
+  "nbqa",
+  "ipykernel",
+  "jupyterlab",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*"]
+
+# ============================================================
+# 🧹 Ruff Configuration
+# ============================================================
+
+[tool.ruff]
+line-length = 150
+target-version = "py310"
+extend-exclude = [
+  "venv",
+  ".venv",
+  "mlenv",
+  ".mypy_cache",
+  ".ruff_cache",
+  "logs",
+  "data",
+  "outputs",
+  "results",
+  "runs",
+  "wandb",
+  "models",
+  "videos",
+  "gifs",
+  "llm_logs",
+  "datasets",
+  "tmp",
+  "build",
+  "dist"
+]
+
+# ------------------------------------------------------------
+# ✨ Ruff Formatter
+# ------------------------------------------------------------
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# ------------------------------------------------------------
+# 🧹 Ruff Linter
+# ------------------------------------------------------------
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  # 🔧 Formatting conflicts
+  "COM812",  # Trailing comma handled by formatter
+
+  # 🧾 Docstring style conflicts
+  "D203",  # Conflicts with D211
+  "D212",  # Conflicts with D213
+
+  # 📦 Current package structure
+  "INP001",  # Allow implicit namespace-style layout in current src setup
+
+  # 🔬 Scientific / research code conventions
+  "ANN401",  # Allow Any
+  "FBT001", "FBT002", "FBT003",  # Allow boolean arguments
+  "PLR0913",  # Allow many function arguments
+  "N806", "N803",  # Allow scientific variable names
+  "EXE002",  # Ignore executable-bit mismatch
+  "T201",  # Allow print statements
+  "ERA001",  # Allow commented-out code during research cleanup
+  "D205",  # Allow multi-line docstring summary to be on a separate line
+  "D400",  # Allow the first line to not end with a period
+  "D415",  # Allow the first line to not end with a period, question mark, or exclamation point
+]
+fixable = ["ALL"]
+
+# ------------------------------------------------------------
+# 🧠 Code complexity
+# ------------------------------------------------------------
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20
+
+# ------------------------------------------------------------
+# 🧱 Structural limits
+# ------------------------------------------------------------
+
+[tool.ruff.lint.pylint]
+max-branches = 20
+max-statements = 100
+max-returns = 10
+
+# ============================================================
+# 🧮 Type Checking
+# ============================================================
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_configs = true
+strict_optional = true
+
+exclude = [
+  "logs/",
+  "data/",
+  "outputs/",
+  "results/",
+  "runs/",
+  "wandb/",
+  "models/",
+  "videos/",
+  "gifs/",
+  "llm_logs/",
+  "datasets/",
+  "tmp/",
+]
+
+# ============================================================
+# 🧪 Pytest
+# ============================================================
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+# ============================================================
+# 📓 Jupyter / nbQA
+# ============================================================
+
+[tool.nbqa.config]
+ruff = ["--fix", "--exit-zero"]
+
+# ============================================================
+# 🔥 PyTorch CUDA backend
+# ============================================================
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu126", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu126", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+  { index = "pytorch-cu126", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

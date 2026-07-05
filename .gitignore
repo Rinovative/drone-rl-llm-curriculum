@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.cache/
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+.idea/
+.DS_Store
+
+# External storage symlink
+storage
+
+# Training outputs accidentally created in repo root
+results/
+runs/
+logs/
+wandb/
+models/
+videos/
+gifs/
+llm_logs/
+datasets/
+tmp/
+
+# Model/checkpoint files
+*.zip
+*.pt
+*.pth
+*.ckpt
+
+# Generated media
+*.mp4
+*.avi
+*.mov
+*.gif
+
+# Jupyter
+.ipynb_checkpoints/
