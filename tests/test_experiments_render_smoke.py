@@ -54,6 +54,7 @@ def test_cli_parser_exposes_camera_and_task_options() -> None:
     assert defaults.duration_sec == experiments.render_smoke.DEFAULT_DURATION_SEC
     assert defaults.max_steps == experiments.render_smoke.DEFAULT_MAX_STEPS
     assert defaults.output_dir == experiments.render_smoke.default_output_dir()
+    assert defaults.output_dir.as_posix().endswith("storage/runs/render_smoke")
     assert defaults.camera_mode == "follow_external"
     assert defaults.task_shape == "circle"
     assert overrides.duration_sec == PARSER_DURATION_SEC
@@ -65,10 +66,10 @@ def test_cli_parser_exposes_camera_and_task_options() -> None:
 
 def test_render_smoke_writes_manifest_from_simulator_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify manifest writing with a lightweight fake simulator artifact."""
-    artifact_path = tmp_path / "drone_rollout.gif"
-    artifact_path.write_bytes(b"GIF89a")
 
     def fake_rollout(settings: experiments.render_smoke.RenderSmokeSettings, _output_dir: Path) -> Any:
+        artifact_path = _output_dir / "drone_rollout.gif"
+        artifact_path.write_bytes(b"GIF89a")
         return experiments.render_smoke._RolloutArtifacts(  # noqa: SLF001
             render_mode="simulator_external_camera_gif",
             camera_mode=settings.camera_mode,
@@ -86,10 +87,11 @@ def test_render_smoke_writes_manifest_from_simulator_artifacts(tmp_path: Path, m
     result = experiments.render_smoke.run_render_smoke(
         experiments.render_smoke.RenderSmokeSettings(output_dir=tmp_path, max_steps=FAKE_SIMULATOR_STEPS)
     )
-    manifest_path = tmp_path / experiments.render_smoke.DEFAULT_OUTPUT_FILENAME
+    manifest_path = tmp_path / "manifests" / experiments.render_smoke.DEFAULT_OUTPUT_FILENAME
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert result.manifest_path == str(manifest_path)
+    assert str(result.manifest["output_files"][0]).startswith(str(tmp_path / "renders"))
     assert payload["mode"] == "simulator_external_camera_gif"
     assert payload["render_mode"] == "simulator_external_camera_gif"
     assert payload["camera_mode"] == "follow_external"
@@ -97,8 +99,24 @@ def test_render_smoke_writes_manifest_from_simulator_artifacts(tmp_path: Path, m
     assert payload["environment_backend"] == "fake.HoverAviary"
     assert payload["steps"] == FAKE_SIMULATOR_STEPS
     assert payload["true_simulator_rendering"] is True
-    assert payload["output_files"] == [str(artifact_path)]
+    assert payload["output_files"] == [str(tmp_path / "renders" / "drone_rollout.gif")]
     assert payload["position_bounds_xyz_m"]["max"] == [0.2, 0.0, 1.0]
+
+
+def test_render_smoke_legacy_results_output_dir_writes_direct_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify storage/results-style overrides preserve direct artifact placement."""
+    legacy_output_dir = tmp_path / "storage" / "results" / "render_smoke_custom"
+
+    def fail_rollout(_settings: experiments.render_smoke.RenderSmokeSettings, _output_dir: Path) -> Any:
+        message = "camera unavailable"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(experiments.render_smoke, "_run_simulator_rollout", fail_rollout)
+
+    result = experiments.render_smoke.run_render_smoke(experiments.render_smoke.RenderSmokeSettings(output_dir=legacy_output_dir, max_steps=2))
+
+    assert result.manifest_path == str(legacy_output_dir / experiments.render_smoke.DEFAULT_OUTPUT_FILENAME)
+    assert all(Path(path).parent == legacy_output_dir for path in result.manifest["output_files"])
 
 
 def test_render_smoke_fallback_writes_visible_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

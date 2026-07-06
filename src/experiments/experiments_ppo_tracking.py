@@ -27,7 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import warnings as py_warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +77,20 @@ class PPOTrackingSmokeSettings:
         Metrics JSON filename within ``output_dir``.
     check_env
         Whether to run the Stable-Baselines3 environment checker before training.
+    wandb_mode
+        Optional W&B mode. Disabled by default for safe local and test execution.
+    wandb_project
+        W&B project name used when tracking is enabled.
+    wandb_entity
+        Optional W&B entity/team.
+    wandb_group
+        Optional W&B run group.
+    wandb_name
+        Optional W&B run name.
+    wandb_tags
+        Optional W&B run tags.
+    wandb_dir
+        Optional W&B output directory. Defaults to the run-specific wandb directory.
 
     """
 
@@ -90,6 +104,13 @@ class PPOTrackingSmokeSettings:
     model_filename: str = DEFAULT_MODEL_FILENAME
     metrics_filename: str = DEFAULT_METRICS_FILENAME
     check_env: bool = True
+    wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED
+    wandb_project: str = utils.wandb.DEFAULT_WANDB_PROJECT
+    wandb_entity: str | None = None
+    wandb_group: str | None = None
+    wandb_name: str | None = None
+    wandb_tags: tuple[str, ...] = ()
+    wandb_dir: Path | None = field(default_factory=utils.wandb.default_wandb_dir)
 
     def __post_init__(self) -> None:
         """Validate PPO smoke-run settings."""
@@ -107,6 +128,12 @@ class PPOTrackingSmokeSettings:
             raise ValueError(message)
         if not self.metrics_filename.endswith(".json"):
             message = "metrics_filename must end with .json"
+            raise ValueError(message)
+        if self.wandb_mode not in utils.wandb.WANDB_MODES:
+            message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
+            raise ValueError(message)
+        if not self.wandb_project.strip():
+            message = "wandb_project must be non-empty"
             raise ValueError(message)
 
 
@@ -154,13 +181,18 @@ def load_ppo_tracking_settings(path: str | Path) -> PPOTrackingSmokeSettings:
 
 
 def default_output_dir() -> Path:
-    """Return the default PPO tracking smoke output directory under storage results."""
-    return utils.paths.get_results_root() / "ppo_tracking_smoke"
+    """Return the default PPO tracking smoke run directory under the run layout."""
+    return utils.artifacts.get_run_dir("ppo_tracking_smoke")
+
+
+def default_metrics_dir() -> Path:
+    """Return the default PPO tracking smoke metrics directory under the run layout."""
+    return utils.artifacts.get_metrics_dir("ppo_tracking_smoke")
 
 
 def default_model_dir() -> Path:
-    """Return the default PPO tracking smoke model directory under storage models."""
-    return utils.paths.get_models_root() / "ppo_tracking_smoke"
+    """Return the default PPO tracking smoke model directory under the run layout."""
+    return utils.artifacts.get_models_dir("ppo_tracking_smoke")
 
 
 def detect_ppo_tracking_dependencies() -> dict[str, bool]:
@@ -256,6 +288,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     )
     model_path = _resolve_model_path(active_settings)
     metrics_path = _resolve_metrics_path(active_settings)
+    wandb_settings = _wandb_settings(active_settings)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -276,6 +309,10 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             n_steps=rollout_steps,
             seed=active_settings.seed,
             verbose=0,
+        )
+        wandb_run = utils.wandb.start_wandb_run(
+            settings=wandb_settings,
+            config=_wandb_config(active_settings, model_path, metrics_path),
         )
         model.learn(total_timesteps=active_settings.total_timesteps, progress_bar=False)
         model.save(str(model_path))
@@ -315,8 +352,21 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "warnings": warnings,
         "trained": True,
         "env_checked": active_settings.check_env,
+        "wandb": {
+            "mode": active_settings.wandb_mode,
+            "project": active_settings.wandb_project,
+            "entity": active_settings.wandb_entity,
+            "group": active_settings.wandb_group,
+            "name": active_settings.wandb_name,
+            "tags": list(active_settings.wandb_tags),
+            "dir": str(wandb_settings.dir or utils.wandb.default_wandb_dir()),
+            "enabled": active_settings.wandb_mode != utils.wandb.WANDB_MODE_DISABLED,
+        },
         **eval_metrics,
     }
+    utils.wandb.log_wandb_metrics(wandb_run, metrics)
+    if wandb_run is not None:
+        wandb_run.finish()
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return PPOTrackingSmokeResult(model_path=str(model_path), metrics_path=str(metrics_path), metrics=metrics, warnings=tuple(warnings))
 
@@ -329,6 +379,13 @@ def run_ppo_tracking_smoke_from_config(
     output_dir: str | Path | None = None,
     model_dir: str | Path | None = None,
     seed: int | None = None,
+    wandb_mode: str | None = None,
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
+    wandb_group: str | None = None,
+    wandb_name: str | None = None,
+    wandb_tags: tuple[str, ...] | None = None,
+    wandb_dir: str | Path | None = None,
 ) -> PPOTrackingSmokeResult:
     """
     Load settings, apply CLI-style overrides, and run PPO smoke training.
@@ -349,6 +406,20 @@ def run_ppo_tracking_smoke_from_config(
         Optional model output directory override.
     seed
         Optional deterministic seed override.
+    wandb_mode
+        Optional W&B mode override.
+    wandb_project
+        Optional W&B project override.
+    wandb_entity
+        Optional W&B entity override.
+    wandb_group
+        Optional W&B group override.
+    wandb_name
+        Optional W&B run-name override.
+    wandb_tags
+        Optional W&B tag override.
+    wandb_dir
+        Optional W&B directory override.
 
     Returns
     -------
@@ -368,6 +439,13 @@ def run_ppo_tracking_smoke_from_config(
         model_filename=settings.model_filename,
         metrics_filename=settings.metrics_filename,
         check_env=settings.check_env,
+        wandb_mode=settings.wandb_mode if wandb_mode is None else wandb_mode,
+        wandb_project=settings.wandb_project if wandb_project is None else wandb_project,
+        wandb_entity=settings.wandb_entity if wandb_entity is None else wandb_entity,
+        wandb_group=settings.wandb_group if wandb_group is None else wandb_group,
+        wandb_name=settings.wandb_name if wandb_name is None else wandb_name,
+        wandb_tags=settings.wandb_tags if wandb_tags is None else wandb_tags,
+        wandb_dir=settings.wandb_dir if wandb_dir is None else Path(wandb_dir),
     )
     return run_ppo_tracking_smoke(overridden)
 
@@ -376,18 +454,28 @@ def _settings_from_mapping(config: dict[str, Any]) -> PPOTrackingSmokeSettings:
     """Build settings from a loaded YAML mapping."""
     output_dir_value = config.get("output_dir")
     model_dir_value = config.get("model_dir")
-    return PPOTrackingSmokeSettings(
-        task_config_path=Path(config.get("task_config_path", DEFAULT_TASK_CONFIG_PATH)),
-        task_index=int(config.get("task_index", DEFAULT_TASK_INDEX)),
-        total_timesteps=int(config.get("total_timesteps", DEFAULT_TOTAL_TIMESTEPS)),
-        eval_steps=int(config.get("eval_steps", DEFAULT_EVAL_STEPS)),
-        seed=int(config.get("seed", DEFAULT_SEED)),
-        output_dir=Path(output_dir_value) if output_dir_value is not None else None,
-        model_dir=Path(model_dir_value) if model_dir_value is not None else None,
-        model_filename=str(config.get("model_filename", DEFAULT_MODEL_FILENAME)),
-        metrics_filename=str(config.get("metrics_filename", DEFAULT_METRICS_FILENAME)),
-        check_env=bool(config.get("check_env", True)),
-    )
+    wandb_dir_value = config.get("wandb_dir")
+    settings_kwargs: dict[str, Any] = {
+        "task_config_path": Path(config.get("task_config_path", DEFAULT_TASK_CONFIG_PATH)),
+        "task_index": int(config.get("task_index", DEFAULT_TASK_INDEX)),
+        "total_timesteps": int(config.get("total_timesteps", DEFAULT_TOTAL_TIMESTEPS)),
+        "eval_steps": int(config.get("eval_steps", DEFAULT_EVAL_STEPS)),
+        "seed": int(config.get("seed", DEFAULT_SEED)),
+        "output_dir": Path(output_dir_value) if output_dir_value is not None else None,
+        "model_dir": Path(model_dir_value) if model_dir_value is not None else None,
+        "model_filename": str(config.get("model_filename", DEFAULT_MODEL_FILENAME)),
+        "metrics_filename": str(config.get("metrics_filename", DEFAULT_METRICS_FILENAME)),
+        "check_env": bool(config.get("check_env", True)),
+        "wandb_mode": str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_DISABLED),
+        "wandb_project": str(config.get("wandb_project") or utils.wandb.DEFAULT_WANDB_PROJECT),
+        "wandb_entity": config.get("wandb_entity") or None,
+        "wandb_group": config.get("wandb_group") or None,
+        "wandb_name": config.get("wandb_name") or None,
+        "wandb_tags": utils.wandb.parse_wandb_tags(config.get("wandb_tags")),
+    }
+    if wandb_dir_value is not None:
+        settings_kwargs["wandb_dir"] = Path(wandb_dir_value)
+    return PPOTrackingSmokeSettings(**settings_kwargs)
 
 
 def _load_task(task_config_path: Path, task_index: int) -> dict[str, Any]:
@@ -414,13 +502,44 @@ def _resolve_model_path(settings: PPOTrackingSmokeSettings) -> Path:
 
 def _resolve_metrics_path(settings: PPOTrackingSmokeSettings) -> Path:
     """Resolve the metrics output path."""
-    return _resolve_directory(settings.output_dir, default_output_dir()) / settings.metrics_filename
+    if settings.output_dir is None:
+        return default_metrics_dir() / settings.metrics_filename
+    output_dir = settings.output_dir.expanduser().resolve(strict=False)
+    if "results" in output_dir.parts or output_dir.name == utils.artifacts.METRICS_DIRNAME:
+        return output_dir / settings.metrics_filename
+    return output_dir / utils.artifacts.METRICS_DIRNAME / settings.metrics_filename
 
 
 def _resolve_directory(path: Path | None, default: Path) -> Path:
     """Resolve a configured directory or its storage-backed default."""
     directory = default if path is None else path
     return directory.expanduser().resolve(strict=False)
+
+
+def _wandb_settings(settings: PPOTrackingSmokeSettings) -> utils.wandb.WandbTrackingSettings:
+    """Build W&B settings from PPO smoke settings."""
+    return utils.wandb.WandbTrackingSettings(
+        mode=settings.wandb_mode,
+        project=settings.wandb_project,
+        entity=settings.wandb_entity,
+        group=settings.wandb_group,
+        name=settings.wandb_name,
+        tags=settings.wandb_tags,
+        dir=settings.wandb_dir or utils.wandb.default_wandb_dir(),
+    )
+
+
+def _wandb_config(settings: PPOTrackingSmokeSettings, model_path: Path, metrics_path: Path) -> dict[str, Any]:
+    """Build a compact W&B config payload for PPO smoke training."""
+    return {
+        "task_config_path": str(settings.task_config_path),
+        "task_index": settings.task_index,
+        "total_timesteps": settings.total_timesteps,
+        "eval_steps": settings.eval_steps,
+        "seed": settings.seed,
+        "model_path": str(model_path),
+        "metrics_path": str(metrics_path),
+    }
 
 
 def _require_training_dependencies(dependencies: dict[str, bool]) -> None:
@@ -823,6 +942,7 @@ __all__ = [
     "DEFAULT_TASK_CONFIG_PATH",
     "PPOTrackingSmokeResult",
     "PPOTrackingSmokeSettings",
+    "default_metrics_dir",
     "default_model_dir",
     "default_output_dir",
     "describe_tracking_env_action_metadata",

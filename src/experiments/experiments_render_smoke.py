@@ -151,8 +151,8 @@ class _RolloutArtifacts:
 
 
 def default_output_dir() -> Path:
-    """Return the default render smoke output directory under storage results."""
-    return utils.paths.get_results_root() / "render_smoke"
+    """Return the default render smoke run directory under the run layout."""
+    return utils.artifacts.get_run_dir("render_smoke")
 
 
 def run_render_smoke(settings: RenderSmokeSettings | None = None) -> RenderSmokeResult:
@@ -172,18 +172,27 @@ def run_render_smoke(settings: RenderSmokeSettings | None = None) -> RenderSmoke
     """
     active_settings = settings or RenderSmokeSettings()
     output_dir = active_settings.output_dir or default_output_dir()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    renders_dir, manifests_dir = _artifact_dirs(output_dir)
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    manifests_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        artifacts = _run_simulator_rollout(active_settings, output_dir)
+        artifacts = _run_simulator_rollout(active_settings, renders_dir)
     except Exception as exc:  # noqa: BLE001 - the smoke path must degrade to a visible fallback artifact.
         warning = f"simulator external camera render unavailable; wrote fallback trajectory plot instead: {exc}"
-        artifacts = _write_fallback_plot(active_settings, output_dir, warnings=(warning,))
+        artifacts = _write_fallback_plot(active_settings, renders_dir, warnings=(warning,))
 
     manifest = _build_manifest(artifacts)
-    manifest_path = output_dir / DEFAULT_OUTPUT_FILENAME
+    manifest_path = manifests_dir / DEFAULT_OUTPUT_FILENAME
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return RenderSmokeResult(manifest_path=str(manifest_path), manifest=manifest, warnings=artifacts.warnings)
+
+
+def _artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
+    """Return render and manifest directories for a run-root or legacy output override."""
+    if "results" in output_dir.parts:
+        return output_dir, output_dir
+    return output_dir / "renders", output_dir / "manifests"
 
 
 def _run_simulator_rollout(settings: RenderSmokeSettings, output_dir: Path) -> _RolloutArtifacts:

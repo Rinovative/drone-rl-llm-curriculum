@@ -26,7 +26,7 @@ import argparse
 import json
 from pathlib import Path
 
-from src import experiments
+from src import experiments, utils
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +39,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--model-dir", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--wandb-mode",
+        choices=utils.wandb.WANDB_MODES,
+        default=None,
+    )
+    parser.add_argument("--wandb-project", default=None)
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-name", default=None)
+    parser.add_argument("--wandb-tags", default=None)
+    parser.add_argument("--wandb-dir", type=Path, default=None)
     return parser
 
 
@@ -53,6 +64,13 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
         model_dir=args.model_dir,
         seed=args.seed,
+        wandb_mode=args.wandb_mode,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        wandb_group=args.wandb_group,
+        wandb_name=args.wandb_name,
+        wandb_tags=utils.wandb.parse_wandb_tags(args.wandb_tags),
+        wandb_dir=args.wandb_dir,
     )
     print(
         json.dumps(

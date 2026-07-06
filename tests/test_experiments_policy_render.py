@@ -32,7 +32,7 @@ def test_policy_render_settings_defaults_are_expected() -> None:
     """Verify policy-render defaults stay aligned with reviewer-facing CLI expectations."""
     settings = experiments.policy_render.PolicyRenderSettings()
 
-    assert settings.model_path == Path("storage/models/ppo_tracking_smoke/ppo_tracking_smoke.zip")
+    assert settings.model_path.as_posix().endswith("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip")
     assert settings.config_path == Path("configs/smoke/ppo_tracking_smoke.yaml")
     assert settings.output_dir is None
     assert settings.max_steps == experiments.policy_render.DEFAULT_MAX_STEPS
@@ -73,6 +73,8 @@ def test_cli_parser_accepts_camera_and_render_task_options() -> None:
     assert args.camera_distance == PARSER_CAMERA_DISTANCE
     assert args.camera_yaw == PARSER_CAMERA_YAW
     assert args.camera_pitch == PARSER_CAMERA_PITCH
+    assert args.output_dir.as_posix().endswith("storage/runs/trained_policy_render")
+    assert args.model_path.as_posix().endswith("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip")
 
 
 def test_prepare_task_for_rollout_length_extends_short_reference() -> None:
@@ -109,8 +111,8 @@ def test_policy_render_manifest_includes_rollout_summary_fields() -> None:
     settings = experiments.policy_render.PolicyRenderSettings()
     payload = experiments.policy_render._build_manifest(  # noqa: SLF001
         settings=settings,
-        model_path=Path("storage/models/ppo_tracking_smoke/ppo_tracking_smoke.zip"),
-        gif_path=Path("storage/results/trained_policy_render/trained_policy_rollout.gif"),
+        model_path=Path("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip"),
+        gif_path=Path("storage/runs/trained_policy_render/renders/trained_policy_rollout.gif"),
         task_shape="line",
         task_source="config",
         task_index=2,
@@ -155,6 +157,16 @@ def test_policy_render_manifest_includes_rollout_summary_fields() -> None:
     assert payload["final_position_error_m"] == 0.0
     assert payload["final_action"] == [[0.0, 0.0, 1.0]]
     assert payload["camera_settings"]["mode"] == settings.camera_mode
+
+
+def test_policy_render_artifact_dirs_preserve_legacy_results_override(tmp_path: Path) -> None:
+    """Verify storage/results-style output overrides preserve direct render placement."""
+    legacy_output_dir = tmp_path / "storage" / "results" / "trained_policy_render"
+
+    renders_dir, manifests_dir = experiments.policy_render._artifact_dirs(legacy_output_dir)  # noqa: SLF001
+
+    assert renders_dir == legacy_output_dir
+    assert manifests_dir == legacy_output_dir
 
 
 def test_policy_render_manifest_writer_writes_json(tmp_path: Path) -> None:

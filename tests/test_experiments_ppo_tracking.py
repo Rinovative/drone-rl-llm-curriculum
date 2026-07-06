@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src import envs, experiments
+from src import envs, experiments, utils
 
 EXPECTED_SMOKE_TASK_INDEX = 0
 EXPECTED_SMOKE_TIMESTEPS = 4096
@@ -25,8 +25,9 @@ def test_ppo_tracking_imports_through_package_alias() -> None:
     assert experiments.ppo_tracking.PPOTrackingSmokeSettings is not None
 
 
-def test_load_ppo_tracking_smoke_config_returns_valid_settings() -> None:
+def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify the smoke YAML file loads into validated settings."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     settings = experiments.ppo_tracking.load_ppo_tracking_settings("configs/smoke/ppo_tracking_smoke.yaml")
 
     assert settings.task_config_path == Path("configs/smoke/trajectory_validation.yaml")
@@ -34,6 +35,18 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings() -> None:
     assert settings.total_timesteps == EXPECTED_SMOKE_TIMESTEPS
     assert settings.eval_steps == EXPECTED_SMOKE_EVAL_STEPS
     assert settings.seed == 0
+    assert settings.output_dir is None
+    assert settings.model_dir is None
+    assert settings.wandb_mode == "disabled"
+    assert settings.wandb_project == utils.wandb.DEFAULT_WANDB_PROJECT
+    assert settings.wandb_entity is None
+    assert settings.wandb_group is None
+    assert settings.wandb_name is None
+    assert settings.wandb_tags == ()
+    assert settings.wandb_dir == tmp_path / "runs" / "ppo_tracking_smoke" / "wandb"
+    assert experiments.ppo_tracking.default_output_dir() == tmp_path / "runs" / "ppo_tracking_smoke"
+    assert experiments.ppo_tracking.default_model_dir() == tmp_path / "runs" / "ppo_tracking_smoke" / "models"
+    assert utils.wandb.default_wandb_dir() == tmp_path / "runs" / "ppo_tracking_smoke" / "wandb"
 
 
 def test_ppo_tracking_settings_reject_invalid_timesteps() -> None:
@@ -48,18 +61,27 @@ def test_ppo_tracking_settings_reject_invalid_eval_steps() -> None:
         experiments.ppo_tracking.PPOTrackingSmokeSettings(eval_steps=0)
 
 
-def test_ppo_tracking_paths_resolve_under_caller_directories(tmp_path: Path) -> None:
-    """Verify caller-provided output directories control generated artifact paths."""
+def test_ppo_tracking_paths_resolve_under_run_directories(tmp_path: Path) -> None:
+    """Verify caller-provided run roots control generated artifact paths."""
     settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(
-        output_dir=tmp_path / "results",
-        model_dir=tmp_path / "models",
+        output_dir=tmp_path / "run",
+        model_dir=tmp_path / "run" / "models",
     )
 
     model_path = experiments.ppo_tracking._resolve_model_path(settings)  # noqa: SLF001
     metrics_path = experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
 
-    assert model_path == (tmp_path / "models" / "ppo_tracking_smoke.zip").resolve(strict=False)
-    assert metrics_path == (tmp_path / "results" / "ppo_tracking_smoke_metrics.json").resolve(strict=False)
+    assert model_path == (tmp_path / "run" / "models" / "ppo_tracking_smoke.zip").resolve(strict=False)
+    assert metrics_path == (tmp_path / "run" / "metrics" / "ppo_tracking_smoke_metrics.json").resolve(strict=False)
+
+
+def test_ppo_tracking_legacy_output_dir_remains_direct(tmp_path: Path) -> None:
+    """Verify storage/results-style output overrides preserve legacy metrics placement."""
+    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(output_dir=tmp_path / "storage" / "results" / "custom")
+
+    metrics_path = experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
+
+    assert metrics_path == (tmp_path / "storage" / "results" / "custom" / "ppo_tracking_smoke_metrics.json").resolve(strict=False)
 
 
 def test_ppo_tracking_dependency_detection_returns_booleans() -> None:
@@ -147,3 +169,4 @@ def test_cli_train_tracking_help_works() -> None:
     assert completed.returncode == 0
     assert "--total-timesteps" in completed.stdout
     assert "--eval-steps" in completed.stdout
+    assert "--wandb-mode" in completed.stdout

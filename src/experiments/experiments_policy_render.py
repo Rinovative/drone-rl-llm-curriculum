@@ -25,23 +25,34 @@ Boundaries:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from src import envs, experiments
+from src import envs, experiments, utils
 
 DEFAULT_PPO_CONFIG_PATH = Path("configs/smoke/ppo_tracking_smoke.yaml")
-DEFAULT_MODEL_PATH = Path("storage/models/ppo_tracking_smoke/ppo_tracking_smoke.zip")
-DEFAULT_OUTPUT_DIR = Path("storage/results/trained_policy_render")
+DEFAULT_MODEL_PATH = Path("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip")
+DEFAULT_OUTPUT_DIR = Path("storage/runs/trained_policy_render")
 DEFAULT_MAX_STEPS = 60
 DEFAULT_SEED = 0
 DEFAULT_CAMERA_MODE = "follow_external"
 SUPPORTED_CAMERA_MODES = ("follow_external", "fixed_external")
 DEFAULT_GIF_FILENAME = "trained_policy_rollout.gif"
 DEFAULT_MANIFEST_FILENAME = "trained_policy_render_manifest.json"
+
+
+def default_model_path() -> Path:
+    """Return the default trained PPO model path for reviewer/demo rendering."""
+    return utils.artifacts.get_models_dir("ppo_tracking_smoke") / "ppo_tracking_smoke.zip"
+
+
+def default_output_dir() -> Path:
+    """Return the default trained-policy render run directory."""
+    return utils.artifacts.get_run_dir("trained_policy_render")
+
 
 DEFAULT_IMAGE_WIDTH = 480
 DEFAULT_IMAGE_HEIGHT = 360
@@ -97,7 +108,7 @@ class PolicyRenderSettings:
 
     """
 
-    model_path: Path = DEFAULT_MODEL_PATH
+    model_path: Path = field(default_factory=default_model_path)
     config_path: Path = DEFAULT_PPO_CONFIG_PATH
     task_index: int | None = None
     render_task_shape: str | None = None
@@ -178,16 +189,6 @@ class PolicyRenderResult:
     warnings: tuple[str, ...] = ()
 
 
-def default_model_path() -> Path:
-    """Return the default trained PPO model path for reviewer/demo rendering."""
-    return DEFAULT_MODEL_PATH
-
-
-def default_output_dir() -> Path:
-    """Return the default trained-policy render output directory."""
-    return DEFAULT_OUTPUT_DIR
-
-
 def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> PolicyRenderResult:
     """
     Load a trained PPO model, run a bounded rollout, and write GIF/manifest artifacts.
@@ -235,9 +236,11 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
     warnings: list[str] = [*selection_warnings, *preparation_warnings]
 
     output_dir = _resolve_directory(active_settings.output_dir, default_output_dir())
-    output_dir.mkdir(parents=True, exist_ok=True)
-    gif_path = output_dir / active_settings.gif_filename
-    manifest_path = output_dir / active_settings.manifest_filename
+    renders_dir, manifests_dir = _artifact_dirs(output_dir)
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    gif_path = renders_dir / active_settings.gif_filename
+    manifest_path = manifests_dir / active_settings.manifest_filename
 
     try:
         from stable_baselines3 import PPO  # noqa: PLC0415
@@ -391,6 +394,13 @@ def run_trained_policy_render_from_paths(
             camera_pitch=camera_pitch,
         )
     )
+
+
+def _artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
+    """Return render and manifest directories for a run-root or legacy output override."""
+    if "results" in output_dir.parts:
+        return output_dir, output_dir
+    return output_dir / "renders", output_dir / "manifests"
 
 
 def _run_policy_rollout(

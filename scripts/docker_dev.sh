@@ -5,18 +5,15 @@ IMAGE_NAME="drone-rl-llm-curriculum"
 CONTAINER_NAME="drone-rl-llm-curriculum-dev"
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-STORAGE_DIR="$(cd "${PROJECT_DIR}/../storage" && pwd)"
+STORAGE_DIR="${PROJECT_DIR}/../storage"
+mkdir -p "${STORAGE_DIR}"
+STORAGE_DIR="$(cd "${STORAGE_DIR}" && pwd)"
 DOCKER_HOME="${STORAGE_DIR}/.docker_home"
 
 mkdir -p \
+  "${STORAGE_DIR}" \
+  "${STORAGE_DIR}/runs" \
   "${STORAGE_DIR}/logs" \
-  "${STORAGE_DIR}/results" \
-  "${STORAGE_DIR}/models" \
-  "${STORAGE_DIR}/videos" \
-  "${STORAGE_DIR}/gifs" \
-  "${STORAGE_DIR}/llm_logs" \
-  "${STORAGE_DIR}/wandb" \
-  "${STORAGE_DIR}/datasets" \
   "${STORAGE_DIR}/tmp" \
   "${DOCKER_HOME}"
 
@@ -63,7 +60,11 @@ fi
 # ----------------------------------------------------------------------
 WANDB_API_KEY_VALUE="${WANDB_API_KEY:-}"
 if [ -z "${WANDB_API_KEY_VALUE}" ] && [ -f "${HOME}/wandb_key.txt" ]; then
-  WANDB_API_KEY_VALUE="$(cat "${HOME}/wandb_key.txt")"
+  WANDB_API_KEY_VALUE="$(tr -d '\r\n' < "${HOME}/wandb_key.txt")"
+fi
+WANDB_ENV_ARGS=()
+if [ -n "${WANDB_API_KEY_VALUE}" ]; then
+  WANDB_ENV_ARGS+=("-e" "WANDB_API_KEY=${WANDB_API_KEY_VALUE}")
 fi
 
 # ----------------------------------------------------------------------
@@ -78,18 +79,10 @@ docker run -d --rm \
   -e HOME=/workspace/storage/.docker_home \
   -e PROJECT_ROOT=/workspace/repo \
   -e STORAGE_ROOT=/workspace/storage \
+  -e RUNS_DIR=/workspace/storage/runs \
   -e LOGS_DIR=/workspace/storage/logs \
-  -e RESULTS_DIR=/workspace/storage/results \
-  -e MODELS_DIR=/workspace/storage/models \
-  -e VIDEOS_DIR=/workspace/storage/videos \
-  -e GIFS_DIR=/workspace/storage/gifs \
-  -e LLM_LOGS_DIR=/workspace/storage/llm_logs \
-  -e DATASETS_DIR=/workspace/storage/datasets \
   -e TMP_DIR=/workspace/storage/tmp \
-  -e WANDB_DIR=/workspace/storage/wandb \
-  -e WANDB_CACHE_DIR=/workspace/storage/wandb/cache \
-  -e WANDB_CONFIG_DIR=/workspace/storage/wandb/config \
-  -e WANDB_API_KEY="${WANDB_API_KEY_VALUE}" \
+  "${WANDB_ENV_ARGS[@]}" \
   -e PYTHONPATH=/workspace/repo \
   -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
   -v "${DOCKER_HOME}/passwd:/etc/passwd:ro" \
@@ -98,7 +91,7 @@ docker run -d --rm \
   -v "${STORAGE_DIR}:/workspace/storage:rw" \
   "${SSH_ARGS[@]}" \
   "${IMAGE_NAME}" \
-  bash -lc "ln -sfn /workspace/storage /workspace/repo/storage && sleep infinity"
+  bash -lc "ln -sfnT /workspace/storage /workspace/repo/storage && sleep infinity"
 
 echo "Container started: ${CONTAINER_NAME}"
 echo "Attach with VS Code: Remote Explorer -> Containers -> ${CONTAINER_NAME}"

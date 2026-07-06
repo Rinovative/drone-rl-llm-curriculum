@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from src import experiments, utils
+from src import experiments
 from src.experiments import cli_training_smoke
 
 CONFIG_MAX_STEPS = 16
@@ -49,14 +49,16 @@ def test_deterministic_training_smoke_writes_expected_metrics(tmp_path: Path) ->
     assert payload["warnings"]
 
 
-def test_training_smoke_default_output_uses_results_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify default output paths stay under the configured storage results root."""
-    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+def test_training_smoke_default_output_uses_run_metrics_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify default output paths stay under the configured run metrics directory."""
+    storage_root = tmp_path / "storage"
+    monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
 
     result = experiments.training_smoke.run_training_smoke(experiments.training_smoke.TrainingSmokeSettings(max_steps=2))
 
-    assert result.output_path.startswith(str(utils.paths.get_results_root()))
-    assert (utils.paths.get_results_root() / "mvp_smoke" / "training_smoke_metrics.json").exists()
+    expected_path = storage_root / "runs" / "mvp_smoke" / "metrics" / "training_smoke_metrics.json"
+    assert result.output_path == str(expected_path)
+    assert expected_path.exists()
 
 
 def test_cli_parser_builds_settings_without_running_training() -> None:

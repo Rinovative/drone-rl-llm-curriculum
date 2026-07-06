@@ -21,7 +21,7 @@ def test_mvp_parser_defaults_are_tiny_and_storage_scoped() -> None:
     args = cli_mvp.build_parser().parse_args([])
 
     assert args.config.as_posix() == "configs/smoke/training_smoke.yaml"
-    assert args.output_dir.as_posix() == "storage/results/mvp_smoke"
+    assert args.output_dir.as_posix().endswith("storage/runs/mvp_smoke")
     assert args.max_steps == DEFAULT_MAX_STEPS
     assert args.task_index is None
     assert not args.skip_plot
@@ -54,9 +54,9 @@ def test_mvp_main_runs_sequence_with_temporary_output_dir(tmp_path: Path, capsys
     captured = capsys.readouterr()
     assert status == 0
     assert "training_output_path" in captured.out
-    assert (tmp_path / "training_smoke_metrics.json").exists()
-    assert (tmp_path / "rollout_metrics.json").exists()
-    assert (tmp_path / "trajectory_comparison.png").exists() or (tmp_path / "trajectory_comparison.json").exists()
+    assert (tmp_path / "metrics" / "training_smoke_metrics.json").exists()
+    assert (tmp_path / "metrics" / "rollout_metrics.json").exists()
+    assert (tmp_path / "plots" / "trajectory_comparison.png").exists() or (tmp_path / "plots" / "trajectory_comparison.json").exists()
 
 
 def test_mvp_main_can_skip_plot(tmp_path: Path) -> None:
@@ -64,8 +64,8 @@ def test_mvp_main_can_skip_plot(tmp_path: Path) -> None:
     summary = cli_mvp.run_mvp_sequence(output_dir=tmp_path, max_steps=3, skip_plot=True)
 
     assert summary["visualization"] is None
-    assert (tmp_path / "training_smoke_metrics.json").exists()
-    assert (tmp_path / "rollout_metrics.json").exists()
+    assert (tmp_path / "metrics" / "training_smoke_metrics.json").exists()
+    assert (tmp_path / "metrics" / "rollout_metrics.json").exists()
 
 
 def test_missing_prerequisites_raise_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:

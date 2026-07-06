@@ -27,9 +27,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src import evaluation, experiments
+from src import evaluation, experiments, utils
 
-DEFAULT_OUTPUT_DIR = Path("storage/results/mvp_smoke")
+DEFAULT_OUTPUT_DIR = utils.artifacts.get_run_dir("mvp_smoke")
 DEFAULT_MAX_STEPS = 16
 
 
@@ -105,19 +105,21 @@ def run_mvp_sequence(
 
     """
     _ensure_prerequisites()
+    metrics_dir, plots_dir = _artifact_dirs(output_dir)
     training_result = experiments.training_smoke.run_training_smoke_from_config(
         config_path=config_path,
-        output_dir=output_dir,
+        output_dir=metrics_dir,
         max_steps=max_steps,
         task_index=task_index,
     )
     settings = experiments.training_smoke.load_training_smoke_settings(config_path)
     selected_task_index = settings.task_index if task_index is None else task_index
     task = _load_task(settings.task_config_path, selected_task_index)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
     rollout_result = evaluation.rollout.write_task_rollout_evaluation(
         task,
-        output_dir / evaluation.rollout.DEFAULT_OUTPUT_FILENAME,
+        metrics_dir / evaluation.rollout.DEFAULT_OUTPUT_FILENAME,
     )
 
     plot_output: dict[str, Any] | None = None
@@ -126,7 +128,7 @@ def run_mvp_sequence(
         plot_result = evaluation.plots.write_trajectory_comparison(
             rollout.reference,
             rollout.actual,
-            output_dir / "trajectory_comparison.png",
+            plots_dir / "trajectory_comparison.png",
         )
         plot_output = {
             "output_path": plot_result.output_path,
@@ -163,6 +165,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
+
+
+def _artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
+    """Return metrics and plots directories for a run-root or legacy output override."""
+    if _is_legacy_results_dir(output_dir):
+        return output_dir, output_dir
+    return output_dir / "metrics", output_dir / "plots"
+
+
+def _is_legacy_results_dir(path: Path) -> bool:
+    """Return whether a caller supplied an old storage/results-style output path."""
+    return "results" in path.parts
 
 
 def _ensure_prerequisites() -> None:
