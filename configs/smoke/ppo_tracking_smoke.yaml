@@ -1,7 +1,7 @@
 task_config_path: configs/smoke/trajectory_validation.yaml
-task_index: 2
-total_timesteps: 128
-eval_steps: 32
+task_index: 0
+total_timesteps: 4096
+eval_steps: 120
 seed: 0
 output_dir: storage/results/ppo_tracking_smoke
 model_dir: storage/models/ppo_tracking_smoke

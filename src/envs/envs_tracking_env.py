@@ -7,7 +7,7 @@ Provide a minimal Gymnasium trajectory-tracking wrapper around HoverAviary.
 Responsibilities:
   - Adapt validated trajectory tasks into a compact single-drone RL environment
   - Expose deterministic tracking observations for later PPO smoke training
-  - Delegate low-level simulation, action semantics, and physics to HoverAviary
+  - Delegate low-level simulation, PID action semantics, and physics to HoverAviary
 
 Design principles:
   - Keep the wrapper small and compatible with Gymnasium reset and step APIs
@@ -43,7 +43,13 @@ if TYPE_CHECKING:
 
 OBSERVATION_DIMENSIONS = 10
 XYZ_DIMENSIONS = 3
+STATE_VECTOR_MIN_DIMENSIONS = 20
 OBSERVATION_BOUND = 1.0e6
+BASE_XY_TRUNCATION_LIMIT_M = 1.5
+BASE_Z_TRUNCATION_LIMIT_M = 2.0
+BASE_ATTITUDE_TRUNCATION_LIMIT_RAD = 0.4
+TRACKING_ACTION_XY_MARGIN_M = 0.2
+TRACKING_ACTION_Z_MARGIN_M = 0.5
 
 
 class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
@@ -65,8 +71,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
 
     Notes
     -----
-    The action space is the wrapped HoverAviary action space. The observation is
-    a compact float32 vector containing current XYZ position, reference XYZ
+    The action space is HoverAviary's PID target-position action space with
+    shape ``(1, 3)``. The observation is a compact float32 vector containing current XYZ position, reference XYZ
     position, XYZ position error, and normalized trajectory progress.
 
     """
@@ -83,8 +89,9 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         super().__init__()
         self.metadata = {"render_modes": []}
         self.reference = _coerce_task_reference(task=task, limits=limits)
-        self.base_env = envs.builders.make_hover_aviary_env(gui=gui, record=record)
-        self.action_space = self.base_env.action_space
+        self.base_env = _make_tracking_base_env(gui=gui, record=record)
+        self._tracking_action_space = _make_tracking_action_space(self.reference, self.base_env.action_space)
+        self.action_space = self._tracking_action_space
         self.observation_space = spaces.Box(
             low=np.full(OBSERVATION_DIMENSIONS, -OBSERVATION_BOUND, dtype=np.float32),
             high=np.full(OBSERVATION_DIMENSIONS, OBSERVATION_BOUND, dtype=np.float32),
@@ -151,13 +158,16 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             diagnostics for the completed tracking step.
 
         """
-        _, base_reward, base_terminated, base_truncated, base_info = self.base_env.step(action)
-        current_position = self._current_position()
+        requested_action_array = np.asarray(action)
+        base_action_array = _clip_action_to_space(requested_action_array, self._tracking_action_space)
+        _, base_reward, base_terminated, base_truncated, base_info = self.base_env.step(base_action_array)
+        state = self._current_state_vector()
+        current_position = _state_position(state)
         tracking_result = envs.tracking_reward.step_tracking_episode(
             reference=self.reference,
             actual_position=current_position,
             step_index=self._step_index,
-            action=action,
+            action=base_action_array,
             config=self.reward_config,
         )
         next_step_index = min(self._step_index + 1, self.reference.positions.shape[0] - 1)
@@ -168,16 +178,34 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             step_index=next_step_index,
         )
         self._step_index = next_step_index
+        terminated = bool(tracking_result.done or base_terminated)
+        truncated = bool(base_truncated)
         info = self._make_info(
             current_position=tracking_result.actual_position,
             reference_position=tracking_result.reference_position,
             position_error_m=tracking_result.position_error_m,
             tracking_success=tracking_result.success,
             base_info=base_info,
+            state=state,
+            base_terminated=bool(base_terminated),
+            base_truncated=bool(base_truncated),
+            termination_reason=_termination_reason(
+                tracking_done=tracking_result.done,
+                base_terminated=bool(base_terminated),
+                base_truncated=bool(base_truncated),
+                base_truncation_causes=_base_truncation_causes(self.base_env, state),
+                step_index=tracking_result.step_index,
+                max_steps=self.reward_config.max_steps,
+                reference_sample_count=int(self.reference.positions.shape[0]),
+            ),
+            requested_action=requested_action_array,
+            applied_action=base_action_array,
         )
         info["base_reward"] = float(base_reward)
-        terminated = bool(tracking_result.done or base_terminated)
-        truncated = bool(base_truncated)
+        info["base_action_shape"] = tuple(int(dimension) for dimension in base_action_array.shape)
+        info["base_action_dtype"] = str(base_action_array.dtype)
+        info["action_shape"] = info["base_action_shape"]
+        info["action_dtype"] = info["base_action_dtype"]
         return observation, float(tracking_result.reward), terminated, truncated, info
 
     def close(self) -> None:
@@ -201,19 +229,22 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
 
     def _current_position(self) -> np.ndarray:
         """Extract the current drone XYZ position from the HoverAviary state vector."""
+        return _state_position(self._current_state_vector())
+
+    def _current_state_vector(self) -> np.ndarray:
+        """Return the current upstream HoverAviary state vector for diagnostics."""
         state_getter = getattr(self.base_env, "_getDroneStateVector", None)
         if state_getter is None:
-            message = "HoverAviary does not expose _getDroneStateVector for XYZ extraction"
+            message = "HoverAviary does not expose _getDroneStateVector for diagnostics"
             raise RuntimeError(message)
         state = np.asarray(state_getter(0), dtype=float)
-        if state.shape[0] < XYZ_DIMENSIONS:
-            message = "HoverAviary state vector is too short to contain XYZ position"
+        if state.shape[0] < STATE_VECTOR_MIN_DIMENSIONS:
+            message = "HoverAviary state vector is too short for tracking diagnostics"
             raise RuntimeError(message)
-        position = np.array(state[:XYZ_DIMENSIONS], dtype=float, copy=True)
-        if position.shape != (XYZ_DIMENSIONS,) or not np.all(np.isfinite(position)):
-            message = "HoverAviary XYZ position must be a finite shape-(3,) vector"
+        if not np.all(np.isfinite(state)):
+            message = "HoverAviary state vector must contain only finite values"
             raise RuntimeError(message)
-        return position
+        return np.array(state, dtype=float, copy=True)
 
     def _make_observation(
         self,
@@ -248,15 +279,42 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         position_error_m: float,
         tracking_success: bool,
         base_info: dict[str, Any],
+        state: np.ndarray | None = None,
+        base_terminated: bool = False,
+        base_truncated: bool = False,
+        termination_reason: str = "reset",
+        requested_action: np.ndarray | None = None,
+        applied_action: np.ndarray | None = None,
     ) -> dict[str, Any]:
         """Package tracking diagnostics with copied simulator metadata."""
+        active_state = self._current_state_vector() if state is None else np.asarray(state, dtype=float)
+        attitude = np.array(active_state[7:10], dtype=float, copy=True)
+        velocity = np.array(active_state[10:13], dtype=float, copy=True)
+        angular_velocity = np.array(active_state[13:16], dtype=float, copy=True)
+        last_action = np.array(active_state[16:20], dtype=float, copy=True)
+        current = np.array(current_position, dtype=float, copy=True)
+        reference = np.array(reference_position, dtype=float, copy=True)
         return {
-            "reference_position": np.array(reference_position, dtype=float, copy=True),
-            "current_position": np.array(current_position, dtype=float, copy=True),
+            "reference_position": reference,
+            "reference_xyz": reference,
+            "current_position": current,
+            "current_xyz": current,
             "position_error_m": float(position_error_m),
             "task_shape": self.reference.shape,
             "tracking_success": bool(tracking_success),
+            "roll_pitch_yaw": attitude,
+            "velocity": velocity,
+            "angular_velocity": angular_velocity,
+            "last_action": last_action,
+            "requested_action": None if requested_action is None else np.array(requested_action, dtype=float, copy=True),
+            "applied_action": None if applied_action is None else np.array(applied_action, dtype=float, copy=True),
+            "base_terminated": bool(base_terminated),
+            "base_truncated": bool(base_truncated),
+            "base_truncation_causes": _base_truncation_causes(self.base_env, active_state),
             "base_info": dict(base_info),
+            "base_info_keys": sorted(str(key) for key in base_info),
+            "base_reason_fields": _base_reason_fields(base_info),
+            "termination_reason": termination_reason,
         }
 
 
@@ -290,6 +348,109 @@ def make_trajectory_tracking_env(
 
     """
     return TrajectoryTrackingEnv(task=task, gui=gui, record=record, limits=limits, max_steps=max_steps)
+
+
+def _make_tracking_action_space(
+    reference: envs.task_adapter.EnvironmentTaskReference,
+    base_action_space: spaces.Box,
+) -> spaces.Box:
+    """Build conservative PID target-position bounds around the reference path."""
+    base_low = np.asarray(base_action_space.low, dtype=np.float32)
+    base_high = np.asarray(base_action_space.high, dtype=np.float32)
+    positions = np.asarray(reference.positions, dtype=np.float32)
+    reference_min = np.min(positions, axis=0)
+    reference_max = np.max(positions, axis=0)
+    margin = np.array([TRACKING_ACTION_XY_MARGIN_M, TRACKING_ACTION_XY_MARGIN_M, TRACKING_ACTION_Z_MARGIN_M], dtype=np.float32)
+    task_low = (reference_min - margin).reshape(base_low.shape)
+    task_high = (reference_max + margin).reshape(base_high.shape)
+    low = np.maximum(base_low, task_low).astype(np.float32, copy=False)
+    high = np.minimum(base_high, task_high).astype(np.float32, copy=False)
+    high = np.maximum(high, low + np.finfo(np.float32).eps)
+    return spaces.Box(low=low, high=high, dtype=np.float32)
+
+
+def _clip_action_to_space(action: np.ndarray, action_space: spaces.Box) -> np.ndarray:
+    """Clip an incoming PID target to the wrapper's conservative action bounds."""
+    action_array = np.asarray(action, dtype=action_space.dtype)
+    return np.clip(action_array, action_space.low, action_space.high).astype(action_space.dtype, copy=False)
+
+
+def _state_position(state: np.ndarray) -> np.ndarray:
+    """Extract a finite XYZ position from an upstream HoverAviary state vector."""
+    position = np.array(state[:XYZ_DIMENSIONS], dtype=float, copy=True)
+    if position.shape != (XYZ_DIMENSIONS,) or not np.all(np.isfinite(position)):
+        message = "HoverAviary XYZ position must be a finite shape-(3,) vector"
+        raise RuntimeError(message)
+    return position
+
+
+def _base_reason_fields(base_info: dict[str, Any]) -> dict[str, Any]:
+    """Return upstream info fields whose names look like termination reasons."""
+    reason_fields: dict[str, Any] = {}
+    for key, value in base_info.items():
+        key_text = str(key).lower()
+        if "reason" in key_text or "termin" in key_text or "trunc" in key_text or "done" in key_text:
+            reason_fields[str(key)] = value
+    return reason_fields
+
+
+def _base_truncation_causes(base_env: Any, state: np.ndarray) -> list[str]:
+    """Return HoverAviary truncation conditions currently visible in the state."""
+    causes: list[str] = []
+    x_position, y_position, z_position = (float(value) for value in state[:3])
+    roll, pitch = (float(value) for value in state[7:9])
+    if abs(x_position) > BASE_XY_TRUNCATION_LIMIT_M:
+        causes.append("x_position_out_of_bounds")
+    if abs(y_position) > BASE_XY_TRUNCATION_LIMIT_M:
+        causes.append("y_position_out_of_bounds")
+    if z_position > BASE_Z_TRUNCATION_LIMIT_M:
+        causes.append("z_position_above_limit")
+    if abs(roll) > BASE_ATTITUDE_TRUNCATION_LIMIT_RAD:
+        causes.append("roll_above_limit")
+    if abs(pitch) > BASE_ATTITUDE_TRUNCATION_LIMIT_RAD:
+        causes.append("pitch_above_limit")
+
+    step_counter = float(getattr(base_env, "step_counter", 0.0))
+    pyb_steps_per_ctrl = float(getattr(base_env, "PYB_STEPS_PER_CTRL", 0.0))
+    pyb_frequency = float(getattr(base_env, "PYB_FREQ", 0.0))
+    episode_len_sec = float(getattr(base_env, "EPISODE_LEN_SEC", np.inf))
+    compute_step_counter = max(step_counter - pyb_steps_per_ctrl, 0.0)
+    if pyb_frequency > 0.0 and compute_step_counter / pyb_frequency > episode_len_sec:
+        causes.append("episode_time_limit")
+    return causes
+
+
+def _termination_reason(
+    tracking_done: bool,
+    base_terminated: bool,
+    base_truncated: bool,
+    base_truncation_causes: list[str],
+    step_index: int,
+    max_steps: int | None,
+    reference_sample_count: int,
+) -> str:
+    """Return the most specific rollout termination reason available."""
+    if base_truncated:
+        if base_truncation_causes:
+            return "base_truncated:" + ",".join(base_truncation_causes)
+        return "base_truncated:upstream_unclassified"
+    if base_terminated:
+        return "base_terminated:hover_target_reached"
+    if tracking_done and max_steps is not None and step_index >= max_steps - 1:
+        return "tracking_max_steps_reached"
+    if tracking_done and step_index >= reference_sample_count - 1:
+        return "tracking_reference_complete"
+    if tracking_done:
+        return "tracking_done"
+    return "running"
+
+
+def _make_tracking_base_env(gui: bool, record: bool) -> Any:
+    """Build the HoverAviary instance used by trajectory tracking."""
+    from gym_pybullet_drones.envs.HoverAviary import HoverAviary  # noqa: PLC0415
+    from gym_pybullet_drones.utils.enums import ActionType, ObservationType  # noqa: PLC0415
+
+    return HoverAviary(gui=gui, record=record, obs=ObservationType.KIN, act=ActionType.PID)
 
 
 def _coerce_task_reference(

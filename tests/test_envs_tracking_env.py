@@ -75,9 +75,23 @@ def test_tracking_env_steps_once_with_sampled_action_and_diagnostics() -> None:
         assert "task_shape" in info
         assert "tracking_success" in info
         assert "base_reward" in info
+        assert info["base_action_shape"] == action.shape
+        assert info["base_action_dtype"] == str(action.dtype)
+        assert info["action_shape"] == action.shape
+        assert info["action_dtype"] == str(action.dtype)
+        assert info["base_terminated"] is terminated or info["base_terminated"] is False
+        assert info["base_truncated"] is truncated
+        assert info["base_info_keys"] == ["answer"]
+        assert info["base_reason_fields"] == {}
+        assert isinstance(info["termination_reason"], str)
         assert info["task_shape"] == validation.contracts.SHAPE_HOVER
         assert np.asarray(info["reference_position"]).shape == (3,)
         assert np.asarray(info["current_position"]).shape == (3,)
+        assert np.asarray(info["roll_pitch_yaw"]).shape == (3,)
+        assert np.asarray(info["velocity"]).shape == (3,)
+        assert np.asarray(info["angular_velocity"]).shape == (3,)
+        assert np.asarray(info["last_action"]).shape == (4,)
+        assert np.asarray(info["requested_action"]).shape == action.shape
     finally:
         tracking_env.close()
 
