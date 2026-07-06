@@ -2,12 +2,15 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-STORAGE_DIR="$(cd "${PROJECT_DIR}/../storage" && pwd)"
-LOG_DIR="${STORAGE_DIR}/logs"
+STORAGE_DIR="${PROJECT_DIR}/../storage"
 
+mkdir -p "${STORAGE_DIR}"
+STORAGE_DIR="$(cd "${STORAGE_DIR}" && pwd)"
+
+LOG_DIR="${STORAGE_DIR}/docker_logs"
 mkdir -p "${LOG_DIR}"
 
-SCRIPT_PATH="${1:-src/experiments/cli_train.py}"
+SCRIPT_PATH="${1:-src/experiments/cli_train_tracking.py}"
 shift || true
 
 SCRIPT_HOST_PATH="${PROJECT_DIR}/${SCRIPT_PATH}"

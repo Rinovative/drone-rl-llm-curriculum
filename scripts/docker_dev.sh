@@ -6,20 +6,20 @@ CONTAINER_NAME="drone-rl-llm-curriculum-dev"
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STORAGE_DIR="${PROJECT_DIR}/../storage"
+
 mkdir -p "${STORAGE_DIR}"
 STORAGE_DIR="$(cd "${STORAGE_DIR}" && pwd)"
+
 DOCKER_HOME="${STORAGE_DIR}/.docker_home"
 
 mkdir -p \
-  "${STORAGE_DIR}" \
-  "${STORAGE_DIR}/runs" \
-  "${STORAGE_DIR}/logs" \
+  "${STORAGE_DIR}/training_runs" \
+  "${STORAGE_DIR}/evaluation_runs" \
+  "${STORAGE_DIR}/comparison_reports" \
+  "${STORAGE_DIR}/docker_logs" \
   "${STORAGE_DIR}/tmp" \
   "${DOCKER_HOME}"
 
-# ----------------------------------------------------------------------
-# Create runtime user mapping for container
-# ----------------------------------------------------------------------
 cat > "${DOCKER_HOME}/passwd" <<PASSWD
 root:x:0:0:root:/root:/bin/bash
 rino:x:$(id -u):$(id -g):Rino Albertin:/workspace/storage/.docker_home:/bin/bash
@@ -32,17 +32,11 @@ GROUP
 
 chmod 644 "${DOCKER_HOME}/passwd" "${DOCKER_HOME}/group"
 
-# ----------------------------------------------------------------------
-# Optional SSH mount for Git operations
-# ----------------------------------------------------------------------
 SSH_ARGS=()
 if [ -d "${HOME}/.ssh" ]; then
   SSH_ARGS=(-v "${HOME}/.ssh:/workspace/storage/.docker_home/.ssh:ro")
 fi
 
-# ----------------------------------------------------------------------
-# Prevent duplicate dev container
-# ----------------------------------------------------------------------
 if docker ps --format "{{.Names}}" | grep -qx "${CONTAINER_NAME}"; then
   echo "Container '${CONTAINER_NAME}' is already running."
   echo "Attach with VS Code or stop it with:"
@@ -55,21 +49,16 @@ if docker ps -a --format "{{.Names}}" | grep -qx "${CONTAINER_NAME}"; then
   docker rm "${CONTAINER_NAME}" >/dev/null
 fi
 
-# ----------------------------------------------------------------------
-# Load W&B key if available
-# ----------------------------------------------------------------------
 WANDB_API_KEY_VALUE="${WANDB_API_KEY:-}"
 if [ -z "${WANDB_API_KEY_VALUE}" ] && [ -f "${HOME}/wandb_key.txt" ]; then
   WANDB_API_KEY_VALUE="$(tr -d '\r\n' < "${HOME}/wandb_key.txt")"
 fi
+
 WANDB_ENV_ARGS=()
 if [ -n "${WANDB_API_KEY_VALUE}" ]; then
   WANDB_ENV_ARGS+=("-e" "WANDB_API_KEY=${WANDB_API_KEY_VALUE}")
 fi
 
-# ----------------------------------------------------------------------
-# Start dev container
-# ----------------------------------------------------------------------
 docker run -d --rm \
   --name "${CONTAINER_NAME}" \
   --gpus all \
@@ -79,8 +68,10 @@ docker run -d --rm \
   -e HOME=/workspace/storage/.docker_home \
   -e PROJECT_ROOT=/workspace/repo \
   -e STORAGE_ROOT=/workspace/storage \
-  -e RUNS_DIR=/workspace/storage/runs \
-  -e LOGS_DIR=/workspace/storage/logs \
+  -e TRAINING_RUNS_DIR=/workspace/storage/training_runs \
+  -e EVALUATION_RUNS_DIR=/workspace/storage/evaluation_runs \
+  -e COMPARISON_REPORTS_DIR=/workspace/storage/comparison_reports \
+  -e DOCKER_LOGS_DIR=/workspace/storage/docker_logs \
   -e TMP_DIR=/workspace/storage/tmp \
   "${WANDB_ENV_ARGS[@]}" \
   -e PYTHONPATH=/workspace/repo \

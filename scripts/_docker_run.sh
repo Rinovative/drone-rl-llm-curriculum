@@ -10,15 +10,18 @@ IMAGE_NAME="drone-rl-llm-curriculum"
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STORAGE_DIR="${PROJECT_DIR}/../storage"
+
 mkdir -p "${STORAGE_DIR}"
 STORAGE_DIR="$(cd "${STORAGE_DIR}" && pwd)"
+
 DOCKER_HOME="${STORAGE_DIR}/.docker_home"
-LOG_FILE="/workspace/storage/logs/${LOG_BASENAME}"
+LOG_FILE="/workspace/storage/docker_logs/${LOG_BASENAME}"
 
 mkdir -p \
-  "${STORAGE_DIR}" \
-  "${STORAGE_DIR}/runs" \
-  "${STORAGE_DIR}/logs" \
+  "${STORAGE_DIR}/training_runs" \
+  "${STORAGE_DIR}/evaluation_runs" \
+  "${STORAGE_DIR}/comparison_reports" \
+  "${STORAGE_DIR}/docker_logs" \
   "${STORAGE_DIR}/tmp" \
   "${DOCKER_HOME}"
 
@@ -36,9 +39,6 @@ else
   PYTHON_COMMAND="python '/workspace/repo/${SCRIPT_PATH}'"
 fi
 
-# ----------------------------------------------------------------------
-# Create runtime user mapping for container
-# ----------------------------------------------------------------------
 cat > "${DOCKER_HOME}/passwd" <<PASSWD
 root:x:0:0:root:/root:/bin/bash
 rino:x:$(id -u):$(id -g):Rino Albertin:/workspace/storage/.docker_home:/bin/bash
@@ -51,39 +51,33 @@ GROUP
 
 chmod 644 "${DOCKER_HOME}/passwd" "${DOCKER_HOME}/group"
 
-# ----------------------------------------------------------------------
-# Load W&B key if available
-# ----------------------------------------------------------------------
 WANDB_API_KEY_VALUE="${WANDB_API_KEY:-}"
 if [ -z "${WANDB_API_KEY_VALUE}" ] && [ -f "${HOME}/wandb_key.txt" ]; then
   WANDB_API_KEY_VALUE="$(tr -d '\r\n' < "${HOME}/wandb_key.txt")"
 fi
+
 WANDB_ENV_ARGS=()
 if [ -n "${WANDB_API_KEY_VALUE}" ]; then
   WANDB_ENV_ARGS+=("-e" "WANDB_API_KEY=${WANDB_API_KEY_VALUE}")
 fi
 
-# ----------------------------------------------------------------------
-# Optional SSH mount for Git operations
-# ----------------------------------------------------------------------
 SSH_ARGS=()
 if [ -d "${HOME}/.ssh" ]; then
   SSH_ARGS=(-v "${HOME}/.ssh:/workspace/storage/.docker_home/.ssh:ro")
 fi
 
-# ----------------------------------------------------------------------
-# Run job inside Docker
-# ----------------------------------------------------------------------
 docker run --rm \
-  --gpus "\"device=${GPU_ID}\"" \
+  --gpus "device=${GPU_ID}" \
   --user "$(id -u):$(id -g)" \
   --shm-size=16G \
   --workdir /workspace/repo \
   -e HOME=/workspace/storage/.docker_home \
   -e PROJECT_ROOT=/workspace/repo \
   -e STORAGE_ROOT=/workspace/storage \
-  -e RUNS_DIR=/workspace/storage/runs \
-  -e LOGS_DIR=/workspace/storage/logs \
+  -e TRAINING_RUNS_DIR=/workspace/storage/training_runs \
+  -e EVALUATION_RUNS_DIR=/workspace/storage/evaluation_runs \
+  -e COMPARISON_REPORTS_DIR=/workspace/storage/comparison_reports \
+  -e DOCKER_LOGS_DIR=/workspace/storage/docker_logs \
   -e TMP_DIR=/workspace/storage/tmp \
   "${WANDB_ENV_ARGS[@]}" \
   -e PYTHONPATH=/workspace/repo \
@@ -94,4 +88,4 @@ docker run --rm \
   -v "${STORAGE_DIR}:/workspace/storage:rw" \
   "${SSH_ARGS[@]}" \
   "${IMAGE_NAME}" \
-  bash -lc "ln -sfnT /workspace/storage /workspace/repo/storage && mkdir -p /workspace/storage/logs && ${PYTHON_COMMAND} \"\$@\" > '${LOG_FILE}' 2>&1" -- "$@"
+  bash -lc "ln -sfnT /workspace/storage /workspace/repo/storage && mkdir -p /workspace/storage/docker_logs && ${PYTHON_COMMAND} \"\$@\" > '${LOG_FILE}' 2>&1" -- "$@"
