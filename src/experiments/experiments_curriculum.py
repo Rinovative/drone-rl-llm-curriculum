@@ -27,12 +27,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from src import validation
+from src import experiments, validation
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-from . import experiments_config
 
 TASKS_KEY = "tasks"
 VALIDATION_LIMITS_KEY = "validation_limits"
@@ -168,7 +166,7 @@ def summarize_config_path(path: str | Path) -> CurriculumValidationSummary:
         Per-task deterministic validation results and aggregate counts.
 
     """
-    loaded_config = experiments_config.load_experiment_config(path)
+    loaded_config = experiments.config.load_experiment_config(path)
     return summarize_config_tasks(loaded_config)
 
 

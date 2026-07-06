@@ -30,9 +30,7 @@ from typing import Any
 
 import numpy as np
 
-from src import envs, utils
-
-from . import experiments_config
+from src import envs, experiments, utils
 
 DEFAULT_TRAINING_CONFIG_PATH = Path("configs/smoke/training_smoke.yaml")
 DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
@@ -128,7 +126,7 @@ def load_training_smoke_settings(path: str | Path) -> TrainingSmokeSettings:
         Validated settings with paths expanded as ``Path`` objects.
 
     """
-    config = experiments_config.load_experiment_config(path)
+    config = experiments.config.load_experiment_config(path)
     return _settings_from_mapping(config)
 
 
@@ -266,7 +264,7 @@ def _settings_from_mapping(config: dict[str, Any]) -> TrainingSmokeSettings:
 
 def _load_task(task_config_path: Path, task_index: int) -> dict[str, Any]:
     """Load and return a copied task from a task config path."""
-    config = experiments_config.load_experiment_config(task_config_path)
+    config = experiments.config.load_experiment_config(task_config_path)
     tasks = config.get("tasks")
     if not isinstance(tasks, list):
         message = "task config must contain a top-level tasks list"

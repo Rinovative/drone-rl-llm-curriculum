@@ -27,9 +27,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src import evaluation
-
-from . import experiments_config, experiments_training_smoke
+from src import evaluation, experiments
 
 DEFAULT_OUTPUT_DIR = Path("storage/results/mvp_smoke")
 DEFAULT_MAX_STEPS = 16
@@ -38,7 +36,7 @@ DEFAULT_MAX_STEPS = 16
 def build_parser() -> argparse.ArgumentParser:
     """Build the MVP CLI argument parser."""
     parser = argparse.ArgumentParser(description="Run or print the tiny deterministic MVP smoke sequence.")
-    parser.add_argument("--config", type=Path, default=experiments_training_smoke.DEFAULT_TRAINING_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=experiments.training_smoke.DEFAULT_TRAINING_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
@@ -48,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_repro_commands(
-    config_path: Path = experiments_training_smoke.DEFAULT_TRAINING_CONFIG_PATH,
+    config_path: Path = experiments.training_smoke.DEFAULT_TRAINING_CONFIG_PATH,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     max_steps: int = DEFAULT_MAX_STEPS,
 ) -> list[str]:
@@ -78,7 +76,7 @@ def build_repro_commands(
 
 
 def run_mvp_sequence(
-    config_path: Path = experiments_training_smoke.DEFAULT_TRAINING_CONFIG_PATH,
+    config_path: Path = experiments.training_smoke.DEFAULT_TRAINING_CONFIG_PATH,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     max_steps: int = DEFAULT_MAX_STEPS,
     task_index: int | None = None,
@@ -107,13 +105,13 @@ def run_mvp_sequence(
 
     """
     _ensure_prerequisites()
-    training_result = experiments_training_smoke.run_training_smoke_from_config(
+    training_result = experiments.training_smoke.run_training_smoke_from_config(
         config_path=config_path,
         output_dir=output_dir,
         max_steps=max_steps,
         task_index=task_index,
     )
-    settings = experiments_training_smoke.load_training_smoke_settings(config_path)
+    settings = experiments.training_smoke.load_training_smoke_settings(config_path)
     selected_task_index = settings.task_index if task_index is None else task_index
     task = _load_task(settings.task_config_path, selected_task_index)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -170,8 +168,8 @@ def main(argv: list[str] | None = None) -> int:
 def _ensure_prerequisites() -> None:
     """Raise a clear error if required MVP helper modules are unavailable."""
     missing: list[str] = []
-    if not hasattr(experiments_training_smoke, "run_training_smoke_from_config"):
-        missing.append("experiments_training_smoke.run_training_smoke_from_config")
+    if not hasattr(experiments.training_smoke, "run_training_smoke_from_config"):
+        missing.append("experiments.training_smoke.run_training_smoke_from_config")
     if not hasattr(evaluation, "rollout"):
         missing.append("evaluation.rollout")
     if not hasattr(evaluation, "plots"):
@@ -183,7 +181,7 @@ def _ensure_prerequisites() -> None:
 
 def _load_task(task_config_path: Path, task_index: int) -> dict[str, Any]:
     """Load a copied task mapping for CLI orchestration."""
-    config = experiments_config.load_experiment_config(task_config_path)
+    config = experiments.config.load_experiment_config(task_config_path)
     tasks = config.get("tasks")
     if not isinstance(tasks, list):
         message = "task config must contain a top-level tasks list"

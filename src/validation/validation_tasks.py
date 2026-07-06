@@ -28,9 +28,7 @@ from typing import Any
 
 import numpy as np
 
-from src import trajectories
-
-from . import validation_contracts as contracts
+from src import trajectories, validation
 
 MIN_TRAJECTORY_SAMPLES = 2
 POSITION_ARRAY_NDIM = 2
@@ -109,22 +107,22 @@ def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = Non
 
     """
     active_limits = limits or ValidationLimits()
-    if task.get(contracts.FIELD_TASK_TYPE) != contracts.TASK_TYPE_TRAJECTORY:
-        return _invalid(f"{contracts.FIELD_TASK_TYPE} must be '{contracts.TASK_TYPE_TRAJECTORY}'")
+    if task.get(validation.contracts.FIELD_TASK_TYPE) != validation.contracts.TASK_TYPE_TRAJECTORY:
+        return _invalid(f"{validation.contracts.FIELD_TASK_TYPE} must be '{validation.contracts.TASK_TYPE_TRAJECTORY}'")
 
-    shape = task.get(contracts.FIELD_SHAPE)
-    if shape == contracts.SHAPE_HOVER:
+    shape = task.get(validation.contracts.FIELD_SHAPE)
+    if shape == validation.contracts.SHAPE_HOVER:
         return _validate_built_task(_build_hover_trajectory(task), active_limits)
-    if shape == contracts.SHAPE_CIRCLE:
+    if shape == validation.contracts.SHAPE_CIRCLE:
         return _validate_built_task(_build_circle_trajectory(task), active_limits)
-    if shape == contracts.SHAPE_LINE:
+    if shape == validation.contracts.SHAPE_LINE:
         return _validate_built_task(_build_line_trajectory(task), active_limits)
-    if shape == contracts.SHAPE_VERTICAL:
+    if shape == validation.contracts.SHAPE_VERTICAL:
         return _validate_built_task(_build_vertical_trajectory(task), active_limits)
-    if shape == contracts.SHAPE_POLYLINE:
+    if shape == validation.contracts.SHAPE_POLYLINE:
         return _validate_built_task(_build_polyline_trajectory(task), active_limits)
-    supported_shapes = ", ".join(contracts.SUPPORTED_TRAJECTORY_SHAPES)
-    return _invalid(f"{contracts.FIELD_SHAPE} must be one of: {supported_shapes}")
+    supported_shapes = ", ".join(validation.contracts.SUPPORTED_TRAJECTORY_SHAPES)
+    return _invalid(f"{validation.contracts.FIELD_SHAPE} must be one of: {supported_shapes}")
 
 
 def validate_trajectory(trajectory: trajectories.primitives.Trajectory, limits: ValidationLimits | None = None) -> ValidationResult:
@@ -186,9 +184,9 @@ def _validate_built_task(
 def _build_hover_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
     """Build a hover trajectory from a task mapping, returning messages on failure."""
     try:
-        duration_sec = _require_float(task, contracts.FIELD_DURATION_SEC)
-        sample_rate_hz = _require_float(task, contracts.FIELD_SAMPLE_RATE_HZ)
-        position = _require_sequence(task, contracts.FIELD_POSITION)
+        duration_sec = _require_float(task, validation.contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        position = _require_sequence(task, validation.contracts.FIELD_POSITION)
         trajectory = trajectories.primitives.make_hover_trajectory(
             position=position,
             duration_sec=duration_sec,
@@ -202,12 +200,12 @@ def _build_hover_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primi
 def _build_circle_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
     """Build a circle trajectory from a task mapping, returning messages on failure."""
     try:
-        duration_sec = _require_float(task, contracts.FIELD_DURATION_SEC)
-        sample_rate_hz = _require_float(task, contracts.FIELD_SAMPLE_RATE_HZ)
-        radius = _require_float(task, contracts.FIELD_RADIUS)
-        height = _require_float(task, contracts.FIELD_HEIGHT)
-        center = _optional_sequence(task, contracts.FIELD_CENTER, default=(0.0, 0.0))
-        clockwise = bool(task.get(contracts.FIELD_CLOCKWISE, False))
+        duration_sec = _require_float(task, validation.contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        radius = _require_float(task, validation.contracts.FIELD_RADIUS)
+        height = _require_float(task, validation.contracts.FIELD_HEIGHT)
+        center = _optional_sequence(task, validation.contracts.FIELD_CENTER, default=(0.0, 0.0))
+        clockwise = bool(task.get(validation.contracts.FIELD_CLOCKWISE, False))
         trajectory = trajectories.primitives.make_circle_trajectory(
             radius=radius,
             height=height,
@@ -224,10 +222,10 @@ def _build_circle_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.prim
 def _build_line_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
     """Build a line trajectory from a task mapping, returning messages on failure."""
     try:
-        duration_sec = _require_float(task, contracts.FIELD_DURATION_SEC)
-        sample_rate_hz = _require_float(task, contracts.FIELD_SAMPLE_RATE_HZ)
-        start = _require_sequence(task, contracts.FIELD_START)
-        end = _require_sequence(task, contracts.FIELD_END)
+        duration_sec = _require_float(task, validation.contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        start = _require_sequence(task, validation.contracts.FIELD_START)
+        end = _require_sequence(task, validation.contracts.FIELD_END)
         trajectory = trajectories.primitives.make_line_trajectory(
             start=start,
             end=end,
@@ -242,11 +240,11 @@ def _build_line_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primit
 def _build_vertical_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
     """Build a vertical trajectory from a task mapping, returning messages on failure."""
     try:
-        duration_sec = _require_float(task, contracts.FIELD_DURATION_SEC)
-        sample_rate_hz = _require_float(task, contracts.FIELD_SAMPLE_RATE_HZ)
-        xy = _require_sequence(task, contracts.FIELD_XY)
-        start_height = _require_float(task, contracts.FIELD_START_HEIGHT)
-        end_height = _require_float(task, contracts.FIELD_END_HEIGHT)
+        duration_sec = _require_float(task, validation.contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        xy = _require_sequence(task, validation.contracts.FIELD_XY)
+        start_height = _require_float(task, validation.contracts.FIELD_START_HEIGHT)
+        end_height = _require_float(task, validation.contracts.FIELD_END_HEIGHT)
         trajectory = trajectories.primitives.make_vertical_trajectory(
             xy=xy,
             start_height=start_height,
@@ -262,9 +260,9 @@ def _build_vertical_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.pr
 def _build_polyline_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
     """Build a polyline trajectory from a task mapping, returning messages on failure."""
     try:
-        duration_sec = _require_float(task, contracts.FIELD_DURATION_SEC)
-        sample_rate_hz = _require_float(task, contracts.FIELD_SAMPLE_RATE_HZ)
-        points = _require_sequence(task, contracts.FIELD_POINTS)
+        duration_sec = _require_float(task, validation.contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        points = _require_sequence(task, validation.contracts.FIELD_POINTS)
         trajectory = trajectories.primitives.make_polyline_trajectory(
             points=points,
             duration_sec=duration_sec,

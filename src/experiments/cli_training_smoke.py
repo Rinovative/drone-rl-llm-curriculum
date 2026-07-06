@@ -25,13 +25,13 @@ import argparse
 import json
 from pathlib import Path
 
-from . import experiments_training_smoke as training_smoke
+from src import experiments
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the training-smoke CLI parser."""
     parser = argparse.ArgumentParser(description="Run a tiny deterministic MVP training smoke loop.")
-    parser.add_argument("--config", type=Path, default=training_smoke.DEFAULT_TRAINING_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=experiments.training_smoke.DEFAULT_TRAINING_CONFIG_PATH)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--task-index", type=int, default=None)
@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the training-smoke CLI and return a process status code."""
     args = build_parser().parse_args(argv)
-    result = training_smoke.run_training_smoke_from_config(
+    result = experiments.training_smoke.run_training_smoke_from_config(
         config_path=args.config,
         output_dir=args.output_dir,
         max_steps=args.max_steps,

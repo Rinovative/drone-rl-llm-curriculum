@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from . import evaluation_trajectory_metrics as trajectory_metrics
+from src import evaluation
 
 if TYPE_CHECKING:
     from src import trajectories
@@ -82,7 +82,7 @@ def write_trajectory_comparison(
         Output path, output kind, and sample count.
 
     """
-    errors = trajectory_metrics.compute_position_errors(reference=reference, actual=actual)
+    errors = evaluation.trajectory_metrics.compute_position_errors(reference=reference, actual=actual)
     resolved_path = Path(output_path)
     if force_fallback:
         return _write_json_fallback(reference=reference, actual=actual, errors=errors, output_path=resolved_path)

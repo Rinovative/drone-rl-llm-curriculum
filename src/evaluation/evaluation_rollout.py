@@ -29,9 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from src import envs, trajectories, utils
-
-from . import evaluation_trajectory_metrics as trajectory_metrics
+from src import envs, evaluation, trajectories, utils
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -117,7 +115,7 @@ def evaluate_task_rollout(
         times=np.array(reference.times, dtype=float, copy=True),
         positions=actual_positions,
     )
-    summary = trajectory_metrics.summarize_tracking_error(reference=reference, actual=actual)
+    summary = evaluation.trajectory_metrics.summarize_tracking_error(reference=reference, actual=actual)
     metrics = _metrics_to_dict(summary, reference_data.shape)
     metrics["offset_xyz_m"] = [float(value) for value in offset_array]
     metrics["lag_steps"] = lag_steps
@@ -190,7 +188,7 @@ def _make_actual_positions(reference_positions: np.ndarray, offset_array: np.nda
     return lagged
 
 
-def _metrics_to_dict(summary: trajectory_metrics.TrajectoryMetricSummary, shape: str) -> dict[str, Any]:
+def _metrics_to_dict(summary: evaluation.trajectory_metrics.TrajectoryMetricSummary, shape: str) -> dict[str, Any]:
     """Convert trajectory metric summary to a JSON-serializable dictionary."""
     return {
         "task_shape": shape,

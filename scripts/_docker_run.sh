@@ -31,6 +31,14 @@ if [ ! -f "${SCRIPT_HOST_PATH}" ]; then
   exit 1
 fi
 
+if [[ "${SCRIPT_PATH}" == src/*.py ]]; then
+  MODULE_NAME="${SCRIPT_PATH%.py}"
+  MODULE_NAME="${MODULE_NAME//\//.}"
+  PYTHON_COMMAND="python -m ${MODULE_NAME}"
+else
+  PYTHON_COMMAND="python '/workspace/repo/${SCRIPT_PATH}'"
+fi
+
 # ----------------------------------------------------------------------
 # Create runtime user mapping for container
 # ----------------------------------------------------------------------
@@ -93,4 +101,4 @@ docker run --rm \
   -v "${STORAGE_DIR}:/workspace/storage:rw" \
   "${SSH_ARGS[@]}" \
   "${IMAGE_NAME}" \
-  bash -lc "ln -sfn /workspace/storage /workspace/repo/storage && mkdir -p /workspace/storage/logs && python '/workspace/repo/${SCRIPT_PATH}' \"\$@\" > '${LOG_FILE}' 2>&1" -- "$@"
+  bash -lc "ln -sfn /workspace/storage /workspace/repo/storage && mkdir -p /workspace/storage/logs && ${PYTHON_COMMAND} \"\$@\" > '${LOG_FILE}' 2>&1" -- "$@"
