@@ -1,0 +1,35 @@
+scenario_name: scripted_reference_circle_polyline
+task_config_path: configs/smoke/trajectory_validation.yaml
+
+controller: scripted_reference
+
+max_steps: 240
+seed: 0
+final_hold_sec: 2.0
+
+camera:
+  mode: follow_external
+  distance: 1.15
+  yaw: 40
+  pitch: -23
+
+phases:
+  - name: small_circle
+    type: circle
+    start_mode: initial
+    duration_sec: 8.0
+    radius_m: 0.25
+    center_offset: [0.0, 0.25, 0.0]
+    plane: xy
+    direction: ccw
+    revolutions: 1.0
+    start_angle_deg: -90.0
+
+  - name: custom_polyline_exit
+    type: polyline
+    start_mode: previous_end
+    duration_sec: 8.0
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [0.35, -0.15, 0.0]
+      - [0.65, 0.25, 0.0]

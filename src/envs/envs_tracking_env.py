@@ -68,6 +68,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         Optional validation limits used when ``task`` is a mapping.
     max_steps
         Optional maximum number of wrapper steps before trajectory termination.
+    episode_len_sec
+        Optional upstream HoverAviary episode duration in seconds.
 
     Notes
     -----
@@ -84,12 +86,13 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         record: bool = False,
         limits: validation.tasks.ValidationLimits | None = None,
         max_steps: int | None = None,
+        episode_len_sec: float | None = None,
     ) -> None:
         """Initialize the tracking wrapper and its base HoverAviary environment."""
         super().__init__()
         self.metadata = {"render_modes": []}
         self.reference = _coerce_task_reference(task=task, limits=limits)
-        self.base_env = _make_tracking_base_env(gui=gui, record=record)
+        self.base_env = _make_tracking_base_env(gui=gui, record=record, episode_len_sec=episode_len_sec)
         self._tracking_action_space = _make_tracking_action_space(self.reference, self.base_env.action_space)
         self.action_space = self._tracking_action_space
         self.observation_space = spaces.Box(
@@ -324,6 +327,7 @@ def make_trajectory_tracking_env(
     record: bool = False,
     limits: validation.tasks.ValidationLimits | None = None,
     max_steps: int | None = None,
+    episode_len_sec: float | None = None,
 ) -> TrajectoryTrackingEnv:
     """
     Build a ready-to-use minimal trajectory-tracking environment.
@@ -340,6 +344,8 @@ def make_trajectory_tracking_env(
         Optional validation limits used when ``task`` is a mapping.
     max_steps
         Optional maximum number of wrapper steps before trajectory termination.
+    episode_len_sec
+        Optional upstream HoverAviary episode duration in seconds.
 
     Returns
     -------
@@ -347,7 +353,14 @@ def make_trajectory_tracking_env(
         Ready-to-use Gymnasium-compatible tracking environment.
 
     """
-    return TrajectoryTrackingEnv(task=task, gui=gui, record=record, limits=limits, max_steps=max_steps)
+    return TrajectoryTrackingEnv(
+        task=task,
+        gui=gui,
+        record=record,
+        limits=limits,
+        max_steps=max_steps,
+        episode_len_sec=episode_len_sec,
+    )
 
 
 def _make_tracking_action_space(
@@ -445,12 +458,18 @@ def _termination_reason(
     return "running"
 
 
-def _make_tracking_base_env(gui: bool, record: bool) -> Any:
+def _make_tracking_base_env(gui: bool, record: bool, episode_len_sec: float | None = None) -> Any:
     """Build the HoverAviary instance used by trajectory tracking."""
     from gym_pybullet_drones.envs.HoverAviary import HoverAviary  # noqa: PLC0415
     from gym_pybullet_drones.utils.enums import ActionType, ObservationType  # noqa: PLC0415
 
-    return HoverAviary(gui=gui, record=record, obs=ObservationType.KIN, act=ActionType.PID)
+    base_env = HoverAviary(gui=gui, record=record, obs=ObservationType.KIN, act=ActionType.PID)
+    if episode_len_sec is not None:
+        if not np.isfinite(float(episode_len_sec)) or float(episode_len_sec) <= 0.0:
+            message = "episode_len_sec must be finite and positive when provided"
+            raise ValueError(message)
+        base_env.EPISODE_LEN_SEC = float(episode_len_sec)
+    return base_env
 
 
 def _coerce_task_reference(

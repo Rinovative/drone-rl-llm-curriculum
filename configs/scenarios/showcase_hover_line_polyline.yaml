@@ -1,0 +1,38 @@
+scenario_name: showcase_hover_line_polyline
+task_config_path: configs/smoke/trajectory_validation.yaml
+
+controller: ppo
+model_run_name: ppo_line_100k_seed0
+
+max_steps: 300
+seed: 0
+final_hold_sec: 2.0
+
+camera:
+  mode: follow_external
+  distance: 1.15
+  yaw: 40
+  pitch: -23
+
+phases:
+  - name: hover_start
+    type: hover
+    duration_sec: 3.0
+    start_mode: initial
+    hold_current_position: true
+
+  - name: line_forward
+    type: line
+    duration_sec: 8.0
+    start_mode: previous_end
+    delta_position: [1.0, 0.0, 0.0]
+
+  - name: polyline_turns
+    type: polyline
+    duration_sec: 12.0
+    start_mode: previous_end
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [0.4, 0.0, 0.0]
+      - [0.4, 0.4, 0.0]
+      - [0.7, 0.4, 0.0]
