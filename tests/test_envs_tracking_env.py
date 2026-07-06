@@ -1,0 +1,112 @@
+"""Tests for the minimal Gymnasium trajectory-tracking environment."""
+
+# ruff: noqa: S101
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from src import envs, validation
+
+
+def _hover_task() -> dict[str, object]:
+    """Return a valid hover task for tracking environment tests."""
+    contracts = validation.contracts
+    return {
+        contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+        contracts.FIELD_SHAPE: contracts.SHAPE_HOVER,
+        contracts.FIELD_DURATION_SEC: 2.0,
+        contracts.FIELD_SAMPLE_RATE_HZ: 5.0,
+        contracts.FIELD_POSITION: [0.0, 0.0, 1.0],
+    }
+
+
+def _circle_task() -> dict[str, object]:
+    """Return a valid circle task for tracking environment tests."""
+    contracts = validation.contracts
+    return {
+        contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+        contracts.FIELD_SHAPE: contracts.SHAPE_CIRCLE,
+        contracts.FIELD_DURATION_SEC: 8.0,
+        contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+        contracts.FIELD_RADIUS: 0.5,
+        contracts.FIELD_HEIGHT: 1.0,
+        contracts.FIELD_CENTER: [0.0, 0.0],
+    }
+
+
+def test_tracking_env_imports_through_package_alias() -> None:
+    """Verify tracking environment helpers are exposed by the envs package."""
+    assert envs.tracking_env.TrajectoryTrackingEnv is not None
+    assert envs.tracking_env.make_trajectory_tracking_env is not None
+
+
+def test_tracking_env_reset_returns_compact_observation_and_info() -> None:
+    """Verify reset returns the requested compact observation contract."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(_hover_task(), gui=False, record=False)
+    try:
+        observation, info = tracking_env.reset(seed=0)
+
+        assert observation.shape == (10,)
+        assert observation.dtype == np.float32
+        assert tracking_env.observation_space.contains(observation)
+        assert isinstance(info, dict)
+    finally:
+        tracking_env.close()
+
+
+def test_tracking_env_steps_once_with_sampled_action_and_diagnostics() -> None:
+    """Verify one valid base action advances the wrapper and returns diagnostics."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(_hover_task(), gui=False, record=False)
+    try:
+        tracking_env.reset(seed=0)
+        action = tracking_env.action_space.sample()
+        observation, reward, terminated, truncated, info = tracking_env.step(action)
+
+        assert observation.shape == (10,)
+        assert tracking_env.observation_space.contains(observation)
+        assert np.isfinite(reward)
+        assert isinstance(terminated, bool)
+        assert isinstance(truncated, bool)
+        assert "position_error_m" in info
+        assert "reference_position" in info
+        assert "current_position" in info
+        assert "task_shape" in info
+        assert "tracking_success" in info
+        assert "base_reward" in info
+        assert info["task_shape"] == validation.contracts.SHAPE_HOVER
+        assert np.asarray(info["reference_position"]).shape == (3,)
+        assert np.asarray(info["current_position"]).shape == (3,)
+    finally:
+        tracking_env.close()
+
+
+def test_tracking_env_close_works_without_error() -> None:
+    """Verify close can be called more than once without surfacing errors."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(_hover_task(), gui=False, record=False)
+
+    tracking_env.close()
+    tracking_env.close()
+
+
+def test_tracking_env_invalid_task_raises_value_error() -> None:
+    """Verify invalid mappings are rejected before simulator construction."""
+    task = _hover_task()
+    task[validation.contracts.FIELD_POSITION] = [3.0, 0.0, 1.0]
+
+    with pytest.raises(ValueError, match="invalid trajectory task"):
+        envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
+
+
+def test_circle_task_can_reset_headlessly() -> None:
+    """Verify a non-hover trajectory can create and reset the wrapper."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(_circle_task(), gui=False, record=False)
+    try:
+        observation, info = tracking_env.reset(seed=0)
+
+        assert observation.shape == (10,)
+        assert tracking_env.observation_space.contains(observation)
+        assert info["task_shape"] == validation.contracts.SHAPE_CIRCLE
+    finally:
+        tracking_env.close()
