@@ -18,6 +18,11 @@ venv/
 .idea/
 .DS_Store
 
+# Local LLM / Aider workflow state
+_llm_workflow/
+_llm_tasks/
+.aider*
+
 # External storage symlink
 storage
 

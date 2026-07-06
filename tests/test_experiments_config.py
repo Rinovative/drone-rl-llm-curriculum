@@ -10,7 +10,8 @@ import pytest
 
 from src import experiments, validation
 
-EXPECTED_SMOKE_TASK_COUNT = 2
+EXPECTED_SMOKE_TASK_COUNT = 5
+REQUIRED_SHAPES = {"hover", "circle", "line", "vertical", "polyline"}
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -23,6 +24,11 @@ def test_smoke_config_loads_and_contains_valid_tasks() -> None:
     assert config["name"] == "trajectory_validation_smoke"
     assert config["seed"] == 0
     assert len(config["tasks"]) == EXPECTED_SMOKE_TASK_COUNT
+
+    shapes = [task["shape"] for task in config["tasks"]]
+    assert set(shapes) == REQUIRED_SHAPES, f"Expected shapes {REQUIRED_SHAPES}, but got {set(shapes)}"
+    for shape in REQUIRED_SHAPES:
+        assert shapes.count(shape) == 1
 
     limits = validation.tasks.ValidationLimits(**config["validation_limits"])
     for task in config["tasks"]:

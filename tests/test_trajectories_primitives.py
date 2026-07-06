@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from src import trajectories
 
@@ -40,3 +41,156 @@ def test_circle_trajectory_uses_radius_height_and_center() -> None:
     assert trajectory.positions.shape == (33, 3)
     np.testing.assert_allclose(radii, 0.75, atol=1e-12)
     np.testing.assert_allclose(trajectory.positions[:, 2], 1.2)
+
+
+def test_line_trajectory_has_correct_shape_and_points() -> None:
+    """Verify line trajectories have the correct shape and start/end points."""
+    trajectory = trajectories.primitives.make_line_trajectory(
+        start=(0.0, 0.0, 0.0),
+        end=(1.0, 1.0, 1.0),
+        duration_sec=2.0,
+        sample_rate_hz=4.0,
+    )
+
+    assert trajectory.times.shape == (9,)
+    assert trajectory.positions.shape == (9, 3)
+    np.testing.assert_allclose(trajectory.positions[0], np.array([0.0, 0.0, 0.0]))
+    np.testing.assert_allclose(trajectory.positions[-1], np.array([1.0, 1.0, 1.0]))
+    assert np.all(np.isfinite(trajectory.positions))
+
+
+def test_line_trajectory_invalid_start() -> None:
+    """Verify line trajectories raise ValueError for invalid start positions."""
+    with pytest.raises(ValueError, match="start must contain exactly 3 values"):
+        trajectories.primitives.make_line_trajectory(
+            start=(0.0, 0.0),
+            end=(1.0, 1.0, 1.0),
+            duration_sec=2.0,
+            sample_rate_hz=4.0,
+        )
+
+
+def test_line_trajectory_invalid_end() -> None:
+    """Verify line trajectories raise ValueError for invalid end positions."""
+    with pytest.raises(ValueError, match="end must contain exactly 3 values"):
+        trajectories.primitives.make_line_trajectory(
+            start=(0.0, 0.0, 0.0),
+            end=(1.0, 1.0),
+            duration_sec=2.0,
+            sample_rate_hz=4.0,
+        )
+
+
+def test_vertical_trajectory_has_correct_shape_and_points() -> None:
+    """Verify vertical trajectories have the correct shape and start/end points."""
+    trajectory = trajectories.primitives.make_vertical_trajectory(
+        xy=(0.25, -0.5),
+        start_height=0.8,
+        end_height=1.4,
+        duration_sec=2.0,
+        sample_rate_hz=5.0,
+    )
+
+    assert trajectory.times.shape == (11,)
+    assert trajectory.positions.shape == (11, 3)
+    np.testing.assert_allclose(trajectory.positions[0], np.array([0.25, -0.5, 0.8]))
+    np.testing.assert_allclose(trajectory.positions[-1], np.array([0.25, -0.5, 1.4]))
+    assert np.all(np.isfinite(trajectory.positions))
+
+
+def test_vertical_trajectory_invalid_xy() -> None:
+    """Verify vertical trajectories raise ValueError for invalid XY positions."""
+    with pytest.raises(ValueError, match="xy must contain exactly 2 values"):
+        trajectories.primitives.make_vertical_trajectory(
+            xy=(0.25,),
+            start_height=0.8,
+            end_height=1.4,
+            duration_sec=2.0,
+            sample_rate_hz=5.0,
+        )
+
+
+def test_vertical_trajectory_invalid_start_height() -> None:
+    """Verify vertical trajectories raise ValueError for invalid start heights."""
+    with pytest.raises(ValueError, match="start_height must be finite"):
+        trajectories.primitives.make_vertical_trajectory(
+            xy=(0.25, -0.5),
+            start_height=float("inf"),
+            end_height=1.4,
+            duration_sec=2.0,
+            sample_rate_hz=5.0,
+        )
+
+
+def test_vertical_trajectory_invalid_end_height() -> None:
+    """Verify vertical trajectories raise ValueError for invalid end heights."""
+    with pytest.raises(ValueError, match="end_height must be finite"):
+        trajectories.primitives.make_vertical_trajectory(
+            xy=(0.25, -0.5),
+            start_height=0.8,
+            end_height=float("nan"),
+            duration_sec=2.0,
+            sample_rate_hz=5.0,
+        )
+
+
+def test_polyline_trajectory_interpolates_by_path_length() -> None:
+    """Verify polyline trajectories sample waypoints by cumulative path length."""
+    trajectory = trajectories.primitives.make_polyline_trajectory(
+        points=((0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (2.0, 2.0, 1.0)),
+        duration_sec=4.0,
+        sample_rate_hz=1.0,
+    )
+
+    expected_positions = np.array(
+        [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [2.0, 0.0, 1.0],
+            [2.0, 1.0, 1.0],
+            [2.0, 2.0, 1.0],
+        ]
+    )
+    assert trajectory.times.shape == (5,)
+    assert trajectory.positions.shape == (5, 3)
+    np.testing.assert_allclose(trajectory.positions, expected_positions)
+
+
+def test_polyline_trajectory_rejects_too_few_points() -> None:
+    """Verify polyline trajectories require at least two waypoints."""
+    with pytest.raises(ValueError, match="points must contain at least two waypoints"):
+        trajectories.primitives.make_polyline_trajectory(
+            points=((0.0, 0.0, 1.0),),
+            duration_sec=2.0,
+            sample_rate_hz=4.0,
+        )
+
+
+def test_polyline_trajectory_rejects_wrong_shape() -> None:
+    """Verify polyline trajectories require XYZ waypoints."""
+    with pytest.raises(ValueError, match="points must have shape"):
+        trajectories.primitives.make_polyline_trajectory(
+            points=((0.0, 0.0), (1.0, 1.0)),
+            duration_sec=2.0,
+            sample_rate_hz=4.0,
+        )
+
+
+def test_polyline_trajectory_rejects_nonfinite_points() -> None:
+    """Verify polyline trajectories require finite waypoint values."""
+    with pytest.raises(ValueError, match="points must contain only finite values"):
+        trajectories.primitives.make_polyline_trajectory(
+            points=((0.0, 0.0, 1.0), (1.0, float("nan"), 1.0)),
+            duration_sec=2.0,
+            sample_rate_hz=4.0,
+        )
+
+
+def test_polyline_trajectory_rejects_zero_length_path() -> None:
+    """Verify polyline trajectories reject paths without movement."""
+    with pytest.raises(ValueError, match="points must define a nonzero path length"):
+        trajectories.primitives.make_polyline_trajectory(
+            points=((0.0, 0.0, 1.0), (0.0, 0.0, 1.0)),
+            duration_sec=2.0,
+            sample_rate_hz=4.0,
+        )

@@ -8,6 +8,8 @@ Responsibilities:
   - Represent sampled reference trajectories as time and position arrays
   - Generate hover trajectories at a fixed XYZ position
   - Generate horizontal circle trajectories at a fixed height
+  - Generate line trajectories between two XYZ positions
+  - Generate vertical and polyline trajectories for foundation validation
 
 Design principles:
   - Keep trajectory generation pure and deterministic
@@ -32,6 +34,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 MIN_SAMPLE_COUNT = 2
+POINT_ARRAY_NDIM = 2
+XYZ_DIMENSIONS = 3
 
 
 @dataclass(frozen=True)
@@ -140,6 +144,147 @@ def make_circle_trajectory(
     return Trajectory(times=times, positions=positions)
 
 
+def make_line_trajectory(
+    start: Sequence[float],
+    end: Sequence[float],
+    duration_sec: float,
+    sample_rate_hz: float,
+) -> Trajectory:
+    """
+    Generate a straight line trajectory between two XYZ positions.
+
+    Parameters
+    ----------
+    start
+        XYZ start position in meters.
+    end
+        XYZ end position in meters.
+    duration_sec
+        Total trajectory duration in seconds.
+    sample_rate_hz
+        Number of trajectory samples per second.
+
+    Returns
+    -------
+    Trajectory
+        Sampled line trajectory.
+
+    Raises
+    ------
+    ValueError
+        If any trajectory parameter is invalid.
+
+    """
+    start_array = _as_float_array(start, expected_size=3, name="start")
+    end_array = _as_float_array(end, expected_size=3, name="end")
+    times = _make_times(duration_sec=duration_sec, sample_rate_hz=sample_rate_hz)
+    positions = np.linspace(start_array, end_array, num=times.shape[0], axis=0)
+
+    # Ensure the first and last positions are exactly start and end
+    positions[0] = start_array
+    positions[-1] = end_array
+
+    return Trajectory(times=times, positions=positions)
+
+
+def make_vertical_trajectory(
+    xy: Sequence[float],
+    start_height: float,
+    end_height: float,
+    duration_sec: float,
+    sample_rate_hz: float,
+) -> Trajectory:
+    """
+    Generate a vertical trajectory with fixed XY and interpolated height.
+
+    Parameters
+    ----------
+    xy
+        XY position in meters.
+    start_height
+        Starting Z height in meters.
+    end_height
+        Ending Z height in meters.
+    duration_sec
+        Total trajectory duration in seconds.
+    sample_rate_hz
+        Number of trajectory samples per second.
+
+    Returns
+    -------
+    Trajectory
+        Sampled vertical trajectory.
+
+    Raises
+    ------
+    ValueError
+        If any trajectory parameter is invalid.
+
+    """
+    xy_array = _as_float_array(xy, expected_size=2, name="xy")
+    _ensure_finite(start_height, name="start_height")
+    _ensure_finite(end_height, name="end_height")
+    times = _make_times(duration_sec=duration_sec, sample_rate_hz=sample_rate_hz)
+    positions = np.column_stack(
+        (
+            np.full(times.shape, xy_array[0], dtype=float),
+            np.full(times.shape, xy_array[1], dtype=float),
+            np.linspace(start_height, end_height, num=times.shape[0], dtype=float),
+        )
+    )
+    return Trajectory(times=times, positions=positions)
+
+
+def make_polyline_trajectory(
+    points: Sequence[Sequence[float]],
+    duration_sec: float,
+    sample_rate_hz: float,
+) -> Trajectory:
+    """
+    Generate a trajectory that follows XYZ waypoints at constant path-distance spacing.
+
+    Parameters
+    ----------
+    points
+        Sequence of XYZ waypoints in meters with shape ``(num_points, 3)``.
+    duration_sec
+        Total trajectory duration in seconds.
+    sample_rate_hz
+        Number of trajectory samples per second.
+
+    Returns
+    -------
+    Trajectory
+        Sampled polyline trajectory.
+
+    Raises
+    ------
+    ValueError
+        If the waypoint array, duration, or sample rate is invalid.
+
+    """
+    points_array = _as_points_array(points)
+    times = _make_times(duration_sec=duration_sec, sample_rate_hz=sample_rate_hz)
+
+    segment_lengths = np.linalg.norm(np.diff(points_array, axis=0), axis=1)
+    total_length = float(np.sum(segment_lengths))
+    if total_length <= 0.0:
+        message = "points must define a nonzero path length"
+        raise ValueError(message)
+
+    cumulative_distances = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+    nonzero_waypoint_mask = np.concatenate(([True], segment_lengths > 0.0))
+    interpolation_distances = cumulative_distances[nonzero_waypoint_mask]
+    interpolation_points = points_array[nonzero_waypoint_mask]
+    sample_distances = np.linspace(0.0, total_length, num=times.shape[0], dtype=float)
+    positions = np.column_stack(
+        [np.interp(sample_distances, interpolation_distances, interpolation_points[:, axis]) for axis in range(XYZ_DIMENSIONS)]
+    )
+    positions[0] = points_array[0]
+    positions[-1] = points_array[-1]
+    return Trajectory(times=times, positions=positions)
+
+
 def _make_times(duration_sec: float, sample_rate_hz: float) -> np.ndarray:
     """Create inclusive sample times for a positive duration and sample rate."""
     _ensure_positive(duration_sec, name="duration_sec")
@@ -156,6 +301,21 @@ def _as_float_array(values: Sequence[float], expected_size: int, name: str) -> n
         raise ValueError(message)
     if not np.all(np.isfinite(array)):
         message = f"{name} must contain only finite values"
+        raise ValueError(message)
+    return array
+
+
+def _as_points_array(points: Sequence[Sequence[float]]) -> np.ndarray:
+    """Convert waypoint data into a finite two-dimensional XYZ float array."""
+    array = np.asarray(points, dtype=float)
+    if array.ndim != POINT_ARRAY_NDIM or array.shape[1:] != (XYZ_DIMENSIONS,):
+        message = "points must have shape (num_points, 3)"
+        raise ValueError(message)
+    if array.shape[0] < MIN_SAMPLE_COUNT:
+        message = "points must contain at least two waypoints"
+        raise ValueError(message)
+    if not np.all(np.isfinite(array)):
+        message = "points must contain only finite values"
         raise ValueError(message)
     return array
 

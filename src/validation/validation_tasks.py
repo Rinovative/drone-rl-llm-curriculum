@@ -5,7 +5,7 @@ validation_tasks.py
 Validate simple trajectory tasks before they can enter training or evaluation.
 
 Responsibilities:
-  - Validate minimal hover and circle task dictionaries
+  - Validate minimal hover, circle, line, vertical, and polyline task dictionaries
   - Check sampled trajectories against deterministic feasibility limits
   - Return structured validation results with diagnostic messages
 
@@ -117,6 +117,12 @@ def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = Non
         return _validate_built_task(_build_hover_trajectory(task), active_limits)
     if shape == contracts.SHAPE_CIRCLE:
         return _validate_built_task(_build_circle_trajectory(task), active_limits)
+    if shape == contracts.SHAPE_LINE:
+        return _validate_built_task(_build_line_trajectory(task), active_limits)
+    if shape == contracts.SHAPE_VERTICAL:
+        return _validate_built_task(_build_vertical_trajectory(task), active_limits)
+    if shape == contracts.SHAPE_POLYLINE:
+        return _validate_built_task(_build_polyline_trajectory(task), active_limits)
     supported_shapes = ", ".join(contracts.SUPPORTED_TRAJECTORY_SHAPES)
     return _invalid(f"{contracts.FIELD_SHAPE} must be one of: {supported_shapes}")
 
@@ -215,6 +221,60 @@ def _build_circle_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.prim
     return trajectory, ()
 
 
+def _build_line_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
+    """Build a line trajectory from a task mapping, returning messages on failure."""
+    try:
+        duration_sec = _require_float(task, contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, contracts.FIELD_SAMPLE_RATE_HZ)
+        start = _require_sequence(task, contracts.FIELD_START)
+        end = _require_sequence(task, contracts.FIELD_END)
+        trajectory = trajectories.primitives.make_line_trajectory(
+            start=start,
+            end=end,
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+    except (TypeError, ValueError) as exc:
+        return None, (str(exc),)
+    return trajectory, ()
+
+
+def _build_vertical_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
+    """Build a vertical trajectory from a task mapping, returning messages on failure."""
+    try:
+        duration_sec = _require_float(task, contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, contracts.FIELD_SAMPLE_RATE_HZ)
+        xy = _require_sequence(task, contracts.FIELD_XY)
+        start_height = _require_float(task, contracts.FIELD_START_HEIGHT)
+        end_height = _require_float(task, contracts.FIELD_END_HEIGHT)
+        trajectory = trajectories.primitives.make_vertical_trajectory(
+            xy=xy,
+            start_height=start_height,
+            end_height=end_height,
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+    except (TypeError, ValueError) as exc:
+        return None, (str(exc),)
+    return trajectory, ()
+
+
+def _build_polyline_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
+    """Build a polyline trajectory from a task mapping, returning messages on failure."""
+    try:
+        duration_sec = _require_float(task, contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, contracts.FIELD_SAMPLE_RATE_HZ)
+        points = _require_sequence(task, contracts.FIELD_POINTS)
+        trajectory = trajectories.primitives.make_polyline_trajectory(
+            points=points,
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+    except (TypeError, ValueError) as exc:
+        return None, (str(exc),)
+    return trajectory, ()
+
+
 def _check_position_bounds(positions: np.ndarray, limits: ValidationLimits, messages: list[str]) -> None:
     """Append diagnostic messages for positions outside the configured arena."""
     xy_abs = np.abs(positions[:, :2])
@@ -259,7 +319,7 @@ def _require_float(task: Mapping[str, Any], key: str) -> float:
     return value
 
 
-def _require_sequence(task: Mapping[str, Any], key: str) -> Sequence[float]:
+def _require_sequence(task: Mapping[str, Any], key: str) -> Sequence[Any]:
     """Read a required numeric sequence from a task mapping."""
     if key not in task:
         message = f"{key} is required"
@@ -271,7 +331,7 @@ def _require_sequence(task: Mapping[str, Any], key: str) -> Sequence[float]:
     return value
 
 
-def _optional_sequence(task: Mapping[str, Any], key: str, default: Sequence[float]) -> Sequence[float]:
+def _optional_sequence(task: Mapping[str, Any], key: str, default: Sequence[Any]) -> Sequence[Any]:
     """Read an optional numeric sequence from a task mapping."""
     if key not in task:
         return default

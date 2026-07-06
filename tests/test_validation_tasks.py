@@ -110,3 +110,96 @@ def test_too_fast_circle_fails_validation() -> None:
 
     assert not result.is_valid
     assert any("speed" in message for message in result.messages)
+
+
+def test_valid_line_task_passes_validation() -> None:
+    """Verify a feasible line task is accepted."""
+    contracts = validation.contracts
+    result = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_LINE,
+            contracts.FIELD_DURATION_SEC: 3.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_START: [0.0, 0.0, 1.0],
+            contracts.FIELD_END: [0.5, 0.5, 1.2],
+        }
+    )
+
+    assert result.is_valid
+    assert result.messages == ()
+    assert result.trajectory is not None
+
+
+def test_valid_vertical_task_passes_validation() -> None:
+    """Verify a feasible vertical task is accepted."""
+    contracts = validation.contracts
+    result = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_VERTICAL,
+            contracts.FIELD_DURATION_SEC: 3.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_XY: [0, 0],
+            contracts.FIELD_START_HEIGHT: 0.8,
+            contracts.FIELD_END_HEIGHT: 1.4,
+        }
+    )
+
+    assert result.is_valid
+    assert result.messages == ()
+    assert result.trajectory is not None
+
+
+def test_invalid_vertical_task_fails_validation() -> None:
+    """Verify infeasible vertical tasks are rejected."""
+    contracts = validation.contracts
+    result = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_VERTICAL,
+            contracts.FIELD_DURATION_SEC: 3.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_XY: [0.0, 0.0],
+            contracts.FIELD_START_HEIGHT: 0.8,
+            contracts.FIELD_END_HEIGHT: 3.0,
+        }
+    )
+
+    assert not result.is_valid
+    assert any("height" in message for message in result.messages)
+
+
+def test_valid_polyline_task_passes_validation() -> None:
+    """Verify a feasible polyline task is accepted."""
+    contracts = validation.contracts
+    result = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_POLYLINE,
+            contracts.FIELD_DURATION_SEC: 6.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_POINTS: [[0.0, 0.0, 1.0], [0.5, 0.0, 1.1], [0.5, 0.5, 1.0]],
+        }
+    )
+
+    assert result.is_valid
+    assert result.messages == ()
+    assert result.trajectory is not None
+
+
+def test_invalid_polyline_task_fails_validation() -> None:
+    """Verify invalid polyline task fields are rejected."""
+    contracts = validation.contracts
+    result = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_POLYLINE,
+            contracts.FIELD_DURATION_SEC: 6.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_POINTS: [[0.0, 0.0, 1.0]],
+        }
+    )
+
+    assert not result.is_valid
+    assert any("points" in message for message in result.messages)
