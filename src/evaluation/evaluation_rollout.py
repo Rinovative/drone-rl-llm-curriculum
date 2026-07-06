@@ -8,6 +8,7 @@ Responsibilities:
   - Convert task mappings or task references into comparable trajectory samples
   - Generate deterministic baseline actual trajectories for smoke evaluation
   - Write small JSON rollout metric artifacts under approved results paths
+  - Serialize trained-policy step traces for notebook and report review
 
 Design principles:
   - Reuse trajectory metric helpers for all tracking-error calculations
@@ -32,11 +33,27 @@ import numpy as np
 from src import envs, evaluation, trajectories, utils
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 XYZ_DIMENSIONS = 3
 DEFAULT_OFFSET = (0.05, 0.0, 0.0)
 DEFAULT_OUTPUT_FILENAME = "rollout_metrics.json"
+TRACE_REQUIRED_FIELDS = (
+    "step_index",
+    "time_sec",
+    "reward",
+    "position_error_m",
+    "actual_position_xyz_m",
+    "reference_position_xyz_m",
+    "error_xyz_m",
+    "velocity",
+    "roll_pitch_yaw",
+    "angular_velocity",
+    "action",
+    "terminated",
+    "truncated",
+    "termination_reason",
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +93,27 @@ class RolloutWriteResult:
 
     output_path: str
     metrics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RolloutTraceWriteResult:
+    """
+    Summary returned after writing a trained-policy rollout trace.
+
+    Parameters
+    ----------
+    output_path
+        Path to the written JSONL trace artifact.
+    step_count
+        Number of rollout step records written.
+    columns
+        Sorted union of trace record keys.
+
+    """
+
+    output_path: str
+    step_count: int
+    columns: tuple[str, ...]
 
 
 def evaluate_task_rollout(
@@ -156,6 +194,79 @@ def write_task_rollout_evaluation(
     return RolloutWriteResult(output_path=str(resolved_path), metrics=result.metrics)
 
 
+def write_policy_rollout_trace(
+    trace_records: Sequence[Mapping[str, Any]],
+    output_path: str | Path,
+) -> RolloutTraceWriteResult:
+    """
+    Write a trained-policy rollout trace as newline-delimited JSON.
+
+    Parameters
+    ----------
+    trace_records
+        Per-step rollout dictionaries. Each record must include the required
+        review fields listed in ``TRACE_REQUIRED_FIELDS``.
+    output_path
+        JSONL output path.
+
+    Returns
+    -------
+    RolloutTraceWriteResult
+        Written output path, number of records, and trace columns.
+
+    Raises
+    ------
+    ValueError
+        If the trace is empty or a required field is absent.
+
+    """
+    if not trace_records:
+        message = "trace_records must contain at least one step"
+        raise ValueError(message)
+
+    json_records = [_trace_record_to_json(record) for record in trace_records]
+    for index, record in enumerate(json_records):
+        missing = [field for field in TRACE_REQUIRED_FIELDS if field not in record]
+        if missing:
+            message = f"trace record {index} is missing required fields: {', '.join(missing)}"
+            raise ValueError(message)
+
+    resolved_path = Path(output_path)
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(record, sort_keys=True) for record in json_records]
+    resolved_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    columns = tuple(sorted({key for record in json_records for key in record}))
+    return RolloutTraceWriteResult(output_path=str(resolved_path), step_count=len(json_records), columns=columns)
+
+
+def load_policy_rollout_trace(trace_path: str | Path) -> list[dict[str, Any]]:
+    """
+    Load a trained-policy rollout trace from newline-delimited JSON.
+
+    Parameters
+    ----------
+    trace_path
+        JSONL trace path created by ``write_policy_rollout_trace``.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Per-step rollout records.
+
+    Raises
+    ------
+    ValueError
+        If the trace file contains no records.
+
+    """
+    resolved_path = Path(trace_path)
+    records = [json.loads(line) for line in resolved_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not records:
+        message = "rollout trace contains no records"
+        raise ValueError(message)
+    return records
+
+
 def _as_task_reference(
     task_or_reference: Mapping[str, Any] | envs.task_adapter.EnvironmentTaskReference,
 ) -> envs.task_adapter.EnvironmentTaskReference:
@@ -218,10 +329,32 @@ def _reward_metrics(reference_data: envs.task_adapter.EnvironmentTaskReference, 
     }
 
 
+def _trace_record_to_json(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert a trace record into a JSON-compatible dictionary."""
+    return {str(key): _json_ready(value) for key, value in record.items()}
+
+
+def _json_ready(value: Any) -> Any:
+    """Return a JSON-compatible copy of a rollout trace value."""
+    if isinstance(value, np.ndarray):
+        return _json_ready(value.tolist())
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_ready(nested_value) for key, nested_value in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
+
+
 __all__ = [
     "DEFAULT_OUTPUT_FILENAME",
+    "TRACE_REQUIRED_FIELDS",
     "RolloutEvaluationResult",
+    "RolloutTraceWriteResult",
     "RolloutWriteResult",
     "evaluate_task_rollout",
+    "load_policy_rollout_trace",
+    "write_policy_rollout_trace",
     "write_task_rollout_evaluation",
 ]

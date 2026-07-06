@@ -34,6 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run tiny PPO smoke training on TrajectoryTrackingEnv.")
     parser.add_argument("--config", type=Path, default=experiments.ppo_tracking.DEFAULT_PPO_TRACKING_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
+    parser.add_argument(
+        "--task-shape",
+        type=str,
+        default=None,
+        help="Train on the first configured task with this shape; uses task-index when omitted.",
+    )
+    parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -59,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     result = experiments.ppo_tracking.run_ppo_tracking_smoke_from_config(
         config_path=args.config,
         task_index=args.task_index,
+        task_shape=args.task_shape,
+        run_name=args.run_name,
         total_timesteps=args.total_timesteps,
         eval_steps=args.eval_steps,
         output_dir=args.output_dir,

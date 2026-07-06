@@ -27,7 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import warnings as py_warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,7 @@ from src import envs, experiments, utils
 
 DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/smoke/ppo_tracking_smoke.yaml")
 DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
+DEFAULT_RUN_NAME = "ppo_tracking_smoke"
 DEFAULT_TASK_INDEX = 0
 DEFAULT_TOTAL_TIMESTEPS = 4096
 DEFAULT_EVAL_STEPS = 120
@@ -61,6 +62,10 @@ class PPOTrackingSmokeSettings:
         YAML config containing a top-level list of trajectory tasks.
     task_index
         Zero-based task index selected from the task config.
+    task_shape
+        Optional task-shape selector matched against the configured task list.
+    run_name
+        Optional storage/runs/<run_name> root for model, metrics, and W&B artifacts.
     total_timesteps
         Tiny upper-level PPO learning budget passed to Stable-Baselines3.
     eval_steps
@@ -96,6 +101,8 @@ class PPOTrackingSmokeSettings:
 
     task_config_path: Path = DEFAULT_TASK_CONFIG_PATH
     task_index: int = DEFAULT_TASK_INDEX
+    task_shape: str | None = None
+    run_name: str | None = None
     total_timesteps: int = DEFAULT_TOTAL_TIMESTEPS
     eval_steps: int = DEFAULT_EVAL_STEPS
     seed: int = DEFAULT_SEED
@@ -110,13 +117,18 @@ class PPOTrackingSmokeSettings:
     wandb_group: str | None = None
     wandb_name: str | None = None
     wandb_tags: tuple[str, ...] = ()
-    wandb_dir: Path | None = field(default_factory=utils.wandb.default_wandb_dir)
+    wandb_dir: Path | None = None
 
     def __post_init__(self) -> None:
         """Validate PPO smoke-run settings."""
         if self.task_index < 0:
             message = "task_index must be nonnegative"
             raise ValueError(message)
+        if self.task_shape is not None and not self.task_shape.strip():
+            message = "task_shape must be non-empty when provided"
+            raise ValueError(message)
+        if self.run_name is not None:
+            utils.artifacts.get_run_dir(self.run_name)
         if self.total_timesteps <= 0:
             message = "total_timesteps must be positive"
             raise ValueError(message)
@@ -182,17 +194,17 @@ def load_ppo_tracking_settings(path: str | Path) -> PPOTrackingSmokeSettings:
 
 def default_output_dir() -> Path:
     """Return the default PPO tracking smoke run directory under the run layout."""
-    return utils.artifacts.get_run_dir("ppo_tracking_smoke")
+    return utils.artifacts.get_run_dir(DEFAULT_RUN_NAME)
 
 
 def default_metrics_dir() -> Path:
     """Return the default PPO tracking smoke metrics directory under the run layout."""
-    return utils.artifacts.get_metrics_dir("ppo_tracking_smoke")
+    return utils.artifacts.get_metrics_dir(DEFAULT_RUN_NAME)
 
 
 def default_model_dir() -> Path:
     """Return the default PPO tracking smoke model directory under the run layout."""
-    return utils.artifacts.get_models_dir("ppo_tracking_smoke")
+    return utils.artifacts.get_models_dir(DEFAULT_RUN_NAME)
 
 
 def detect_ppo_tracking_dependencies() -> dict[str, bool]:
@@ -277,9 +289,13 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     dependencies = detect_ppo_tracking_dependencies()
     runtime_info = detect_ppo_runtime_info()
     _require_training_dependencies(dependencies)
-    task = _load_task(active_settings.task_config_path, active_settings.task_index)
+    task, task_source, selected_task_index, selection_warnings = _select_task(
+        task_config_path=active_settings.task_config_path,
+        default_task_index=active_settings.task_index,
+        task_shape=active_settings.task_shape,
+    )
 
-    warnings = list(_check_tracking_env(task) if active_settings.check_env else ())
+    warnings = [*selection_warnings, *(_check_tracking_env(task) if active_settings.check_env else ())]
     diagnostic_steps = min(active_settings.eval_steps, DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS)
     simple_liftoff_diagnostics = run_liftoff_diagnostics(
         task=task,
@@ -312,7 +328,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         )
         wandb_run = utils.wandb.start_wandb_run(
             settings=wandb_settings,
-            config=_wandb_config(active_settings, model_path, metrics_path),
+            config=_wandb_config(active_settings, model_path, metrics_path, selected_task_index, task),
         )
         model.learn(total_timesteps=active_settings.total_timesteps, progress_bar=False)
         model.save(str(model_path))
@@ -336,9 +352,14 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
 
     metrics: dict[str, Any] = {
         "mode": "ppo_smoke",
+        "run_name": _run_name(active_settings),
         "task_config_path": str(active_settings.task_config_path),
-        "task_index": active_settings.task_index,
+        "task_index": selected_task_index,
+        "configured_task_index": active_settings.task_index,
+        "task_source": task_source,
         "task_shape": str(task.get("shape", "unknown")),
+        "training_task_shape": str(task.get("shape", "unknown")),
+        "task_shape_requested": active_settings.task_shape,
         "total_timesteps": active_settings.total_timesteps,
         "eval_steps": active_settings.eval_steps,
         "seed": active_settings.seed,
@@ -374,6 +395,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
 def run_ppo_tracking_smoke_from_config(
     config_path: str | Path = DEFAULT_PPO_TRACKING_CONFIG_PATH,
     task_index: int | None = None,
+    task_shape: str | None = None,
+    run_name: str | None = None,
     total_timesteps: int | None = None,
     eval_steps: int | None = None,
     output_dir: str | Path | None = None,
@@ -396,6 +419,10 @@ def run_ppo_tracking_smoke_from_config(
         YAML settings path.
     task_index
         Optional task-index override.
+    task_shape
+        Optional configured task-shape override.
+    run_name
+        Optional storage/runs/<run_name> root for generated artifacts.
     total_timesteps
         Optional PPO timestep-budget override.
     eval_steps
@@ -431,6 +458,8 @@ def run_ppo_tracking_smoke_from_config(
     overridden = PPOTrackingSmokeSettings(
         task_config_path=settings.task_config_path,
         task_index=settings.task_index if task_index is None else task_index,
+        task_shape=settings.task_shape if task_shape is None else task_shape,
+        run_name=settings.run_name if run_name is None else run_name,
         total_timesteps=settings.total_timesteps if total_timesteps is None else total_timesteps,
         eval_steps=settings.eval_steps if eval_steps is None else eval_steps,
         seed=settings.seed if seed is None else seed,
@@ -480,30 +509,63 @@ def _settings_from_mapping(config: dict[str, Any]) -> PPOTrackingSmokeSettings:
 
 def _load_task(task_config_path: Path, task_index: int) -> dict[str, Any]:
     """Load and return a copied task from a task config path."""
+    task, _, _, _ = _select_task(task_config_path=task_config_path, default_task_index=task_index, task_shape=None)
+    return task
+
+
+def _select_task(
+    task_config_path: Path,
+    default_task_index: int,
+    task_shape: str | None,
+) -> tuple[dict[str, Any], str, int, tuple[str, ...]]:
+    """Load one configured training task by index or shape."""
     config = experiments.config.load_experiment_config(task_config_path)
     tasks = config.get("tasks")
     if not isinstance(tasks, list):
         message = "task config must contain a top-level tasks list"
         raise ValueError(message)  # noqa: TRY004 - public config contract reports config errors as ValueError.
-    if task_index >= len(tasks):
-        message = "task_index is outside the configured task list"
+    if task_shape is None:
+        if default_task_index < 0 or default_task_index >= len(tasks):
+            message = "task_index is outside the configured task list"
+            raise ValueError(message)
+        task = tasks[default_task_index]
+        if not isinstance(task, dict):
+            message = "selected task must be a mapping"
+            raise ValueError(message)
+        return dict(task), "config", default_task_index, ()
+
+    requested_shape = task_shape.strip().lower()
+    if not requested_shape:
+        message = "task_shape must be non-empty when provided"
         raise ValueError(message)
-    task = tasks[task_index]
-    if not isinstance(task, dict):
-        message = "selected task must be a mapping"
-        raise ValueError(message)  # noqa: TRY004 - public config contract reports config errors as ValueError.
-    return dict(task)
+
+    for index, candidate in enumerate(tasks):
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("shape", "")).lower() == requested_shape:
+            warning = "task_shape override selected a training task from config"
+            return dict(candidate), "shape_override", index, (warning,)
+
+    available_shapes = sorted({str(task.get("shape")) for task in tasks if isinstance(task, dict) and task.get("shape") is not None})
+    message = f"task_shape '{task_shape}' not found in task config; available: {', '.join(available_shapes)}"
+    raise ValueError(message)
+
+
+def _run_name(settings: PPOTrackingSmokeSettings) -> str:
+    """Return the configured run name or the legacy smoke default."""
+    return DEFAULT_RUN_NAME if settings.run_name is None else settings.run_name
 
 
 def _resolve_model_path(settings: PPOTrackingSmokeSettings) -> Path:
     """Resolve the trained model output path."""
-    return _resolve_directory(settings.model_dir, default_model_dir()) / settings.model_filename
+    default_dir = utils.artifacts.get_models_dir(_run_name(settings))
+    return _resolve_directory(settings.model_dir, default_dir) / settings.model_filename
 
 
 def _resolve_metrics_path(settings: PPOTrackingSmokeSettings) -> Path:
     """Resolve the metrics output path."""
     if settings.output_dir is None:
-        return default_metrics_dir() / settings.metrics_filename
+        return utils.artifacts.get_metrics_dir(_run_name(settings)) / settings.metrics_filename
     output_dir = settings.output_dir.expanduser().resolve(strict=False)
     if "results" in output_dir.parts or output_dir.name == utils.artifacts.METRICS_DIRNAME:
         return output_dir / settings.metrics_filename
@@ -525,15 +587,24 @@ def _wandb_settings(settings: PPOTrackingSmokeSettings) -> utils.wandb.WandbTrac
         group=settings.wandb_group,
         name=settings.wandb_name,
         tags=settings.wandb_tags,
-        dir=settings.wandb_dir or utils.wandb.default_wandb_dir(),
+        dir=settings.wandb_dir or utils.artifacts.get_wandb_dir(_run_name(settings)),
     )
 
 
-def _wandb_config(settings: PPOTrackingSmokeSettings, model_path: Path, metrics_path: Path) -> dict[str, Any]:
+def _wandb_config(
+    settings: PPOTrackingSmokeSettings,
+    model_path: Path,
+    metrics_path: Path,
+    selected_task_index: int,
+    task: dict[str, Any],
+) -> dict[str, Any]:
     """Build a compact W&B config payload for PPO smoke training."""
     return {
+        "run_name": _run_name(settings),
         "task_config_path": str(settings.task_config_path),
-        "task_index": settings.task_index,
+        "task_index": selected_task_index,
+        "task_shape": str(task.get("shape", "unknown")),
+        "task_shape_requested": settings.task_shape,
         "total_timesteps": settings.total_timesteps,
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
@@ -939,6 +1010,7 @@ def _rollout_termination_reason(
 __all__ = [
     "DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS",
     "DEFAULT_PPO_TRACKING_CONFIG_PATH",
+    "DEFAULT_RUN_NAME",
     "DEFAULT_TASK_CONFIG_PATH",
     "PPOTrackingSmokeResult",
     "PPOTrackingSmokeSettings",

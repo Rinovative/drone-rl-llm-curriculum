@@ -6,15 +6,41 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from src import evaluation, trajectories
 
-if TYPE_CHECKING:
-    from pathlib import Path
+TRACE_STEP_COUNT = 3
+
+
+def _trace_records(include_action: bool = True) -> list[dict[str, object]]:
+    """Return a small trained-policy trace for plot tests."""
+    records: list[dict[str, object]] = []
+    for step_index in range(TRACE_STEP_COUNT):
+        action: object = [[float(step_index), 0.0, 1.0]] if include_action else None
+        records.append(
+            {
+                "step_index": step_index,
+                "time_sec": float(step_index) * 0.1,
+                "reward": -0.1,
+                "position_error_m": 0.05 * step_index,
+                "actual_position_xyz_m": [0.1 * step_index, 0.0, 1.0],
+                "reference_position_xyz_m": [0.1 * step_index, 0.1, 1.0],
+                "error_xyz_m": [0.0, -0.1, 0.0],
+                "velocity": [0.0, 0.0, 0.0],
+                "roll_pitch_yaw": [0.0, 0.0, 0.0],
+                "angular_velocity": [0.0, 0.0, 0.0],
+                "action": action,
+                "applied_action": action,
+                "terminated": False,
+                "truncated": False,
+                "termination_reason": "running",
+            }
+        )
+    return records
 
 
 def _trajectory_pair() -> tuple[trajectories.primitives.Trajectory, trajectories.primitives.Trajectory]:
@@ -73,6 +99,39 @@ def test_malformed_trajectory_raises_before_writing(tmp_path: Path) -> None:
         evaluation.plots.write_trajectory_comparison(reference, malformed, output_path)
 
     assert not output_path.exists()
+
+
+def test_policy_rollout_trace_plots_create_required_pngs(tmp_path: Path) -> None:
+    """Verify trained-policy trace plots are generated from saved JSONL traces."""
+    if importlib.util.find_spec("matplotlib") is None:
+        pytest.skip("matplotlib is not available")
+    trace_path = tmp_path / "trace.jsonl"
+    plots_dir = tmp_path / "plots"
+    evaluation.rollout.write_policy_rollout_trace(_trace_records(include_action=True), trace_path)
+
+    result = evaluation.plots.write_policy_rollout_trace_plots(trace_path, plots_dir)
+
+    assert result.output_kind == "matplotlib_png"
+    assert result.step_count == TRACE_STEP_COUNT
+    assert set(result.plot_paths) == {
+        "xy_reference_vs_actual",
+        "xyz_vs_time",
+        "position_error_vs_time",
+        "action_vs_time",
+    }
+    for output_path in result.plot_paths.values():
+        assert Path(output_path).stat().st_size > 0
+
+
+def test_policy_rollout_trace_plots_omit_action_plot_without_action_data(tmp_path: Path) -> None:
+    """Verify action plots are optional when trace action data is absent."""
+    if importlib.util.find_spec("matplotlib") is None:
+        pytest.skip("matplotlib is not available")
+
+    result = evaluation.plots.write_policy_rollout_trace_plots(_trace_records(include_action=False), tmp_path / "plots")
+
+    assert "action_vs_time" not in result.plot_paths
+    assert "xy_reference_vs_actual" in result.plot_paths
 
 
 def test_plots_import_through_package_alias() -> None:

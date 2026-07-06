@@ -33,10 +33,24 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the trained-policy render CLI parser."""
     parser = argparse.ArgumentParser(description="Render a trained PPO policy rollout on TrajectoryTrackingEnv.")
     parser.add_argument("--model-path", type=Path, default=experiments.policy_render.default_model_path())
+    parser.add_argument("--model-run-name", type=str, default=None)
     parser.add_argument("--config", type=Path, default=experiments.policy_render.DEFAULT_PPO_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
-    parser.add_argument("--render-task-shape", type=str, default=None)
-    parser.add_argument("--output-dir", type=Path, default=experiments.policy_render.default_output_dir())
+    parser.add_argument(
+        "--task-shape",
+        "--render-task-shape",
+        dest="render_task_shape",
+        type=str,
+        default=None,
+        help="Render a task with this shape from the configured task list; hover remains the default when omitted.",
+    )
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument(
+        "--controller",
+        choices=experiments.policy_render.SUPPORTED_CONTROLLERS,
+        default=experiments.policy_render.PPO_CONTROLLER,
+    )
     parser.add_argument("--max-steps", type=int, default=experiments.policy_render.DEFAULT_MAX_STEPS)
     parser.add_argument("--seed", type=int, default=experiments.policy_render.DEFAULT_SEED)
     parser.add_argument(
@@ -55,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     result = experiments.policy_render.run_trained_policy_render_from_paths(
         model_path=args.model_path,
+        model_run_name=args.model_run_name,
         config_path=args.config,
         output_dir=args.output_dir,
         max_steps=args.max_steps,
@@ -62,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
         camera_mode=args.camera_mode,
         task_index=args.task_index,
         render_task_shape=args.render_task_shape,
+        controller=args.controller,
+        run_name=args.run_name,
         camera_distance=args.camera_distance,
         camera_yaw=args.camera_yaw,
         camera_pitch=args.camera_pitch,

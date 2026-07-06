@@ -11,8 +11,31 @@ import pytest
 
 from src import envs, evaluation, validation
 
+TRACE_RECORD_COUNT = 2
+
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _trace_record(step_index: int = 0) -> dict[str, object]:
+    """Return a complete trained-policy trace record for serialization tests."""
+    return {
+        "step_index": step_index,
+        "time_sec": float(step_index) * 0.1,
+        "reward": -0.1,
+        "position_error_m": 0.1,
+        "actual_position_xyz_m": [0.1, 0.0, 1.0],
+        "reference_position_xyz_m": [0.0, 0.0, 1.0],
+        "error_xyz_m": [0.1, 0.0, 0.0],
+        "velocity": [0.0, 0.0, 0.0],
+        "roll_pitch_yaw": [0.0, 0.0, 0.0],
+        "angular_velocity": [0.0, 0.0, 0.0],
+        "action": [[0.0, 0.0, 1.0]],
+        "applied_action": [[0.0, 0.0, 1.0]],
+        "terminated": False,
+        "truncated": False,
+        "termination_reason": "running",
+    }
 
 
 def _hover_task() -> dict[str, object]:
@@ -102,6 +125,32 @@ def test_invalid_offset_and_lag_raise_value_error() -> None:
         evaluation.rollout.evaluate_task_rollout(_hover_task(), offset=(0.0, 0.0))
     with pytest.raises(ValueError, match="lag_steps"):
         evaluation.rollout.evaluate_task_rollout(_hover_task(), lag_steps=-1)
+
+
+def test_policy_rollout_trace_writer_round_trips_jsonl(tmp_path: Path) -> None:
+    """Verify trained-policy trace rows are serialized as notebook-friendly JSONL."""
+    output_path = tmp_path / "trained_policy_rollout_trace.jsonl"
+    records = [_trace_record(0), _trace_record(1)]
+
+    result = evaluation.rollout.write_policy_rollout_trace(records, output_path)
+    loaded = evaluation.rollout.load_policy_rollout_trace(output_path)
+
+    assert result.output_path == str(output_path)
+    assert result.step_count == TRACE_RECORD_COUNT
+    assert "actual_position_xyz_m" in result.columns
+    assert loaded == records
+
+
+def test_policy_rollout_trace_writer_requires_review_fields(tmp_path: Path) -> None:
+    """Verify incomplete trace rows are rejected before an artifact is written."""
+    output_path = tmp_path / "bad_trace.jsonl"
+    record = _trace_record()
+    record.pop("termination_reason")
+
+    with pytest.raises(ValueError, match="termination_reason"):
+        evaluation.rollout.write_policy_rollout_trace([record], output_path)
+
+    assert not output_path.exists()
 
 
 def test_rollout_imports_through_package_alias() -> None:

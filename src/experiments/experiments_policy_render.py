@@ -8,7 +8,8 @@ Responsibilities:
   - Load PPO smoke settings and a persisted Stable-Baselines3 PPO model
   - Run a bounded deterministic policy rollout on TrajectoryTrackingEnv
   - Capture true simulator external-camera frames and encode a GIF artifact
-  - Write rollout metrics and a JSON manifest under approved storage paths
+  - Add visual-only simulator overlays for reference, target, and flown path review
+  - Write rollout traces, plots, metrics, and a JSON manifest under approved storage paths
 
 Design principles:
   - Keep execution headless, deterministic, bounded, and reviewer-friendly
@@ -26,22 +27,38 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from src import envs, experiments, utils
+from src import envs, evaluation, experiments, utils
 
 DEFAULT_PPO_CONFIG_PATH = Path("configs/smoke/ppo_tracking_smoke.yaml")
-DEFAULT_MODEL_PATH = Path("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip")
+DEFAULT_MODEL_FILENAME = "ppo_tracking_smoke.zip"
+DEFAULT_METRICS_FILENAME = "ppo_tracking_smoke_metrics.json"
+DEFAULT_MODEL_PATH = Path(f"storage/runs/ppo_tracking_smoke/models/{DEFAULT_MODEL_FILENAME}")
 DEFAULT_OUTPUT_DIR = Path("storage/runs/trained_policy_render")
 DEFAULT_MAX_STEPS = 60
 DEFAULT_SEED = 0
 DEFAULT_CAMERA_MODE = "follow_external"
 SUPPORTED_CAMERA_MODES = ("follow_external", "fixed_external")
+PPO_CONTROLLER = "ppo"
+SCRIPTED_REFERENCE_CONTROLLER = "scripted_reference"
+SUPPORTED_CONTROLLERS = (PPO_CONTROLLER, SCRIPTED_REFERENCE_CONTROLLER)
+TRAINED_POLICY_MODE = "trained_policy_render"
+SCRIPTED_REFERENCE_MODE = "scripted_reference_baseline"
+SCRIPTED_REFERENCE_BASELINE_TYPE = "reference_position_pid_action"
 DEFAULT_GIF_FILENAME = "trained_policy_rollout.gif"
 DEFAULT_MANIFEST_FILENAME = "trained_policy_render_manifest.json"
+DEFAULT_TRACE_FILENAME = "trained_policy_rollout_trace.jsonl"
+OVERLAY_VISUAL_ROLES: dict[str, dict[str, Any]] = {
+    "reference_path": {"color": "blue", "geometry": "visual-only cylinder polyline", "rgba": [0.05, 0.25, 1.0, 1.0]},
+    "reference_waypoints": {"color": "yellow", "geometry": "visual-only cube markers", "rgba": [1.0, 0.86, 0.05, 1.0]},
+    "active_target": {"color": "green", "geometry": "visual-only sphere marker", "rgba": [0.0, 0.8, 0.2, 1.0]},
+    "actual_path": {"color": "red", "geometry": "visual-only cylinder trail", "rgba": [0.95, 0.05, 0.05, 1.0]},
+}
 
 
 def default_model_path() -> Path:
@@ -64,6 +81,9 @@ DEFAULT_CAMERA_PITCH_DEG = -23.0
 _DEFAULT_CAMERA_FOV_DEG = 44.0
 _DEFAULT_FAR_CLIP_M = 25.0
 _DEFAULT_NEAR_CLIP_M = 0.05
+_POINT_ARRAY_NDIM = 2
+_XYZ_DIMENSIONS = 3
+_MIN_OVERLAY_SEGMENT_LENGTH_M = 1.0e-9
 
 
 @dataclass(frozen=True)
@@ -81,6 +101,13 @@ class PolicyRenderSettings:
         Optional task index override. Uses config default when omitted.
     render_task_shape
         Optional render-only task-shape override selected from the task config.
+    model_run_name
+        Optional training run name used to resolve storage/runs/<run_name>/models.
+    controller
+        Controller used for rollout actions. ``ppo`` loads the trained model;
+        ``scripted_reference`` commands the current reference position directly.
+    run_name
+        Optional storage/runs/<run_name> override used when ``output_dir`` is omitted.
     output_dir
         Directory where GIF and manifest artifacts are written.
     max_steps
@@ -112,6 +139,9 @@ class PolicyRenderSettings:
     config_path: Path = DEFAULT_PPO_CONFIG_PATH
     task_index: int | None = None
     render_task_shape: str | None = None
+    model_run_name: str | None = None
+    controller: str = PPO_CONTROLLER
+    run_name: str | None = None
     output_dir: Path | None = None
     max_steps: int = DEFAULT_MAX_STEPS
     seed: int | None = DEFAULT_SEED
@@ -136,6 +166,13 @@ class PolicyRenderSettings:
         if self.seed is not None and self.seed < 0:
             message = "seed must be nonnegative"
             raise ValueError(message)
+        if self.controller not in SUPPORTED_CONTROLLERS:
+            message = f"controller must be one of: {', '.join(SUPPORTED_CONTROLLERS)}"
+            raise ValueError(message)
+        if self.model_run_name is not None:
+            utils.artifacts.get_run_dir(self.model_run_name)
+        if self.run_name is not None:
+            utils.artifacts.get_run_dir(self.run_name)
         if self.frame_interval <= 0:
             message = "frame_interval must be positive"
             raise ValueError(message)
@@ -212,8 +249,10 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
 
     """
     active_settings = settings or PolicyRenderSettings()
-    model_path = active_settings.model_path.expanduser().resolve(strict=False)
-    if not model_path.exists():
+    model_path = _resolve_model_path(active_settings)
+    training_metadata, metadata_warnings = _load_training_metadata(active_settings.model_run_name)
+    training_task_shape = _training_task_shape(training_metadata)
+    if active_settings.controller == PPO_CONTROLLER and not model_path.exists():
         message = (
             "trained PPO model was not found at "
             f"{model_path}. Create it with: "
@@ -233,22 +272,29 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         requested_max_steps=active_settings.max_steps,
     )
 
-    warnings: list[str] = [*selection_warnings, *preparation_warnings]
+    warnings: list[str] = [*metadata_warnings, *selection_warnings, *preparation_warnings]
 
-    output_dir = _resolve_directory(active_settings.output_dir, default_output_dir())
+    output_dir = _resolve_output_dir(active_settings.output_dir, active_settings.run_name)
     renders_dir, manifests_dir = _artifact_dirs(output_dir)
+    traces_dir, plots_dir = _review_artifact_dirs(output_dir)
     renders_dir.mkdir(parents=True, exist_ok=True)
     manifests_dir.mkdir(parents=True, exist_ok=True)
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
     gif_path = renders_dir / active_settings.gif_filename
     manifest_path = manifests_dir / active_settings.manifest_filename
+    trace_path = traces_dir / DEFAULT_TRACE_FILENAME
 
-    try:
-        from stable_baselines3 import PPO  # noqa: PLC0415
-    except ImportError as exc:
-        message = f"stable_baselines3 is required for trained-policy rendering: {exc}"
-        raise RuntimeError(message) from exc
+    model: Any | None = None
+    if active_settings.controller == PPO_CONTROLLER:
+        try:
+            from stable_baselines3 import PPO  # noqa: PLC0415
+        except ImportError as exc:
+            message = f"stable_baselines3 is required for trained-policy rendering: {exc}"
+            raise RuntimeError(message) from exc
 
-    model = PPO.load(str(model_path), device="cpu")
+        model = PPO.load(str(model_path), device="cpu")
+
     tracking_env = envs.tracking_env.make_trajectory_tracking_env(
         prepared_task,
         gui=False,
@@ -262,12 +308,15 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
             tracking_env=tracking_env,
             settings=active_settings,
             seed=seed,
+            task=prepared_task,
             task_shape=str(prepared_task.get("shape", "unknown")),
         )
     finally:
         tracking_env.close()
 
     _write_gif(rollout_payload["frames"], gif_path, active_settings.frame_interval)
+    trace_result = evaluation.rollout.write_policy_rollout_trace(rollout_payload["trace_records"], trace_path)
+    plot_result = evaluation.plots.write_policy_rollout_trace_plots(trace_path, plots_dir)
     actual_steps = len(rollout_payload["rewards"])
     position_bounds = _position_bounds(rollout_payload["current_positions"])
     reference_position_bounds = _position_bounds(rollout_payload["reference_positions"])
@@ -297,16 +346,27 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
     metrics = _build_metrics(
         rewards=rollout_payload["rewards"],
         position_errors=rollout_payload["position_errors"],
+        mode=_mode_for_controller(active_settings.controller),
         task_shape=str(prepared_task.get("shape", "unknown")),
-        model_path=model_path,
+        model_path=model_path if active_settings.controller == PPO_CONTROLLER else None,
+        configured_model_path=model_path,
+        model_run_name=active_settings.model_run_name,
+        training_task_shape=training_task_shape,
+        controller_type=active_settings.controller,
+        baseline_type=_baseline_type_for_controller(active_settings.controller),
         terminated=rollout_payload["terminated"],
         truncated=rollout_payload["truncated"],
         warnings=tuple(warnings),
     )
     manifest = _build_manifest(
         settings=active_settings,
-        model_path=model_path,
+        mode=_mode_for_controller(active_settings.controller),
+        model_path=model_path if active_settings.controller == PPO_CONTROLLER else None,
+        configured_model_path=model_path,
+        training_task_shape=training_task_shape,
         gif_path=gif_path,
+        trace_path=Path(trace_result.output_path),
+        plot_paths=plot_result.plot_paths,
         task_shape=str(prepared_task.get("shape", "unknown")),
         task_source=task_source,
         task_index=selected_task_index,
@@ -321,6 +381,7 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         warnings=tuple(warnings),
         final_info=final_info,
         final_action=rollout_payload.get("final_action"),
+        output_dir=output_dir,
     )
     _write_manifest(manifest_path, manifest)
 
@@ -334,13 +395,16 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
 
 def run_trained_policy_render_from_paths(
     model_path: Path,
+    model_run_name: str | None = None,
     config_path: Path = DEFAULT_PPO_CONFIG_PATH,
-    output_dir: Path = DEFAULT_OUTPUT_DIR,
+    output_dir: Path | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
     seed: int | None = DEFAULT_SEED,
     camera_mode: str = DEFAULT_CAMERA_MODE,
     task_index: int | None = None,
     render_task_shape: str | None = None,
+    controller: str = PPO_CONTROLLER,
+    run_name: str | None = None,
     camera_distance: float = DEFAULT_CAMERA_DISTANCE_M,
     camera_yaw: float = DEFAULT_CAMERA_YAW_DEG,
     camera_pitch: float = DEFAULT_CAMERA_PITCH_DEG,
@@ -352,6 +416,8 @@ def run_trained_policy_render_from_paths(
     ----------
     model_path
         Path to a saved Stable-Baselines3 PPO model.
+    model_run_name
+        Optional storage/runs/<run_name> model source. Overrides the default CLI model path.
     config_path
         PPO tracking smoke YAML path used to resolve task defaults.
     output_dir
@@ -366,6 +432,10 @@ def run_trained_policy_render_from_paths(
         Optional task index override.
     render_task_shape
         Optional render-only task-shape override selected from the task config.
+    controller
+        Controller used to generate rollout actions.
+    run_name
+        Optional storage/runs/<run_name> override when output_dir is omitted.
     camera_distance
         External camera distance from the target, in meters.
     camera_yaw
@@ -382,9 +452,12 @@ def run_trained_policy_render_from_paths(
     return run_trained_policy_render(
         PolicyRenderSettings(
             model_path=model_path,
+            model_run_name=model_run_name,
             config_path=config_path,
             task_index=task_index,
             render_task_shape=render_task_shape,
+            controller=controller,
+            run_name=run_name,
             output_dir=output_dir,
             max_steps=max_steps,
             seed=seed,
@@ -403,14 +476,20 @@ def _artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
     return output_dir / "renders", output_dir / "manifests"
 
 
+def _review_artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
+    """Return trace and plot directories for trained-policy review artifacts."""
+    return output_dir / "traces", output_dir / "plots"
+
+
 def _run_policy_rollout(
-    model: Any,
+    model: Any | None,
     tracking_env: Any,
     settings: PolicyRenderSettings,
     seed: int,
+    task: dict[str, Any],
     task_shape: str,
 ) -> dict[str, Any]:
-    """Step TrajectoryTrackingEnv with deterministic PPO actions and capture camera frames."""
+    """Step TrajectoryTrackingEnv with deterministic controller actions and capture camera frames."""
     observation, info = tracking_env.reset(seed=seed)
 
     rewards: list[float] = []
@@ -418,29 +497,54 @@ def _run_policy_rollout(
     current_positions: list[np.ndarray] = []
     reference_positions: list[np.ndarray] = []
     frames: list[np.ndarray] = []
+    trace_records: list[dict[str, Any]] = []
     policy_predict_used = False
     final_info: dict[str, Any] = dict(info)
     final_action: np.ndarray | None = None
 
+    overlay = _install_rollout_overlays(tracking_env=tracking_env, task=task)
     initial_position = np.asarray(info.get("current_position"), dtype=float)
+    initial_reference_position = np.asarray(info.get("reference_position"), dtype=float)
+    overlay.update_active_target(initial_reference_position)
+    overlay.add_actual_position(initial_position)
     _capture_external_frame(frames=frames, tracking_env=tracking_env, settings=settings, position=initial_position)
 
     terminated = False
     truncated = False
     for step_index in range(settings.max_steps):
-        action, _ = model.predict(observation, deterministic=True)
+        action, used_policy_predict = _controller_action(
+            model=model,
+            observation=observation,
+            tracking_env=tracking_env,
+            controller=settings.controller,
+            step_index=step_index,
+        )
         final_action = np.asarray(action, dtype=float)
-        policy_predict_used = True
+        policy_predict_used = policy_predict_used or used_policy_predict
         observation, reward, terminated, truncated, info = tracking_env.step(action)
         final_info = dict(info)
 
         current_position = np.asarray(info["current_position"], dtype=float)
         reference_position = np.asarray(info["reference_position"], dtype=float)
 
+        overlay.update_active_target(reference_position)
+        overlay.add_actual_position(current_position)
+
         current_positions.append(current_position)
         reference_positions.append(reference_position)
         rewards.append(float(reward))
         position_errors.append(float(info["position_error_m"]))
+        trace_records.append(
+            _build_trace_record(
+                step_index=step_index,
+                tracking_env=tracking_env,
+                reward=float(reward),
+                action=final_action,
+                info=info,
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+            )
+        )
 
         if step_index % settings.frame_interval == 0 or terminated or truncated:
             _capture_external_frame(frames=frames, tracking_env=tracking_env, settings=settings, position=current_position)
@@ -454,6 +558,7 @@ def _run_policy_rollout(
 
     return {
         "frames": frames,
+        "trace_records": trace_records,
         "rewards": rewards,
         "position_errors": position_errors,
         "current_positions": current_positions,
@@ -464,6 +569,273 @@ def _run_policy_rollout(
         "final_info": final_info,
         "final_action": final_action,
     }
+
+
+def _controller_action(
+    model: Any | None,
+    observation: np.ndarray,
+    tracking_env: Any,
+    controller: str,
+    step_index: int,
+) -> tuple[np.ndarray, bool]:
+    """Return the next action and whether it came from PPO policy prediction."""
+    if controller == PPO_CONTROLLER:
+        if model is None:
+            message = "PPO controller requires a loaded model"
+            raise RuntimeError(message)
+        action, _ = model.predict(observation, deterministic=True)
+        return np.asarray(action, dtype=float), True
+    if controller == SCRIPTED_REFERENCE_CONTROLLER:
+        return _scripted_reference_action(tracking_env=tracking_env, step_index=step_index), False
+    message = f"unsupported controller: {controller}"
+    raise ValueError(message)
+
+
+def _build_trace_record(
+    step_index: int,
+    tracking_env: Any,
+    reward: float,
+    action: np.ndarray | None,
+    info: dict[str, Any],
+    terminated: bool,
+    truncated: bool,
+) -> dict[str, Any]:
+    """Build one JSON-serializable trained-policy rollout trace row."""
+    reference_times = np.asarray(tracking_env.reference.times, dtype=float)
+    time_index = min(step_index, reference_times.shape[0] - 1)
+    actual_position = np.asarray(info["current_position"], dtype=float)
+    reference_position = np.asarray(info["reference_position"], dtype=float)
+    applied_action = info.get("applied_action")
+    return {
+        "step_index": int(step_index),
+        "time_sec": float(reference_times[time_index]),
+        "reward": float(reward),
+        "position_error_m": float(info["position_error_m"]),
+        "actual_position_xyz_m": _array_to_jsonable(actual_position),
+        "reference_position_xyz_m": _array_to_jsonable(reference_position),
+        "error_xyz_m": _array_to_jsonable(actual_position - reference_position),
+        "velocity": _array_to_jsonable(info.get("velocity", [])),
+        "roll_pitch_yaw": _array_to_jsonable(info.get("roll_pitch_yaw", [])),
+        "angular_velocity": _array_to_jsonable(info.get("angular_velocity", [])),
+        "action": _array_to_jsonable(action if action is not None else []),
+        "applied_action": None if applied_action is None else _array_to_jsonable(applied_action),
+        "terminated": bool(terminated),
+        "truncated": bool(truncated),
+        "termination_reason": str(info.get("termination_reason", "running")),
+    }
+
+
+class _RolloutVisualOverlay:
+    """Manage visual-only PyBullet bodies for rollout review overlays."""
+
+    def __init__(self, pybullet_client: Any, client_id: int, reference_positions: np.ndarray, waypoint_positions: np.ndarray) -> None:
+        """Create static reference/waypoint geometry and a movable active-target marker."""
+        self._pybullet = pybullet_client
+        self._client_id = client_id
+        self._body_ids: list[int] = []
+        self._last_actual_position: np.ndarray | None = None
+        self._active_target_body_id = self._create_sphere_body(
+            position=np.array([0.0, 0.0, -10.0], dtype=float),
+            radius=0.045,
+            rgba=OVERLAY_VISUAL_ROLES["active_target"]["rgba"],
+        )
+        self._create_reference_path(reference_positions=reference_positions)
+        self._create_waypoint_markers(waypoint_positions=waypoint_positions)
+
+    def update_active_target(self, position: np.ndarray) -> None:
+        """Move the green active-target marker to the current reference position."""
+        self._pybullet.resetBasePositionAndOrientation(
+            self._active_target_body_id,
+            np.asarray(position, dtype=float).tolist(),
+            [0.0, 0.0, 0.0, 1.0],
+            physicsClientId=self._client_id,
+        )
+
+    def add_actual_position(self, position: np.ndarray) -> None:
+        """Extend the red flown-path trail to a newly observed actual position."""
+        current_position = np.asarray(position, dtype=float)
+        if self._last_actual_position is not None:
+            self._create_segment(
+                start=self._last_actual_position,
+                end=current_position,
+                radius=0.01,
+                rgba=OVERLAY_VISUAL_ROLES["actual_path"]["rgba"],
+            )
+        self._last_actual_position = current_position
+
+    def _create_reference_path(self, reference_positions: np.ndarray) -> None:
+        """Create the blue reference path as TinyRenderer-visible cylinder segments."""
+        for start, end in pairwise(reference_positions):
+            self._create_segment(
+                start=start,
+                end=end,
+                radius=0.006,
+                rgba=OVERLAY_VISUAL_ROLES["reference_path"]["rgba"],
+            )
+
+    def _create_waypoint_markers(self, waypoint_positions: np.ndarray) -> None:
+        """Create yellow visual-only cube markers for task waypoints or corners."""
+        for position in waypoint_positions:
+            visual_shape_id = self._pybullet.createVisualShape(
+                self._pybullet.GEOM_BOX,
+                halfExtents=[0.035, 0.035, 0.035],
+                rgbaColor=OVERLAY_VISUAL_ROLES["reference_waypoints"]["rgba"],
+                physicsClientId=self._client_id,
+            )
+            body_id = self._pybullet.createMultiBody(
+                baseMass=0.0,
+                baseCollisionShapeIndex=-1,
+                baseVisualShapeIndex=visual_shape_id,
+                basePosition=np.asarray(position, dtype=float).tolist(),
+                baseOrientation=[0.0, 0.0, 0.0, 1.0],
+                physicsClientId=self._client_id,
+            )
+            self._body_ids.append(int(body_id))
+
+    def _create_sphere_body(self, position: np.ndarray, radius: float, rgba: list[float]) -> int:
+        """Create one visual-only sphere body and return its body id."""
+        visual_shape_id = self._pybullet.createVisualShape(
+            self._pybullet.GEOM_SPHERE,
+            radius=radius,
+            rgbaColor=rgba,
+            physicsClientId=self._client_id,
+        )
+        body_id = self._pybullet.createMultiBody(
+            baseMass=0.0,
+            baseCollisionShapeIndex=-1,
+            baseVisualShapeIndex=visual_shape_id,
+            basePosition=position.tolist(),
+            baseOrientation=[0.0, 0.0, 0.0, 1.0],
+            physicsClientId=self._client_id,
+        )
+        self._body_ids.append(int(body_id))
+        return int(body_id)
+
+    def _create_segment(self, start: np.ndarray, end: np.ndarray, radius: float, rgba: list[float]) -> None:
+        """Create one visual-only cylinder segment between two XYZ points."""
+        start_array = np.asarray(start, dtype=float)
+        end_array = np.asarray(end, dtype=float)
+        delta = end_array - start_array
+        length = float(np.linalg.norm(delta))
+        if length <= _MIN_OVERLAY_SEGMENT_LENGTH_M:
+            return
+        midpoint = (start_array + end_array) / 2.0
+        visual_shape_id = self._pybullet.createVisualShape(
+            self._pybullet.GEOM_CYLINDER,
+            radius=radius,
+            length=length,
+            rgbaColor=rgba,
+            physicsClientId=self._client_id,
+        )
+        body_id = self._pybullet.createMultiBody(
+            baseMass=0.0,
+            baseCollisionShapeIndex=-1,
+            baseVisualShapeIndex=visual_shape_id,
+            basePosition=midpoint.tolist(),
+            baseOrientation=_quaternion_from_z_axis(delta / length),
+            physicsClientId=self._client_id,
+        )
+        self._body_ids.append(int(body_id))
+
+
+def _install_rollout_overlays(tracking_env: Any, task: dict[str, Any]) -> _RolloutVisualOverlay:
+    """Install TinyRenderer-visible visual-only rollout overlays in the active simulator."""
+    try:
+        import pybullet as p  # noqa: PLC0415
+    except ImportError as exc:
+        message = f"pybullet is required for rollout visual overlays: {exc}"
+        raise RuntimeError(message) from exc
+
+    base_env = getattr(tracking_env, "base_env", None)
+    client_id = getattr(base_env, "CLIENT", None)
+    if base_env is None or client_id is None:
+        message = "TrajectoryTrackingEnv does not expose the required simulator client for visual overlays"
+        raise RuntimeError(message)
+
+    reference_positions = np.asarray(tracking_env.reference.positions, dtype=float)
+    waypoint_positions = _reference_waypoint_positions(task=task, reference_positions=reference_positions)
+    return _RolloutVisualOverlay(
+        pybullet_client=p,
+        client_id=int(client_id),
+        reference_positions=reference_positions,
+        waypoint_positions=waypoint_positions,
+    )
+
+
+def _reference_waypoint_positions(task: dict[str, Any], reference_positions: np.ndarray) -> np.ndarray:
+    """Return visual marker positions for task waypoints, corners, or sampled anchors."""
+    shape = str(task.get("shape", "")).lower()
+    if "points" in task:
+        return _unique_xyz_rows(np.asarray(task["points"], dtype=float))
+    if "start" in task and "end" in task:
+        return _unique_xyz_rows(np.asarray([task["start"], task["end"]], dtype=float))
+    if "position" in task:
+        return _unique_xyz_rows(np.asarray([task["position"]], dtype=float))
+    if {"xy", "start_height", "end_height"}.issubset(task):
+        xy = np.asarray(task["xy"], dtype=float)
+        return _unique_xyz_rows(
+            np.asarray(
+                [
+                    [xy[0], xy[1], float(task["start_height"])],
+                    [xy[0], xy[1], float(task["end_height"])],
+                ],
+                dtype=float,
+            )
+        )
+    if shape == "circle":
+        return _sample_reference_anchors(reference_positions=reference_positions, anchor_count=4)
+    return _sample_reference_anchors(reference_positions=reference_positions, anchor_count=2)
+
+
+def _sample_reference_anchors(reference_positions: np.ndarray, anchor_count: int) -> np.ndarray:
+    """Sample stable waypoint-like anchors from a reference path."""
+    if reference_positions.shape[0] <= anchor_count:
+        return _unique_xyz_rows(reference_positions)
+    indices = np.linspace(0, reference_positions.shape[0] - 1, num=anchor_count, dtype=int)
+    return _unique_xyz_rows(reference_positions[indices])
+
+
+def _unique_xyz_rows(positions: np.ndarray) -> np.ndarray:
+    """Return finite unique XYZ rows while preserving first occurrence order."""
+    array = np.asarray(positions, dtype=float)
+    if array.ndim == 1:
+        array = array.reshape(1, -1)
+    if array.ndim != _POINT_ARRAY_NDIM or array.shape[1] != _XYZ_DIMENSIONS:
+        message = "waypoint marker positions must have shape (n, 3)"
+        raise ValueError(message)
+    unique_rows: list[np.ndarray] = []
+    for row in array:
+        if not np.all(np.isfinite(row)):
+            message = "waypoint marker positions must contain only finite values"
+            raise ValueError(message)
+        if not any(np.allclose(row, existing) for existing in unique_rows):
+            unique_rows.append(np.array(row, dtype=float, copy=True))
+    return np.vstack(unique_rows) if unique_rows else np.empty((0, 3), dtype=float)
+
+
+def _quaternion_from_z_axis(direction: np.ndarray) -> list[float]:
+    """Return a quaternion that rotates the local cylinder Z axis onto ``direction``."""
+    unit_direction = np.asarray(direction, dtype=float)
+    unit_direction = unit_direction / np.linalg.norm(unit_direction)
+    z_axis = np.array([0.0, 0.0, 1.0], dtype=float)
+    dot = float(np.clip(np.dot(z_axis, unit_direction), -1.0, 1.0))
+    if dot > 1.0 - 1.0e-9:
+        return [0.0, 0.0, 0.0, 1.0]
+    if dot < -1.0 + 1.0e-9:
+        return [1.0, 0.0, 0.0, 0.0]
+    axis = np.cross(z_axis, unit_direction)
+    scale = float(np.sqrt((1.0 + dot) * 2.0))
+    quaternion = [float(axis[0] / scale), float(axis[1] / scale), float(axis[2] / scale), scale / 2.0]
+    norm = float(np.linalg.norm(quaternion))
+    return [float(value / norm) for value in quaternion]
+
+
+def _scripted_reference_action(tracking_env: Any, step_index: int) -> np.ndarray:
+    """Command the current reference XYZ position through the PID action interface."""
+    reference_index = min(step_index, int(tracking_env.reference.positions.shape[0]) - 1)
+    reference_position = np.asarray(tracking_env.reference.positions[reference_index], dtype=np.float32)
+    action_shape = tuple(int(dimension) for dimension in tracking_env.action_space.shape)
+    return reference_position.reshape(action_shape)
 
 
 def _capture_external_frame(frames: list[np.ndarray], tracking_env: Any, settings: PolicyRenderSettings, position: np.ndarray) -> None:
@@ -536,8 +908,14 @@ def _write_gif(frames: list[np.ndarray], path: Path, frame_interval: int) -> Non
 def _build_metrics(
     rewards: list[float],
     position_errors: list[float],
+    mode: str,
     task_shape: str,
-    model_path: Path,
+    model_path: Path | None,
+    configured_model_path: Path,
+    model_run_name: str | None,
+    training_task_shape: str | None,
+    controller_type: str,
+    baseline_type: str | None,
     terminated: bool,
     truncated: bool,
     warnings: tuple[str, ...],
@@ -548,8 +926,14 @@ def _build_metrics(
         raise RuntimeError(message)
 
     return {
-        "mode": "trained_policy_render",
-        "model_path": str(model_path),
+        "mode": mode,
+        "controller_type": controller_type,
+        "baseline_type": baseline_type,
+        "model_path": None if model_path is None else str(model_path),
+        "configured_model_path": str(configured_model_path),
+        "model_run_name": model_run_name,
+        "training_task_shape": training_task_shape,
+        "render_task_shape": task_shape,
         "task_shape": task_shape,
         "steps": len(rewards),
         "mean_reward": float(np.mean(rewards)),
@@ -566,8 +950,13 @@ def _build_metrics(
 
 def _build_manifest(
     settings: PolicyRenderSettings,
-    model_path: Path,
+    mode: str,
+    model_path: Path | None,
+    configured_model_path: Path,
+    training_task_shape: str | None,
     gif_path: Path,
+    trace_path: Path,
+    plot_paths: dict[str, str],
     task_shape: str,
     task_source: str,
     task_index: int,
@@ -582,16 +971,26 @@ def _build_manifest(
     warnings: tuple[str, ...],
     final_info: dict[str, Any] | None = None,
     final_action: Any | None = None,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Build a trained-policy render manifest payload."""
     info = {} if final_info is None else final_info
     survived_fraction = _survived_fraction(actual_steps=actual_steps, requested_max_steps=requested_max_steps)
     return {
-        "mode": "trained_policy_render",
+        "mode": mode,
         "render_mode": "simulator_external_camera_gif",
+        "controller_type": settings.controller,
+        "baseline_type": _baseline_type_for_controller(settings.controller),
+        "model_run_name": settings.model_run_name,
+        "run_name": settings.run_name,
+        "output_dir": None if output_dir is None else str(output_dir),
+        "training_task_shape": training_task_shape,
+        "render_task_shape": task_shape,
         "task_shape": task_shape,
         "task_source": task_source,
         "task_index": task_index,
+        "render_task_override_used": task_source == "render_override",
+        "render_task_shape_requested": settings.render_task_shape,
         "requested_max_steps": requested_max_steps,
         "actual_steps": actual_steps,
         "survived_fraction": survived_fraction,
@@ -628,9 +1027,18 @@ def _build_manifest(
         "final_last_action": _array_to_jsonable(info.get("last_action", [])),
         "true_simulator_rendering": bool(true_simulator_rendering),
         "policy_predict_used": bool(policy_predict_used),
-        "model_path": str(model_path),
+        "model_path": None if model_path is None else str(model_path),
+        "configured_model_path": str(configured_model_path),
         "gif_path": str(gif_path),
-        "output_files": [str(gif_path)],
+        "trace_path": str(trace_path),
+        "plot_paths": dict(plot_paths),
+        "reference_path_overlay_enabled": True,
+        "waypoint_markers_enabled": True,
+        "active_target_marker_enabled": True,
+        "actual_path_trail_enabled": True,
+        "overlay_visual_roles": OVERLAY_VISUAL_ROLES,
+        "overlay_geometry_mode": "pybullet_visual_only_no_collision",
+        "output_files": [str(gif_path), str(trace_path), *sorted(plot_paths.values())],
         "metrics": metrics,
         "warnings": list(warnings),
     }
@@ -681,10 +1089,65 @@ def _write_manifest(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _resolve_directory(path: Path | None, default: Path) -> Path:
-    """Resolve a configured directory or fallback default without strict existence checks."""
-    directory = default if path is None else path
-    return directory.expanduser().resolve(strict=False)
+def _resolve_model_path(settings: PolicyRenderSettings) -> Path:
+    """Resolve a PPO model path from an explicit path or training run name."""
+    if settings.model_run_name is not None:
+        return (utils.artifacts.get_models_dir(settings.model_run_name) / DEFAULT_MODEL_FILENAME).expanduser().resolve(strict=False)
+    return settings.model_path.expanduser().resolve(strict=False)
+
+
+def _load_training_metadata(model_run_name: str | None) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Load task metadata from a training run metrics file when available."""
+    if model_run_name is None:
+        return {}, ()
+    metrics_path = utils.artifacts.get_metrics_dir(model_run_name) / DEFAULT_METRICS_FILENAME
+    if not metrics_path.exists():
+        warning = f"training metrics not found for model_run_name '{model_run_name}' at {metrics_path}"
+        return {}, (warning,)
+    try:
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        warning = f"training metrics for model_run_name '{model_run_name}' could not be parsed: {exc}"
+        return {}, (warning,)
+    if not isinstance(payload, dict):
+        warning = f"training metrics for model_run_name '{model_run_name}' did not contain a JSON object"
+        return {}, (warning,)
+    return payload, ()
+
+
+def _training_task_shape(training_metadata: dict[str, Any]) -> str | None:
+    """Extract the training task shape from loaded training metadata."""
+    for key in ("training_task_shape", "task_shape"):
+        value = training_metadata.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _resolve_output_dir(output_dir: Path | None, run_name: str | None) -> Path:
+    """Resolve explicit output directories, run-name directories, or the legacy default."""
+    if output_dir is not None:
+        return output_dir.expanduser().resolve(strict=False)
+    if run_name is not None:
+        return utils.artifacts.get_run_dir(run_name)
+    return default_output_dir().expanduser().resolve(strict=False)
+
+
+def _mode_for_controller(controller: str) -> str:
+    """Return the manifest mode for a supported controller."""
+    if controller == PPO_CONTROLLER:
+        return TRAINED_POLICY_MODE
+    if controller == SCRIPTED_REFERENCE_CONTROLLER:
+        return SCRIPTED_REFERENCE_MODE
+    message = f"unsupported controller: {controller}"
+    raise ValueError(message)
+
+
+def _baseline_type_for_controller(controller: str) -> str | None:
+    """Return the baseline type for scripted controllers, if any."""
+    if controller == SCRIPTED_REFERENCE_CONTROLLER:
+        return SCRIPTED_REFERENCE_BASELINE_TYPE
+    return None
 
 
 def _select_task(
@@ -754,15 +1217,61 @@ def _prepare_task_for_rollout_length(task: dict[str, Any], requested_max_steps: 
 
     extended_task = dict(task)
     extended_task["sample_rate_hz"] = float(required_sample_rate_hz)
-    extended_reference = envs.task_adapter.make_task_reference(extended_task)
-    extended_samples = int(extended_reference.positions.shape[0])
     warning = (
         f"extended render task sample_rate_hz from {sample_rate_hz} to {required_sample_rate_hz} "
         f"for shape '{shape}' so rollout can reach requested max_steps"
     )
+    try:
+        extended_reference = envs.task_adapter.make_task_reference(extended_task)
+    except ValueError as exc:
+        return _prepare_task_by_extending_duration(
+            task=task,
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+            required_samples=required_samples,
+            reference_samples=reference_samples,
+            shape=shape,
+            failed_sample_rate_warning=warning,
+            failed_sample_rate_error=exc,
+        )
+
+    extended_samples = int(extended_reference.positions.shape[0])
     if extended_samples < required_samples:
         warning = warning + "; rollout may still end early due to reference trajectory length"
     return extended_task, extended_samples, (warning,)
+
+
+def _prepare_task_by_extending_duration(
+    task: dict[str, Any],
+    duration_sec: float,
+    sample_rate_hz: float,
+    required_samples: int,
+    reference_samples: int,
+    shape: str,
+    failed_sample_rate_warning: str,
+    failed_sample_rate_error: ValueError,
+) -> tuple[dict[str, Any], int, tuple[str, ...]]:
+    """Extend rollout visibility by lengthening duration when densification is invalid."""
+    required_duration_sec = max(duration_sec, (required_samples - 1) / sample_rate_hz)
+    duration_extended_task = dict(task)
+    duration_extended_task["duration_sec"] = float(required_duration_sec)
+    duration_warning = (
+        f"extended render task duration_sec from {duration_sec} to {required_duration_sec} "
+        f"for shape '{shape}' after sample_rate_hz extension failed validation: {failed_sample_rate_error}"
+    )
+    try:
+        duration_extended_reference = envs.task_adapter.make_task_reference(duration_extended_task)
+    except ValueError as exc:
+        warning = (
+            f"selected task has too few samples for requested max_steps; {failed_sample_rate_warning}; "
+            f"duration_sec fallback also failed validation: {exc}; rollout may end early"
+        )
+        return dict(task), reference_samples, (warning,)
+
+    extended_samples = int(duration_extended_reference.positions.shape[0])
+    if extended_samples < required_samples:
+        duration_warning = duration_warning + "; rollout may still end early due to reference trajectory length"
+    return duration_extended_task, extended_samples, (duration_warning,)
 
 
 def _termination_reason(
@@ -805,11 +1314,21 @@ __all__ = [
     "DEFAULT_CAMERA_PITCH_DEG",
     "DEFAULT_CAMERA_YAW_DEG",
     "DEFAULT_MAX_STEPS",
+    "DEFAULT_METRICS_FILENAME",
+    "DEFAULT_MODEL_FILENAME",
     "DEFAULT_MODEL_PATH",
     "DEFAULT_OUTPUT_DIR",
     "DEFAULT_PPO_CONFIG_PATH",
     "DEFAULT_SEED",
+    "DEFAULT_TRACE_FILENAME",
+    "OVERLAY_VISUAL_ROLES",
+    "PPO_CONTROLLER",
+    "SCRIPTED_REFERENCE_BASELINE_TYPE",
+    "SCRIPTED_REFERENCE_CONTROLLER",
+    "SCRIPTED_REFERENCE_MODE",
     "SUPPORTED_CAMERA_MODES",
+    "SUPPORTED_CONTROLLERS",
+    "TRAINED_POLICY_MODE",
     "PolicyRenderResult",
     "PolicyRenderSettings",
     "default_model_path",
