@@ -2,7 +2,11 @@
 Evaluation metrics, plots, and result processing utilities.
 
 Provides:
-- no public modules yet: evaluation code will be added after the environment MVP
+- trajectory_metrics: sampled trajectory tracking error metrics
 """
 
-__all__: list[str] = []
+from . import evaluation_trajectory_metrics as trajectory_metrics
+
+__all__ = [
+    "trajectory_metrics",
+]
