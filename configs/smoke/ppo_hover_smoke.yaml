@@ -3,8 +3,8 @@ task_index: 0
 total_timesteps: 4096
 eval_steps: 120
 seed: 0
-model_filename: ppo_tracking_smoke.zip
-metrics_filename: ppo_tracking_smoke_metrics.json
+model_filename: ppo_hover_smoke.zip
+metrics_filename: ppo_hover_smoke_metrics.json
 check_env: true
 wandb_mode: disabled
 wandb_project: drone-rl-llm-curriculum

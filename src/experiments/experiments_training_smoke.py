@@ -132,7 +132,7 @@ def load_training_smoke_settings(path: str | Path) -> TrainingSmokeSettings:
 
 def default_output_dir() -> Path:
     """Return the default MVP smoke metrics directory under the run layout."""
-    return utils.artifacts.get_metrics_dir("mvp_smoke")
+    return utils.artifacts.get_training_metrics_dir("mvp_smoke")
 
 
 def detect_optional_training_dependencies() -> dict[str, bool]:

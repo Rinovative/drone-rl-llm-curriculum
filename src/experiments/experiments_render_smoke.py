@@ -152,7 +152,7 @@ class _RolloutArtifacts:
 
 def default_output_dir() -> Path:
     """Return the default render smoke run directory under the run layout."""
-    return utils.artifacts.get_run_dir("render_smoke")
+    return utils.artifacts.get_evaluation_run_dir("render_smoke")
 
 
 def run_render_smoke(settings: RenderSmokeSettings | None = None) -> RenderSmokeResult:
@@ -189,7 +189,7 @@ def run_render_smoke(settings: RenderSmokeSettings | None = None) -> RenderSmoke
 
 
 def _artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
-    """Return render and manifest directories for a run-root or legacy output override."""
+    """Return render and manifest directories for a run-root or explicit output override."""
     if "results" in output_dir.parts:
         return output_dir, output_dir
     return output_dir / "renders", output_dir / "manifests"

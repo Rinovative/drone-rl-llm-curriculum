@@ -38,8 +38,8 @@ def test_policy_render_settings_defaults_are_expected() -> None:
     """Verify policy-render defaults stay aligned with reviewer-facing CLI expectations."""
     settings = experiments.policy_render.PolicyRenderSettings()
 
-    assert settings.model_path.as_posix().endswith("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip")
-    assert settings.config_path == Path("configs/smoke/ppo_tracking_smoke.yaml")
+    assert settings.model_path.as_posix().endswith("storage/training_runs/ppo_hover_smoke/models/ppo_hover_smoke.zip")
+    assert settings.config_path == Path("configs/smoke/ppo_hover_smoke.yaml")
     assert settings.output_dir is None
     assert settings.max_steps == experiments.policy_render.DEFAULT_MAX_STEPS
     assert settings.seed == 0
@@ -63,13 +63,13 @@ def test_policy_render_settings_reject_invalid_controller() -> None:
 
 
 def test_policy_render_settings_reject_invalid_model_run_name() -> None:
-    """Verify model run names cannot escape storage/runs."""
+    """Verify model run names cannot escape storage/training_runs."""
     with pytest.raises(ValueError, match="run_name"):
         experiments.policy_render.PolicyRenderSettings(model_run_name="../bad")
 
 
 def test_policy_render_settings_reject_invalid_run_name() -> None:
-    """Verify run names cannot escape storage/runs."""
+    """Verify run names cannot escape storage/evaluation_runs."""
     with pytest.raises(ValueError, match="run_name"):
         experiments.policy_render.PolicyRenderSettings(run_name="../bad")
 
@@ -104,21 +104,21 @@ def test_cli_parser_accepts_camera_and_render_task_options() -> None:
             "--controller",
             "scripted_reference",
             "--model-run-name",
-            "ppo_tracking_line_smoke",
+            "ppo_line_smoke",
             "--run-name",
             "scripted_line",
         ]
     )
     assert alias_args.render_task_shape == "line"
     assert alias_args.controller == experiments.policy_render.SCRIPTED_REFERENCE_CONTROLLER
-    assert alias_args.model_run_name == "ppo_tracking_line_smoke"
+    assert alias_args.model_run_name == "ppo_line_smoke"
     assert alias_args.run_name == "scripted_line"
     assert alias_args.output_dir is None
     assert args.camera_distance == PARSER_CAMERA_DISTANCE
     assert args.camera_yaw == PARSER_CAMERA_YAW
     assert args.camera_pitch == PARSER_CAMERA_PITCH
     assert args.output_dir is None
-    assert args.model_path.as_posix().endswith("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip")
+    assert args.model_path.as_posix().endswith("storage/training_runs/ppo_hover_smoke/models/ppo_hover_smoke.zip")
 
 
 def test_prepare_task_for_rollout_length_extends_short_reference() -> None:
@@ -161,7 +161,7 @@ def test_policy_render_missing_model_path_raises_clear_error(tmp_path: Path) -> 
     with pytest.raises(FileNotFoundError, match="cli_train_tracking"):
         experiments.policy_render.run_trained_policy_render_from_paths(
             model_path=missing_model,
-            config_path=Path("configs/smoke/ppo_tracking_smoke.yaml"),
+            config_path=Path("configs/smoke/ppo_hover_smoke.yaml"),
             output_dir=tmp_path,
             max_steps=4,
             seed=0,
@@ -173,15 +173,17 @@ def test_policy_render_manifest_includes_rollout_summary_fields() -> None:
     settings = experiments.policy_render.PolicyRenderSettings()
     payload = experiments.policy_render._build_manifest(  # noqa: SLF001
         settings=settings,
+        evaluation_run_name=experiments.policy_render.DEFAULT_EVALUATION_RUN_NAME,
         mode=experiments.policy_render.TRAINED_POLICY_MODE,
-        model_path=Path("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip"),
-        configured_model_path=Path("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip"),
+        model_path=Path("storage/training_runs/ppo_hover_smoke/models/ppo_hover_smoke.zip"),
+        configured_model_path=Path("storage/training_runs/ppo_hover_smoke/models/ppo_hover_smoke.zip"),
         training_task_shape="line",
-        gif_path=Path("storage/runs/trained_policy_render/renders/trained_policy_rollout.gif"),
-        trace_path=Path("storage/runs/trained_policy_render/traces/trained_policy_rollout_trace.jsonl"),
+        evaluation_task_shape="line",
+        gif_path=Path("storage/evaluation_runs/eval_ppo_hover_smoke_on_hover/renders/trained_policy_rollout.gif"),
+        trace_path=Path("storage/evaluation_runs/eval_ppo_hover_smoke_on_hover/traces/trained_policy_rollout_trace.jsonl"),
         plot_paths={
-            "xy_reference_vs_actual": "storage/runs/trained_policy_render/plots/xy_reference_vs_actual.png",
-            "position_error_vs_time": "storage/runs/trained_policy_render/plots/position_error_vs_time.png",
+            "xy_reference_vs_actual": "storage/evaluation_runs/eval_ppo_hover_smoke_on_hover/plots/xy_reference_vs_actual.png",
+            "position_error_vs_time": "storage/evaluation_runs/eval_ppo_hover_smoke_on_hover/plots/position_error_vs_time.png",
         },
         task_shape="line",
         task_source="config",
@@ -213,11 +215,14 @@ def test_policy_render_manifest_includes_rollout_summary_fields() -> None:
     )
 
     assert payload["mode"] == experiments.policy_render.TRAINED_POLICY_MODE
+    assert payload["run_type"] == "evaluation"
+    assert payload["evaluation_run_name"] == experiments.policy_render.DEFAULT_EVALUATION_RUN_NAME
     assert payload["controller_type"] == experiments.policy_render.PPO_CONTROLLER
     assert payload["baseline_type"] is None
     assert payload["model_run_name"] is None
     assert payload["model_path"] is not None
     assert payload["training_task_shape"] == "line"
+    assert payload["evaluation_task_shape"] == "line"
     assert payload["render_task_shape"] == "line"
     assert payload["requested_max_steps"] == RENDER_MAX_STEPS
     assert payload["render_task_override_used"] is False
@@ -307,12 +312,14 @@ def test_policy_render_manifest_marks_render_task_override() -> None:
 
     payload = experiments.policy_render._build_manifest(  # noqa: SLF001
         settings=settings,
+        evaluation_run_name=experiments.policy_render.DEFAULT_EVALUATION_RUN_NAME,
         mode=experiments.policy_render.TRAINED_POLICY_MODE,
-        model_path=Path("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip"),
-        configured_model_path=Path("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip"),
+        model_path=Path("storage/training_runs/ppo_hover_smoke/models/ppo_hover_smoke.zip"),
+        configured_model_path=Path("storage/training_runs/ppo_hover_smoke/models/ppo_hover_smoke.zip"),
         training_task_shape=None,
-        gif_path=Path("storage/runs/trained_policy_render/renders/trained_policy_rollout.gif"),
-        trace_path=Path("storage/runs/trained_policy_render/traces/trained_policy_rollout_trace.jsonl"),
+        evaluation_task_shape="line",
+        gif_path=Path("storage/evaluation_runs/eval_ppo_hover_smoke_on_hover/renders/trained_policy_rollout.gif"),
+        trace_path=Path("storage/evaluation_runs/eval_ppo_hover_smoke_on_hover/traces/trained_policy_rollout_trace.jsonl"),
         plot_paths={},
         task_shape="line",
         task_source="render_override",
@@ -345,13 +352,15 @@ def test_policy_render_manifest_marks_scripted_reference_baseline() -> None:
 
     payload = experiments.policy_render._build_manifest(  # noqa: SLF001
         settings=settings,
+        evaluation_run_name="eval_scripted_reference_on_line",
         mode=experiments.policy_render.SCRIPTED_REFERENCE_MODE,
         model_path=None,
-        configured_model_path=Path("storage/runs/ppo_tracking_smoke/models/ppo_tracking_smoke.zip"),
+        configured_model_path=Path("storage/training_runs/ppo_hover_smoke/models/ppo_hover_smoke.zip"),
         training_task_shape=None,
-        gif_path=Path("storage/runs/scripted_reference_render_line/renders/trained_policy_rollout.gif"),
-        trace_path=Path("storage/runs/scripted_reference_render_line/traces/trained_policy_rollout_trace.jsonl"),
-        plot_paths={"xy_reference_vs_actual": "storage/runs/scripted_reference_render_line/plots/xy_reference_vs_actual.png"},
+        evaluation_task_shape="line",
+        gif_path=Path("storage/evaluation_runs/eval_scripted_reference_on_line/renders/trained_policy_rollout.gif"),
+        trace_path=Path("storage/evaluation_runs/eval_scripted_reference_on_line/traces/trained_policy_rollout_trace.jsonl"),
+        plot_paths={"xy_reference_vs_actual": "storage/evaluation_runs/eval_scripted_reference_on_line/plots/xy_reference_vs_actual.png"},
         task_shape="line",
         task_source="render_override",
         task_index=LINE_TASK_INDEX,
@@ -364,7 +373,7 @@ def test_policy_render_manifest_marks_scripted_reference_baseline() -> None:
         policy_predict_used=False,
         metrics={"mode": "scripted_reference_baseline", "steps": 4},
         warnings=(),
-        output_dir=Path("storage/runs/scripted_reference_render_line"),
+        output_dir=Path("storage/evaluation_runs/eval_scripted_reference_on_line"),
     )
 
     assert payload["mode"] == experiments.policy_render.SCRIPTED_REFERENCE_MODE
@@ -373,39 +382,39 @@ def test_policy_render_manifest_marks_scripted_reference_baseline() -> None:
     assert payload["policy_predict_used"] is False
     assert payload["model_path"] is None
     assert payload["run_name"] == "scripted_reference_render_line"
-    assert payload["trace_path"].endswith("scripted_reference_render_line/traces/trained_policy_rollout_trace.jsonl")
+    assert payload["trace_path"].endswith("eval_scripted_reference_on_line/traces/trained_policy_rollout_trace.jsonl")
 
 
 def test_policy_render_resolves_model_run_name_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify model-run-name resolves to the selected training run model artifact."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = experiments.policy_render.PolicyRenderSettings(model_run_name="ppo_tracking_line_smoke")
+    settings = experiments.policy_render.PolicyRenderSettings(model_run_name="ppo_line_smoke")
 
     model_path = experiments.policy_render._resolve_model_path(settings)  # noqa: SLF001
 
-    assert model_path == tmp_path / "runs" / "ppo_tracking_line_smoke" / "models" / "ppo_tracking_smoke.zip"
+    assert model_path == tmp_path / "training_runs" / "ppo_line_smoke" / "models" / "ppo_line_smoke.zip"
 
 
 def test_policy_render_loads_training_task_shape_from_model_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify render metadata can report the task shape used during training."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    metrics_dir = tmp_path / "runs" / "ppo_tracking_line_smoke" / "metrics"
+    metrics_dir = tmp_path / "training_runs" / "ppo_line_smoke" / "metrics"
     metrics_dir.mkdir(parents=True)
-    metrics_path = metrics_dir / "ppo_tracking_smoke_metrics.json"
+    metrics_path = metrics_dir / "ppo_line_smoke_metrics.json"
     metrics_path.write_text(json.dumps({"training_task_shape": "line"}), encoding="utf-8")
 
-    metadata, warnings = experiments.policy_render._load_training_metadata("ppo_tracking_line_smoke")  # noqa: SLF001
+    metadata, warnings = experiments.policy_render._load_training_metadata("ppo_line_smoke")  # noqa: SLF001
 
     assert warnings == ()
     assert experiments.policy_render._training_task_shape(metadata) == "line"  # noqa: SLF001
 
 
 def test_policy_render_resolves_run_name_output_dir() -> None:
-    """Verify run names place artifacts under storage/runs without overriding explicit output dirs."""
+    """Verify run names place artifacts under storage/evaluation_runs without overriding explicit output dirs."""
     run_dir = experiments.policy_render._resolve_output_dir(None, "scripted_reference_render_line")  # noqa: SLF001
-    explicit_dir = Path("storage/runs/custom_render")
+    explicit_dir = Path("storage/evaluation_runs/custom_render")
 
-    assert run_dir.as_posix().endswith("storage/runs/scripted_reference_render_line")
+    assert run_dir.as_posix().endswith("storage/evaluation_runs/scripted_reference_render_line")
     assert experiments.policy_render._resolve_output_dir(explicit_dir, "ignored") == explicit_dir.resolve(strict=False)  # noqa: SLF001
 
 
@@ -449,14 +458,14 @@ def test_policy_render_controller_action_supports_ppo_and_scripted_reference() -
     assert scripted_action.tolist() == [[0.5, 0.0, 1.0]]
 
 
-def test_policy_render_artifact_dirs_preserve_legacy_results_override(tmp_path: Path) -> None:
+def test_policy_render_artifact_dirs_preserve_explicit_output_override(tmp_path: Path) -> None:
     """Verify storage/results-style output overrides preserve direct render placement."""
-    legacy_output_dir = tmp_path / "storage" / "results" / "trained_policy_render"
+    explicit_output_dir = tmp_path / "storage" / "results" / "trained_policy_render"
 
-    renders_dir, manifests_dir = experiments.policy_render._artifact_dirs(legacy_output_dir)  # noqa: SLF001
+    renders_dir, manifests_dir = experiments.policy_render._artifact_dirs(explicit_output_dir)  # noqa: SLF001
 
-    assert renders_dir == legacy_output_dir
-    assert manifests_dir == legacy_output_dir
+    assert renders_dir == explicit_output_dir
+    assert manifests_dir == explicit_output_dir
 
 
 def test_policy_render_manifest_writer_writes_json(tmp_path: Path) -> None:

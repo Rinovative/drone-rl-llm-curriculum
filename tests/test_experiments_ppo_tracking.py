@@ -30,7 +30,7 @@ def test_ppo_tracking_imports_through_package_alias() -> None:
 def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify the smoke YAML file loads into validated settings."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = experiments.ppo_tracking.load_ppo_tracking_settings("configs/smoke/ppo_tracking_smoke.yaml")
+    settings = experiments.ppo_tracking.load_ppo_tracking_settings("configs/smoke/ppo_hover_smoke.yaml")
 
     assert settings.task_config_path == Path("configs/smoke/trajectory_validation.yaml")
     assert settings.task_index == EXPECTED_SMOKE_TASK_INDEX
@@ -48,9 +48,10 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.wandb_name is None
     assert settings.wandb_tags == ()
     assert settings.wandb_dir is None
-    assert experiments.ppo_tracking.default_output_dir() == tmp_path / "runs" / "ppo_tracking_smoke"
-    assert experiments.ppo_tracking.default_model_dir() == tmp_path / "runs" / "ppo_tracking_smoke" / "models"
-    assert utils.wandb.default_wandb_dir() == tmp_path / "runs" / "ppo_tracking_smoke" / "wandb"
+    assert experiments.ppo_tracking.default_output_dir() == tmp_path / "training_runs" / "ppo_hover_smoke"
+    assert experiments.ppo_tracking.default_model_dir() == tmp_path / "training_runs" / "ppo_hover_smoke" / "models"
+    assert experiments.ppo_tracking.default_manifests_dir() == tmp_path / "training_runs" / "ppo_hover_smoke" / "manifests"
+    assert utils.wandb.default_wandb_dir() == tmp_path / "training_runs" / "ppo_hover_smoke" / "wandb"
 
 
 def test_ppo_tracking_settings_reject_invalid_timesteps() -> None:
@@ -66,7 +67,7 @@ def test_ppo_tracking_settings_reject_invalid_eval_steps() -> None:
 
 
 def test_ppo_tracking_settings_reject_invalid_run_name() -> None:
-    """Verify training run names cannot escape storage/runs."""
+    """Verify training run names cannot escape storage/training_runs."""
     with pytest.raises(ValueError, match="run_name"):
         experiments.ppo_tracking.PPOTrackingSmokeSettings(run_name="../bad")
 
@@ -95,32 +96,36 @@ def test_ppo_tracking_paths_resolve_under_run_directories(tmp_path: Path) -> Non
     model_path = experiments.ppo_tracking._resolve_model_path(settings)  # noqa: SLF001
     metrics_path = experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
 
-    assert model_path == (tmp_path / "run" / "models" / "ppo_tracking_smoke.zip").resolve(strict=False)
-    assert metrics_path == (tmp_path / "run" / "metrics" / "ppo_tracking_smoke_metrics.json").resolve(strict=False)
+    assert model_path == (tmp_path / "run" / "models" / "ppo_hover_smoke.zip").resolve(strict=False)
+    assert metrics_path == (tmp_path / "run" / "metrics" / "ppo_hover_smoke_metrics.json").resolve(strict=False)
 
 
 def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify run-name defaults place training artifacts under one run root."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(run_name="ppo_tracking_line_smoke")
+    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(run_name="ppo_line_smoke")
 
     assert (
-        experiments.ppo_tracking._resolve_model_path(settings) == tmp_path / "runs" / "ppo_tracking_line_smoke" / "models" / "ppo_tracking_smoke.zip"  # noqa: SLF001
+        experiments.ppo_tracking._resolve_model_path(settings) == tmp_path / "training_runs" / "ppo_line_smoke" / "models" / "ppo_line_smoke.zip"  # noqa: SLF001
     )
     assert (
         experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
-        == tmp_path / "runs" / "ppo_tracking_line_smoke" / "metrics" / "ppo_tracking_smoke_metrics.json"
+        == tmp_path / "training_runs" / "ppo_line_smoke" / "metrics" / "ppo_line_smoke_metrics.json"
     )
-    assert experiments.ppo_tracking._wandb_settings(settings).dir == tmp_path / "runs" / "ppo_tracking_line_smoke" / "wandb"  # noqa: SLF001
+    assert (
+        experiments.ppo_tracking._resolve_manifest_path(settings)  # noqa: SLF001
+        == tmp_path / "training_runs" / "ppo_line_smoke" / "manifests" / "ppo_line_smoke_manifest.json"
+    )
+    assert experiments.ppo_tracking._wandb_settings(settings).dir == tmp_path / "training_runs" / "ppo_line_smoke" / "wandb"  # noqa: SLF001
 
 
-def test_ppo_tracking_legacy_output_dir_remains_direct(tmp_path: Path) -> None:
-    """Verify storage/results-style output overrides preserve legacy metrics placement."""
+def test_ppo_tracking_explicit_output_dir_remains_direct(tmp_path: Path) -> None:
+    """Verify explicit output directory overrides preserve direct metrics placement."""
     settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(output_dir=tmp_path / "storage" / "results" / "custom")
 
     metrics_path = experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
 
-    assert metrics_path == (tmp_path / "storage" / "results" / "custom" / "ppo_tracking_smoke_metrics.json").resolve(strict=False)
+    assert metrics_path == (tmp_path / "storage" / "results" / "custom" / "ppo_hover_smoke_metrics.json").resolve(strict=False)
 
 
 def test_ppo_tracking_dependency_detection_returns_booleans() -> None:
@@ -199,10 +204,10 @@ def test_evaluate_model_metrics_include_movement_bounds() -> None:
 def test_cli_train_tracking_parser_accepts_task_shape_and_run_name() -> None:
     """Verify the training parser exposes task-specific run controls."""
     parser = cli_train_tracking.build_parser()
-    args = parser.parse_args(["--task-shape", "line", "--run-name", "ppo_tracking_line_smoke"])
+    args = parser.parse_args(["--task-shape", "line", "--run-name", "ppo_line_smoke"])
 
     assert args.task_shape == "line"
-    assert args.run_name == "ppo_tracking_line_smoke"
+    assert args.run_name == "ppo_line_smoke"
 
 
 def test_cli_train_tracking_help_works() -> None:
@@ -220,3 +225,4 @@ def test_cli_train_tracking_help_works() -> None:
     assert "--total-timesteps" in completed.stdout
     assert "--eval-steps" in completed.stdout
     assert "--wandb-mode" in completed.stdout
+    assert "storage/training_runs" in completed.stdout

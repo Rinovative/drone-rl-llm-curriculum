@@ -21,7 +21,7 @@ def test_mvp_parser_defaults_are_tiny_and_storage_scoped() -> None:
     args = cli_mvp.build_parser().parse_args([])
 
     assert args.config.as_posix() == "configs/smoke/training_smoke.yaml"
-    assert args.output_dir.as_posix().endswith("storage/runs/mvp_smoke")
+    assert args.output_dir.as_posix().endswith("storage/training_runs/mvp_smoke")
     assert args.max_steps == DEFAULT_MAX_STEPS
     assert args.task_index is None
     assert not args.skip_plot

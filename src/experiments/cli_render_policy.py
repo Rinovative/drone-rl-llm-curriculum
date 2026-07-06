@@ -31,9 +31,16 @@ from src import experiments
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the trained-policy render CLI parser."""
-    parser = argparse.ArgumentParser(description="Render a trained PPO policy rollout on TrajectoryTrackingEnv.")
+    parser = argparse.ArgumentParser(
+        description="Render a PPO or scripted-reference evaluation run and write artifacts under storage/evaluation_runs/<run_name>.",
+    )
     parser.add_argument("--model-path", type=Path, default=experiments.policy_render.default_model_path())
-    parser.add_argument("--model-run-name", type=str, default=None)
+    parser.add_argument(
+        "--model-run-name",
+        type=str,
+        default=None,
+        help="Training run name used to load a model from storage/training_runs/<model_run_name>/models.",
+    )
     parser.add_argument("--config", type=Path, default=experiments.policy_render.DEFAULT_PPO_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
     parser.add_argument(
@@ -45,11 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Render a task with this shape from the configured task list; hover remains the default when omitted.",
     )
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--run-name", type=str, default=None, help="Evaluation run name under storage/evaluation_runs.")
     parser.add_argument(
         "--controller",
         choices=experiments.policy_render.SUPPORTED_CONTROLLERS,
         default=experiments.policy_render.PPO_CONTROLLER,
+        help="Choose PPO rendering or a scripted-reference evaluation baseline.",
     )
     parser.add_argument("--max-steps", type=int, default=experiments.policy_render.DEFAULT_MAX_STEPS)
     parser.add_argument("--seed", type=int, default=experiments.policy_render.DEFAULT_SEED)

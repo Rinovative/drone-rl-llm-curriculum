@@ -15,14 +15,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_wandb_defaults_are_disabled_and_run_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify W&B defaults are safe and scoped under the PPO run."""
+def test_wandb_defaults_are_disabled_and_training_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify W&B defaults are safe and scoped under the training run."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     settings = utils.wandb.WandbTrackingSettings()
 
     assert settings.mode == "disabled"
     assert settings.project == "drone-rl-llm-curriculum"
-    assert utils.wandb.default_wandb_dir() == tmp_path / "runs" / "ppo_tracking_smoke" / "wandb"
+    assert utils.wandb.default_wandb_dir() == tmp_path / "training_runs" / "ppo_hover_smoke" / "wandb"
 
 
 def test_disabled_wandb_does_not_import_wandb(monkeypatch: pytest.MonkeyPatch) -> None:

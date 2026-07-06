@@ -31,16 +31,18 @@ from src import experiments, utils
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the PPO trajectory-tracking smoke CLI parser."""
-    parser = argparse.ArgumentParser(description="Run tiny PPO smoke training on TrajectoryTrackingEnv.")
+    parser = argparse.ArgumentParser(
+        description="Run tiny PPO training and write model/metrics/manifests under storage/training_runs/<run_name>.",
+    )
     parser.add_argument("--config", type=Path, default=experiments.ppo_tracking.DEFAULT_PPO_TRACKING_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
     parser.add_argument(
         "--task-shape",
         type=str,
         default=None,
-        help="Train on the first configured task with this shape; uses task-index when omitted.",
+        help="Train on the first configured task with this shape; the training run will be written under storage/training_runs.",
     )
-    parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--run-name", type=str, default=None, help="Training run name under storage/training_runs.")
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)

@@ -35,11 +35,13 @@ import numpy as np
 
 from src import envs, evaluation, experiments, utils
 
-DEFAULT_PPO_CONFIG_PATH = Path("configs/smoke/ppo_tracking_smoke.yaml")
-DEFAULT_MODEL_FILENAME = "ppo_tracking_smoke.zip"
-DEFAULT_METRICS_FILENAME = "ppo_tracking_smoke_metrics.json"
-DEFAULT_MODEL_PATH = Path(f"storage/runs/ppo_tracking_smoke/models/{DEFAULT_MODEL_FILENAME}")
-DEFAULT_OUTPUT_DIR = Path("storage/runs/trained_policy_render")
+DEFAULT_PPO_CONFIG_PATH = Path("configs/smoke/ppo_hover_smoke.yaml")
+DEFAULT_MODEL_FILENAME = "ppo_hover_smoke.zip"
+DEFAULT_METRICS_FILENAME = "ppo_hover_smoke_metrics.json"
+DEFAULT_MODEL_RUN_NAME = "ppo_hover_smoke"
+DEFAULT_EVALUATION_RUN_NAME = "eval_ppo_hover_smoke_on_hover"
+DEFAULT_MODEL_PATH = Path(f"storage/training_runs/{DEFAULT_MODEL_RUN_NAME}/models/{DEFAULT_MODEL_FILENAME}")
+DEFAULT_OUTPUT_DIR = Path(f"storage/evaluation_runs/{DEFAULT_EVALUATION_RUN_NAME}")
 DEFAULT_MAX_STEPS = 60
 DEFAULT_SEED = 0
 DEFAULT_CAMERA_MODE = "follow_external"
@@ -63,12 +65,12 @@ OVERLAY_VISUAL_ROLES: dict[str, dict[str, Any]] = {
 
 def default_model_path() -> Path:
     """Return the default trained PPO model path for reviewer/demo rendering."""
-    return utils.artifacts.get_models_dir("ppo_tracking_smoke") / "ppo_tracking_smoke.zip"
+    return utils.artifacts.get_training_models_dir(DEFAULT_MODEL_RUN_NAME) / DEFAULT_MODEL_FILENAME
 
 
 def default_output_dir() -> Path:
     """Return the default trained-policy render run directory."""
-    return utils.artifacts.get_run_dir("trained_policy_render")
+    return utils.artifacts.get_evaluation_run_dir(DEFAULT_EVALUATION_RUN_NAME)
 
 
 DEFAULT_IMAGE_WIDTH = 480
@@ -102,12 +104,12 @@ class PolicyRenderSettings:
     render_task_shape
         Optional render-only task-shape override selected from the task config.
     model_run_name
-        Optional training run name used to resolve storage/runs/<run_name>/models.
+        Optional training run name used to resolve storage/training_runs/<run_name>/models.
     controller
         Controller used for rollout actions. ``ppo`` loads the trained model;
         ``scripted_reference`` commands the current reference position directly.
     run_name
-        Optional storage/runs/<run_name> override used when ``output_dir`` is omitted.
+        Optional storage/evaluation_runs/<run_name> override used when ``output_dir`` is omitted.
     output_dir
         Directory where GIF and manifest artifacts are written.
     max_steps
@@ -170,9 +172,9 @@ class PolicyRenderSettings:
             message = f"controller must be one of: {', '.join(SUPPORTED_CONTROLLERS)}"
             raise ValueError(message)
         if self.model_run_name is not None:
-            utils.artifacts.get_run_dir(self.model_run_name)
+            utils.artifacts.get_training_run_dir(self.model_run_name)
         if self.run_name is not None:
-            utils.artifacts.get_run_dir(self.run_name)
+            utils.artifacts.get_evaluation_run_dir(self.run_name)
         if self.frame_interval <= 0:
             message = "frame_interval must be positive"
             raise ValueError(message)
@@ -256,7 +258,7 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         message = (
             "trained PPO model was not found at "
             f"{model_path}. Create it with: "
-            "python -m src.experiments.cli_train_tracking --config configs/smoke/ppo_tracking_smoke.yaml"
+            "python -m src.experiments.cli_train_tracking --config configs/smoke/ppo_hover_smoke.yaml"
         )
         raise FileNotFoundError(message)
 
@@ -346,6 +348,7 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
     metrics = _build_metrics(
         rewards=rollout_payload["rewards"],
         position_errors=rollout_payload["position_errors"],
+        evaluation_run_name=_evaluation_run_name(active_settings),
         mode=_mode_for_controller(active_settings.controller),
         task_shape=str(prepared_task.get("shape", "unknown")),
         model_path=model_path if active_settings.controller == PPO_CONTROLLER else None,
@@ -360,10 +363,12 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
     )
     manifest = _build_manifest(
         settings=active_settings,
+        evaluation_run_name=_evaluation_run_name(active_settings),
         mode=_mode_for_controller(active_settings.controller),
         model_path=model_path if active_settings.controller == PPO_CONTROLLER else None,
         configured_model_path=model_path,
         training_task_shape=training_task_shape,
+        evaluation_task_shape=str(prepared_task.get("shape", "unknown")),
         gif_path=gif_path,
         trace_path=Path(trace_result.output_path),
         plot_paths=plot_result.plot_paths,
@@ -417,7 +422,7 @@ def run_trained_policy_render_from_paths(
     model_path
         Path to a saved Stable-Baselines3 PPO model.
     model_run_name
-        Optional storage/runs/<run_name> model source. Overrides the default CLI model path.
+        Optional storage/training_runs/<run_name> model source. Overrides the default CLI model path.
     config_path
         PPO tracking smoke YAML path used to resolve task defaults.
     output_dir
@@ -435,7 +440,7 @@ def run_trained_policy_render_from_paths(
     controller
         Controller used to generate rollout actions.
     run_name
-        Optional storage/runs/<run_name> override when output_dir is omitted.
+        Optional storage/evaluation_runs/<run_name> override when output_dir is omitted.
     camera_distance
         External camera distance from the target, in meters.
     camera_yaw
@@ -470,7 +475,7 @@ def run_trained_policy_render_from_paths(
 
 
 def _artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
-    """Return render and manifest directories for a run-root or legacy output override."""
+    """Return render and manifest directories for an explicit output override."""
     if "results" in output_dir.parts:
         return output_dir, output_dir
     return output_dir / "renders", output_dir / "manifests"
@@ -908,6 +913,7 @@ def _write_gif(frames: list[np.ndarray], path: Path, frame_interval: int) -> Non
 def _build_metrics(
     rewards: list[float],
     position_errors: list[float],
+    evaluation_run_name: str,
     mode: str,
     task_shape: str,
     model_path: Path | None,
@@ -926,6 +932,8 @@ def _build_metrics(
         raise RuntimeError(message)
 
     return {
+        "run_type": "evaluation",
+        "evaluation_run_name": evaluation_run_name,
         "mode": mode,
         "controller_type": controller_type,
         "baseline_type": baseline_type,
@@ -933,6 +941,7 @@ def _build_metrics(
         "configured_model_path": str(configured_model_path),
         "model_run_name": model_run_name,
         "training_task_shape": training_task_shape,
+        "evaluation_task_shape": task_shape,
         "render_task_shape": task_shape,
         "task_shape": task_shape,
         "steps": len(rewards),
@@ -950,10 +959,12 @@ def _build_metrics(
 
 def _build_manifest(
     settings: PolicyRenderSettings,
+    evaluation_run_name: str,
     mode: str,
     model_path: Path | None,
     configured_model_path: Path,
     training_task_shape: str | None,
+    evaluation_task_shape: str,
     gif_path: Path,
     trace_path: Path,
     plot_paths: dict[str, str],
@@ -977,7 +988,9 @@ def _build_manifest(
     info = {} if final_info is None else final_info
     survived_fraction = _survived_fraction(actual_steps=actual_steps, requested_max_steps=requested_max_steps)
     return {
+        "run_type": "evaluation",
         "mode": mode,
+        "evaluation_run_name": evaluation_run_name,
         "render_mode": "simulator_external_camera_gif",
         "controller_type": settings.controller,
         "baseline_type": _baseline_type_for_controller(settings.controller),
@@ -985,6 +998,7 @@ def _build_manifest(
         "run_name": settings.run_name,
         "output_dir": None if output_dir is None else str(output_dir),
         "training_task_shape": training_task_shape,
+        "evaluation_task_shape": evaluation_task_shape,
         "render_task_shape": task_shape,
         "task_shape": task_shape,
         "task_source": task_source,
@@ -1092,7 +1106,13 @@ def _write_manifest(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
 def _resolve_model_path(settings: PolicyRenderSettings) -> Path:
     """Resolve a PPO model path from an explicit path or training run name."""
     if settings.model_run_name is not None:
-        return (utils.artifacts.get_models_dir(settings.model_run_name) / DEFAULT_MODEL_FILENAME).expanduser().resolve(strict=False)
+        training_dir = utils.artifacts.get_training_models_dir(settings.model_run_name).expanduser().resolve(strict=False)
+        preferred_filename = f"{settings.model_run_name}.zip"
+        candidate_paths = [training_dir / preferred_filename, training_dir / DEFAULT_MODEL_FILENAME]
+        for candidate in candidate_paths:
+            if candidate.exists():
+                return candidate.resolve(strict=False)
+        return candidate_paths[0].resolve(strict=False)
     return settings.model_path.expanduser().resolve(strict=False)
 
 
@@ -1100,9 +1120,15 @@ def _load_training_metadata(model_run_name: str | None) -> tuple[dict[str, Any],
     """Load task metadata from a training run metrics file when available."""
     if model_run_name is None:
         return {}, ()
-    metrics_path = utils.artifacts.get_metrics_dir(model_run_name) / DEFAULT_METRICS_FILENAME
-    if not metrics_path.exists():
-        warning = f"training metrics not found for model_run_name '{model_run_name}' at {metrics_path}"
+    training_metrics_dir = utils.artifacts.get_training_metrics_dir(model_run_name).expanduser().resolve(strict=False)
+    candidate_paths = [
+        training_metrics_dir / f"{model_run_name}_metrics.json",
+        training_metrics_dir / DEFAULT_METRICS_FILENAME,
+        *sorted(training_metrics_dir.glob("*.json")),
+    ]
+    metrics_path = next((candidate for candidate in candidate_paths if candidate.exists()), None)
+    if metrics_path is None:
+        warning = f"training metrics not found for model_run_name '{model_run_name}' under {training_metrics_dir}"
         return {}, (warning,)
     try:
         payload = json.loads(metrics_path.read_text(encoding="utf-8"))
@@ -1125,11 +1151,11 @@ def _training_task_shape(training_metadata: dict[str, Any]) -> str | None:
 
 
 def _resolve_output_dir(output_dir: Path | None, run_name: str | None) -> Path:
-    """Resolve explicit output directories, run-name directories, or the legacy default."""
+    """Resolve explicit output directories or the default evaluation run directory."""
     if output_dir is not None:
         return output_dir.expanduser().resolve(strict=False)
     if run_name is not None:
-        return utils.artifacts.get_run_dir(run_name)
+        return utils.artifacts.get_evaluation_run_dir(run_name)
     return default_output_dir().expanduser().resolve(strict=False)
 
 
@@ -1148,6 +1174,11 @@ def _baseline_type_for_controller(controller: str) -> str | None:
     if controller == SCRIPTED_REFERENCE_CONTROLLER:
         return SCRIPTED_REFERENCE_BASELINE_TYPE
     return None
+
+
+def _evaluation_run_name(settings: PolicyRenderSettings) -> str:
+    """Return the configured evaluation run name or the default evaluation run name."""
+    return DEFAULT_EVALUATION_RUN_NAME if settings.run_name is None else settings.run_name
 
 
 def _select_task(

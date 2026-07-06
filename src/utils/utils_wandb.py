@@ -39,7 +39,7 @@ WANDB_MODE_OFFLINE = "offline"
 WANDB_MODE_ONLINE = "online"
 WANDB_MODES = (WANDB_MODE_DISABLED, WANDB_MODE_OFFLINE, WANDB_MODE_ONLINE)
 DEFAULT_WANDB_PROJECT = "drone-rl-llm-curriculum"
-DEFAULT_WANDB_RUN_NAME = "ppo_tracking_smoke"
+DEFAULT_WANDB_RUN_NAME = "ppo_hover_smoke"
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ class WandbTrackingSettings:
 
 def default_wandb_dir() -> Path:
     """Return the default run-specific W&B directory for PPO tracking smoke."""
-    return artifacts.get_wandb_dir(DEFAULT_WANDB_RUN_NAME)
+    return artifacts.get_training_wandb_dir(DEFAULT_WANDB_RUN_NAME)
 
 
 def parse_wandb_tags(value: str | Sequence[str] | None) -> tuple[str, ...]:

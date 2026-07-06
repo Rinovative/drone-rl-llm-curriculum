@@ -49,14 +49,14 @@ def test_deterministic_training_smoke_writes_expected_metrics(tmp_path: Path) ->
     assert payload["warnings"]
 
 
-def test_training_smoke_default_output_uses_run_metrics_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify default output paths stay under the configured run metrics directory."""
+def test_training_smoke_default_output_uses_training_metrics_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify default output paths stay under the configured training metrics directory."""
     storage_root = tmp_path / "storage"
     monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
 
     result = experiments.training_smoke.run_training_smoke(experiments.training_smoke.TrainingSmokeSettings(max_steps=2))
 
-    expected_path = storage_root / "runs" / "mvp_smoke" / "metrics" / "training_smoke_metrics.json"
+    expected_path = storage_root / "training_runs" / "mvp_smoke" / "metrics" / "training_smoke_metrics.json"
     assert result.output_path == str(expected_path)
     assert expected_path.exists()
 
