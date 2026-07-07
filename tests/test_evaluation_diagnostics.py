@@ -22,7 +22,13 @@ class _ActionSpace:
     high = np.array([[1.0, 1.0, 1.0]], dtype=float)
 
 
-def _record(step_index: int, current_x: float, reference_x: float, action: list[float]) -> dict[str, object]:
+def _record(
+    step_index: int,
+    current_x: float,
+    reference_x: float,
+    action: list[float],
+    task_shape: str = "line",
+) -> dict[str, object]:
     """Return one complete policy evaluation trace record."""
     current_position = [current_x, 0.0, 1.0]
     reference_position = [reference_x, 0.0, 1.0]
@@ -31,6 +37,7 @@ def _record(step_index: int, current_x: float, reference_x: float, action: list[
         "step_index": step_index,
         "episode_index": 0,
         "episode_step_index": step_index,
+        "reference_step_index": step_index,
         "time_sec": float(step_index),
         "current_position": current_position,
         "reference_position": reference_position,
@@ -48,6 +55,14 @@ def _record(step_index: int, current_x: float, reference_x: float, action: list[
         "terminated": False,
         "truncated": False,
         "termination_reason": "running",
+        "task_shape": task_shape,
+        "start_hold_enabled": False,
+        "start_hold_sec": 0.0,
+        "exclude_start_hold_from_tracking_metrics": False,
+        "tracking_phase_start_step": 0,
+        "tracking_phase_start_time_sec": 0.0,
+        "is_start_hold": False,
+        "is_tracking_phase": True,
         "base_terminated": False,
         "base_truncated": False,
         "base_truncation_causes": [],
@@ -91,7 +106,7 @@ def test_diagnostics_classify_hover_lock_and_write_artifacts(tmp_path: Path) -> 
 
 def test_diagnostics_keep_normalized_and_real_action_metrics_separate() -> None:
     """Verify action diagnostics state whether PPO-facing actions are normalized."""
-    records = [_record(index, current_x=0.0, reference_x=0.0, action=[1.0, 0.0, -1.0]) for index in range(3)]
+    records = [_record(index, current_x=0.0, reference_x=0.0, action=[1.0, 0.0, -1.0], task_shape="hover") for index in range(3)]
     for record in records:
         record["normalized_action"] = [[1.0, 0.0, -1.0]]
         record["real_action"] = [[1.0, 0.0, 0.5]]
@@ -117,9 +132,74 @@ def test_diagnostics_keep_normalized_and_real_action_metrics_separate() -> None:
     assert diagnostics.episode_summaries[0]["real_action_max"] == [1.0, 0.0, 0.5]
 
 
+def test_diagnostics_reject_task_shape_mismatch() -> None:
+    """Verify traces cannot be summarized against a different task shape."""
+    records = [_record(0, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0], task_shape="line")]
+
+    with pytest.raises(ValueError, match="task_shape mismatch"):
+        evaluation.diagnostics.summarize_policy_evaluation_trace(
+            trace_records=records,
+            action_space=_ActionSpace(),
+            training_run_name="bad_task",
+            task_shape="hover",
+            total_timesteps=1,
+            eval_steps=1,
+            seed=0,
+        )
+
+
+def test_diagnostics_reject_mismatched_position_lengths() -> None:
+    """Verify strict trace checks catch malformed actual/reference rows."""
+    record = _record(0, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0])
+    record["actual_position_xyz_m"] = [0.0, 0.0]
+
+    with pytest.raises(ValueError, match="exactly 3 values"):
+        evaluation.diagnostics.summarize_policy_evaluation_trace(
+            trace_records=[record],
+            action_space=_ActionSpace(),
+            training_run_name="bad_trace",
+            task_shape="line",
+            total_timesteps=1,
+            eval_steps=1,
+            seed=0,
+        )
+
+
+def test_tracking_only_metrics_exclude_start_hold_rows() -> None:
+    """Verify tracking-only metrics omit configured start-hold rows."""
+    records = [
+        _record(0, current_x=1.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
+        _record(1, current_x=1.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
+        _record(2, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
+        _record(3, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
+    ]
+    for index, record in enumerate(records):
+        record["start_hold_enabled"] = True
+        record["start_hold_sec"] = 2.0
+        record["exclude_start_hold_from_tracking_metrics"] = True
+        record["tracking_phase_start_step"] = 2
+        record["tracking_phase_start_time_sec"] = 2.0
+        record["is_start_hold"] = index < 2
+        record["is_tracking_phase"] = index >= 2
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="start_hold",
+        task_shape="line",
+        total_timesteps=64,
+        eval_steps=4,
+        seed=0,
+    )
+
+    assert diagnostics.metrics["mean_position_error_m"] == pytest.approx(0.5)
+    assert diagnostics.metrics["mean_position_error_tracking_m"] == pytest.approx(0.0)
+    assert diagnostics.metrics["tracking_phase_start_step"] == 2
+
+
 def test_diagnostics_report_no_failure_for_accurate_hover() -> None:
     """Verify accurate hover evaluations produce successful curriculum feedback."""
-    records = [_record(index, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0]) for index in range(3)]
+    records = [_record(index, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0], task_shape="hover") for index in range(3)]
 
     diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
         trace_records=records,

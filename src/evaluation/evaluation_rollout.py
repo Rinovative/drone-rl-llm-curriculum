@@ -155,6 +155,7 @@ def evaluate_task_rollout(
     )
     summary = evaluation.trajectory_metrics.summarize_tracking_error(reference=reference, actual=actual)
     metrics = _metrics_to_dict(summary, reference_data.shape)
+    metrics.update(_start_hold_metrics(reference_data=reference_data, reference=reference, actual=actual))
     metrics["offset_xyz_m"] = [float(value) for value in offset_array]
     metrics["lag_steps"] = lag_steps
     metrics.update(_reward_metrics(reference_data=reference_data, actual_positions=actual_positions))
@@ -310,6 +311,33 @@ def _metrics_to_dict(summary: evaluation.trajectory_metrics.TrajectoryMetricSumm
         "duration_sec": summary.duration_sec,
         "sample_count": summary.num_samples,
         "num_samples": summary.num_samples,
+    }
+
+
+def _start_hold_metrics(
+    reference_data: envs.task_adapter.EnvironmentTaskReference,
+    reference: trajectories.primitives.Trajectory,
+    actual: trajectories.primitives.Trajectory,
+) -> dict[str, Any]:
+    """Return start-hold metadata and tracking-only error metrics."""
+    start_step = int(reference_data.tracking_phase_start_step) if reference_data.exclude_start_hold_from_tracking_metrics else 0
+    start_step = min(max(start_step, 0), reference.positions.shape[0] - 1)
+    tracking_reference = trajectories.primitives.Trajectory(
+        times=np.array(reference.times[start_step:], dtype=float, copy=True),
+        positions=np.array(reference.positions[start_step:], dtype=float, copy=True),
+    )
+    tracking_actual = trajectories.primitives.Trajectory(
+        times=np.array(actual.times[start_step:], dtype=float, copy=True),
+        positions=np.array(actual.positions[start_step:], dtype=float, copy=True),
+    )
+    tracking_errors = evaluation.trajectory_metrics.compute_position_errors(reference=tracking_reference, actual=tracking_actual)
+    return {
+        "start_hold_enabled": bool(reference_data.start_hold_enabled),
+        "start_hold_sec": float(reference_data.start_hold_sec),
+        "exclude_start_hold_from_tracking_metrics": bool(reference_data.exclude_start_hold_from_tracking_metrics),
+        "tracking_phase_start_step": int(reference_data.tracking_phase_start_step),
+        "tracking_phase_start_time_sec": float(reference_data.tracking_phase_start_time_sec),
+        "mean_position_error_tracking_m": float(np.mean(tracking_errors)),
     }
 
 

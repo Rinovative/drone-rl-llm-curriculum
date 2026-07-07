@@ -34,6 +34,12 @@ from src import evaluation
 
 TRACE_POSITION_NDIM = 2
 XYZ_DIMENSIONS = 3
+CANONICAL_POLICY_PLOT_FILENAMES = {
+    "trajectory_xy": "trajectory_xy.png",
+    "trajectory_xyz": "trajectory_xyz.png",
+    "position_error": "position_error.png",
+    "action_trace": "action_trace.png",
+}
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -146,6 +152,7 @@ def write_policy_rollout_trace_plots(
     """
     records = _load_trace_records(trace_records_or_path)
     arrays = _trace_arrays(records)
+    segments = _episode_segments(arrays)
     resolved_dir = Path(output_dir)
     resolved_dir.mkdir(parents=True, exist_ok=True)
 
@@ -156,10 +163,23 @@ def write_policy_rollout_trace_plots(
 
     plot_paths: dict[str, str] = {}
 
-    xy_path = resolved_dir / "xy_reference_vs_actual.png"
+    xy_path = resolved_dir / CANONICAL_POLICY_PLOT_FILENAMES["trajectory_xy"]
     figure, axis = plt.subplots(figsize=(6.0, 5.0), constrained_layout=True)
-    axis.plot(arrays["reference"][:, 0], arrays["reference"][:, 1], color="#1f77b4", linewidth=2.0, label="reference")
-    axis.plot(arrays["actual"][:, 0], arrays["actual"][:, 1], color="#d62728", linewidth=2.0, label="actual")
+    for segment_index, segment in enumerate(segments):
+        axis.plot(
+            arrays["reference"][segment, 0],
+            arrays["reference"][segment, 1],
+            color="#1f77b4",
+            linewidth=2.0,
+            label="reference" if segment_index == 0 else None,
+        )
+        axis.plot(
+            arrays["actual"][segment, 0],
+            arrays["actual"][segment, 1],
+            color="#d62728",
+            linewidth=2.0,
+            label="actual" if segment_index == 0 else None,
+        )
     axis.set_xlabel("x m")
     axis.set_ylabel("y m")
     axis.set_title("XY reference vs actual")
@@ -167,45 +187,68 @@ def write_policy_rollout_trace_plots(
     axis.legend()
     figure.savefig(xy_path, dpi=140)
     plt.close(figure)
-    plot_paths["xy_reference_vs_actual"] = str(xy_path)
+    plot_paths["trajectory_xy"] = str(xy_path)
 
-    xyz_path = resolved_dir / "xyz_vs_time.png"
+    xyz_path = resolved_dir / CANONICAL_POLICY_PLOT_FILENAMES["trajectory_xyz"]
     figure, axes = plt.subplots(3, 1, figsize=(7.0, 6.0), sharex=True, constrained_layout=True)
     labels = ("x", "y", "z")
     for axis_index, axis in enumerate(axes):
-        axis.plot(arrays["time"], arrays["reference"][:, axis_index], color="#1f77b4", linewidth=1.8, label="reference")
-        axis.plot(arrays["time"], arrays["actual"][:, axis_index], color="#d62728", linewidth=1.6, label="actual")
+        for segment_index, segment in enumerate(segments):
+            axis.plot(
+                arrays["time"][segment],
+                arrays["reference"][segment, axis_index],
+                color="#1f77b4",
+                linewidth=1.8,
+                label="reference" if axis_index == 0 and segment_index == 0 else None,
+            )
+            axis.plot(
+                arrays["time"][segment],
+                arrays["actual"][segment, axis_index],
+                color="#d62728",
+                linewidth=1.6,
+                label="actual" if axis_index == 0 and segment_index == 0 else None,
+            )
+        _mark_tracking_starts(axis, arrays=arrays, segments=segments, label=axis_index == 0)
         axis.set_ylabel(f"{labels[axis_index]} m")
     axes[0].set_title("XYZ vs time")
     axes[-1].set_xlabel("time s")
     axes[0].legend()
     figure.savefig(xyz_path, dpi=140)
     plt.close(figure)
-    plot_paths["xyz_vs_time"] = str(xyz_path)
+    plot_paths["trajectory_xyz"] = str(xyz_path)
 
-    error_path = resolved_dir / "position_error_vs_time.png"
+    error_path = resolved_dir / CANONICAL_POLICY_PLOT_FILENAMES["position_error"]
     figure, axis = plt.subplots(figsize=(7.0, 3.5), constrained_layout=True)
-    axis.plot(arrays["time"], arrays["position_error"], color="#d62728", linewidth=2.0)
+    for segment in segments:
+        axis.plot(arrays["time"][segment], arrays["position_error"][segment], color="#d62728", linewidth=2.0)
+    _mark_tracking_starts(axis, arrays=arrays, segments=segments, label=True)
     axis.set_xlabel("time s")
     axis.set_ylabel("position error m")
     axis.set_title("Position error vs time")
     figure.savefig(error_path, dpi=140)
     plt.close(figure)
-    plot_paths["position_error_vs_time"] = str(error_path)
+    plot_paths["position_error"] = str(error_path)
 
     action_array = _optional_action_array(records, key="action")
     if action_array is not None:
-        action_path = resolved_dir / "action_vs_time.png"
+        action_path = resolved_dir / CANONICAL_POLICY_PLOT_FILENAMES["action_trace"]
         figure, axis = plt.subplots(figsize=(7.0, 3.8), constrained_layout=True)
         for action_index in range(action_array.shape[1]):
-            axis.plot(arrays["time"], action_array[:, action_index], linewidth=1.5, label=f"action {action_index}")
+            for segment_index, segment in enumerate(segments):
+                axis.plot(
+                    arrays["time"][segment],
+                    action_array[segment, action_index],
+                    linewidth=1.5,
+                    label=f"action {action_index}" if segment_index == 0 else None,
+                )
+        _mark_tracking_starts(axis, arrays=arrays, segments=segments, label=True)
         axis.set_xlabel("time s")
         axis.set_ylabel("action")
         axis.set_title("Action vs time")
         axis.legend()
         figure.savefig(action_path, dpi=140)
         plt.close(figure)
-        plot_paths["action_vs_time"] = str(action_path)
+        plot_paths["action_trace"] = str(action_path)
 
     return RolloutTracePlotResult(plot_paths=plot_paths, output_kind="matplotlib_png", step_count=len(records))
 
@@ -258,24 +301,94 @@ def _trace_arrays(records: Sequence[Mapping[str, Any]]) -> dict[str, np.ndarray]
         message = "rollout trace contains no records"
         raise ValueError(message)
     time = np.asarray([record["time_sec"] for record in records], dtype=float)
-    actual = np.asarray([record["actual_position_xyz_m"] for record in records], dtype=float)
-    reference = np.asarray([record["reference_position_xyz_m"] for record in records], dtype=float)
-    position_error = np.asarray([record["position_error_m"] for record in records], dtype=float)
+    episode_index = np.asarray([record.get("episode_index", 0) for record in records], dtype=int)
+    actual = np.asarray([_position_row(record, "actual_position_xyz_m", "current_position") for record in records], dtype=float)
+    reference = np.asarray([_position_row(record, "reference_position_xyz_m", "reference_position") for record in records], dtype=float)
+    reported_position_error = np.asarray([record["position_error_m"] for record in records], dtype=float)
     if actual.shape != reference.shape or actual.ndim != TRACE_POSITION_NDIM or actual.shape[1] != XYZ_DIMENSIONS:
         message = "trace position fields must have shape (steps, 3)"
         raise ValueError(message)
-    if time.shape != position_error.shape or time.shape[0] != actual.shape[0]:
+    position_error = np.linalg.norm(actual - reference, axis=1)
+    if time.shape != reported_position_error.shape or time.shape[0] != actual.shape[0]:
         message = "trace time and position_error fields must align with positions"
+        raise ValueError(message)
+    if not np.allclose(reported_position_error, position_error, atol=1.0e-9, rtol=1.0e-9):
+        message = "trace position_error_m must equal same-row actual/reference position distance"
         raise ValueError(message)
     if not all(np.all(np.isfinite(array)) for array in (time, actual, reference, position_error)):
         message = "trace plot fields must contain only finite values"
         raise ValueError(message)
+    for active_episode in np.unique(episode_index):
+        episode_time = time[episode_index == active_episode]
+        if episode_time.shape[0] > 1 and np.any(np.diff(episode_time) < 0.0):
+            message = "trace time_sec must be monotonic within each episode"
+            raise ValueError(message)
     return {
         "time": time,
+        "episode_index": episode_index,
         "actual": actual,
         "reference": reference,
         "position_error": position_error,
+        "start_hold_enabled": np.asarray([bool(record.get("start_hold_enabled", False)) for record in records], dtype=bool),
+        "tracking_phase_start_time_sec": np.asarray(
+            [float(record.get("tracking_phase_start_time_sec", 0.0)) for record in records],
+            dtype=float,
+        ),
     }
+
+
+def _position_row(record: Mapping[str, Any], primary_key: str, fallback_key: str) -> np.ndarray:
+    """Return one finite XYZ position row from a trace record."""
+    value = record.get(primary_key, record.get(fallback_key))
+    row = np.asarray(value, dtype=float).reshape(-1)
+    if row.shape != (XYZ_DIMENSIONS,):
+        message = f"trace field {primary_key} must contain exactly {XYZ_DIMENSIONS} values"
+        raise ValueError(message)
+    if not np.all(np.isfinite(row)):
+        message = f"trace field {primary_key} must contain only finite values"
+        raise ValueError(message)
+    return row
+
+
+def _episode_segments(arrays: Mapping[str, np.ndarray]) -> list[np.ndarray]:
+    """Return contiguous row indices grouped by episode to avoid reset-spanning lines."""
+    episode_index = np.asarray(arrays["episode_index"], dtype=int)
+    segments: list[np.ndarray] = []
+    start = 0
+    for index in range(1, episode_index.shape[0]):
+        if episode_index[index] == episode_index[index - 1]:
+            continue
+        segments.append(np.arange(start, index))
+        start = index
+    segments.append(np.arange(start, episode_index.shape[0]))
+    return segments
+
+
+def _mark_tracking_starts(
+    axis: Any,
+    arrays: Mapping[str, np.ndarray],
+    segments: Sequence[np.ndarray],
+    label: bool,
+) -> None:
+    """Draw tracking-start markers on time plots when start-hold metadata is present."""
+    labeled = False
+    for segment in segments:
+        if not np.any(arrays["start_hold_enabled"][segment]):
+            continue
+        start_time = float(arrays["tracking_phase_start_time_sec"][segment][0])
+        if not np.isfinite(start_time):
+            continue
+        segment_times = arrays["time"][segment]
+        if segment_times.size == 0 or start_time < float(np.min(segment_times)) or start_time > float(np.max(segment_times)):
+            continue
+        axis.axvline(
+            start_time,
+            color="#555555",
+            linestyle=":",
+            linewidth=1.2,
+            label="tracking start" if label and not labeled else None,
+        )
+        labeled = True
 
 
 def _optional_action_array(records: Sequence[Mapping[str, Any]], key: str) -> np.ndarray | None:

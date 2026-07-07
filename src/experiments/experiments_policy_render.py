@@ -86,6 +86,7 @@ _DEFAULT_NEAR_CLIP_M = 0.05
 _POINT_ARRAY_NDIM = 2
 _XYZ_DIMENSIONS = 3
 _MIN_OVERLAY_SEGMENT_LENGTH_M = 1.0e-9
+_MAX_TRACKING_ENV_RESOLUTION_STEPS = 32
 
 
 @dataclass(frozen=True)
@@ -348,6 +349,7 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
     metrics = _build_metrics(
         rewards=rollout_payload["rewards"],
         position_errors=rollout_payload["position_errors"],
+        trace_records=rollout_payload["trace_records"],
         evaluation_run_name=_evaluation_run_name(active_settings),
         mode=_mode_for_controller(active_settings.controller),
         task_shape=str(prepared_task.get("shape", "unknown")),
@@ -606,24 +608,36 @@ def _build_trace_record(
     truncated: bool,
 ) -> dict[str, Any]:
     """Build one JSON-serializable trained-policy rollout trace row."""
-    reference_times = np.asarray(tracking_env.reference.times, dtype=float)
-    time_index = min(step_index, reference_times.shape[0] - 1)
+    _ = resolve_tracking_env_for_rendering(tracking_env)
     actual_position = np.asarray(info["current_position"], dtype=float)
     reference_position = np.asarray(info["reference_position"], dtype=float)
+    error_xyz = actual_position - reference_position
     applied_action = info.get("applied_action")
+    is_start_hold = bool(info.get("is_start_hold", False))
     return {
         "step_index": int(step_index),
-        "time_sec": float(reference_times[time_index]),
+        "episode_index": 0,
+        "episode_step_index": int(step_index),
+        "reference_step_index": int(info.get("reference_step_index", step_index)),
+        "time_sec": float(info.get("reference_time_sec", step_index)),
         "reward": float(reward),
-        "position_error_m": float(info["position_error_m"]),
+        "position_error_m": float(np.linalg.norm(error_xyz)),
         "actual_position_xyz_m": _array_to_jsonable(actual_position),
         "reference_position_xyz_m": _array_to_jsonable(reference_position),
-        "error_xyz_m": _array_to_jsonable(actual_position - reference_position),
+        "error_xyz_m": _array_to_jsonable(error_xyz),
         "velocity": _array_to_jsonable(info.get("velocity", [])),
         "roll_pitch_yaw": _array_to_jsonable(info.get("roll_pitch_yaw", [])),
         "angular_velocity": _array_to_jsonable(info.get("angular_velocity", [])),
         "action": _array_to_jsonable(action if action is not None else []),
         "applied_action": None if applied_action is None else _array_to_jsonable(applied_action),
+        "task_shape": str(info.get("task_shape", "unknown")),
+        "start_hold_enabled": bool(info.get("start_hold_enabled", False)),
+        "start_hold_sec": float(info.get("start_hold_sec", 0.0)),
+        "exclude_start_hold_from_tracking_metrics": bool(info.get("exclude_start_hold_from_tracking_metrics", False)),
+        "tracking_phase_start_step": int(info.get("tracking_phase_start_step", 0)),
+        "tracking_phase_start_time_sec": float(info.get("tracking_phase_start_time_sec", 0.0)),
+        "is_start_hold": is_start_hold,
+        "is_tracking_phase": bool(info.get("is_tracking_phase", not is_start_hold)),
         "terminated": bool(terminated),
         "truncated": bool(truncated),
         "termination_reason": str(info.get("termination_reason", "running")),
@@ -743,6 +757,34 @@ class _RolloutVisualOverlay:
         self._body_ids.append(int(body_id))
 
 
+def resolve_tracking_env_for_rendering(tracking_env: object) -> envs.tracking_env.TrajectoryTrackingEnv:
+    """Resolve a TrajectoryTrackingEnv from direct or wrapped environments."""
+    queue: list[object] = [tracking_env]
+    seen: set[int] = set()
+    steps = 0
+    while queue and steps < _MAX_TRACKING_ENV_RESOLUTION_STEPS:
+        current = queue.pop(0)
+        steps += 1
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+
+        if isinstance(current, envs.tracking_env.TrajectoryTrackingEnv):
+            return current
+
+        wrapped = getattr(current, "env", None)
+        if wrapped is not None and id(wrapped) not in seen:
+            queue.append(wrapped)
+
+        unwrapped = getattr(current, "unwrapped", None)
+        if unwrapped is not None and id(unwrapped) not in seen:
+            queue.append(unwrapped)
+
+    message = f"could not resolve TrajectoryTrackingEnv for rendering overlays from object type {type(tracking_env).__name__}"
+    raise RuntimeError(message)
+
+
 def _install_rollout_overlays(tracking_env: Any, task: dict[str, Any]) -> _RolloutVisualOverlay:
     """Install TinyRenderer-visible visual-only rollout overlays in the active simulator."""
     try:
@@ -751,13 +793,14 @@ def _install_rollout_overlays(tracking_env: Any, task: dict[str, Any]) -> _Rollo
         message = f"pybullet is required for rollout visual overlays: {exc}"
         raise RuntimeError(message) from exc
 
-    base_env = getattr(tracking_env, "base_env", None)
+    resolved_tracking_env = resolve_tracking_env_for_rendering(tracking_env)
+    base_env = getattr(resolved_tracking_env, "base_env", None)
     client_id = getattr(base_env, "CLIENT", None)
     if base_env is None or client_id is None:
         message = "TrajectoryTrackingEnv does not expose the required simulator client for visual overlays"
         raise RuntimeError(message)
 
-    reference_positions = np.asarray(tracking_env.reference.positions, dtype=float)
+    reference_positions = np.asarray(resolved_tracking_env.reference.positions, dtype=float)
     waypoint_positions = _reference_waypoint_positions(task=task, reference_positions=reference_positions)
     return _RolloutVisualOverlay(
         pybullet_client=p,
@@ -837,8 +880,18 @@ def _quaternion_from_z_axis(direction: np.ndarray) -> list[float]:
 
 def _scripted_reference_action(tracking_env: Any, step_index: int) -> np.ndarray:
     """Command the current reference XYZ position through the PID action interface."""
-    reference_index = min(step_index, int(tracking_env.reference.positions.shape[0]) - 1)
-    reference_position = np.asarray(tracking_env.reference.positions[reference_index], dtype=np.float32)
+    try:
+        resolved_tracking_env = resolve_tracking_env_for_rendering(tracking_env)
+    except RuntimeError:
+        resolved_tracking_env = tracking_env
+
+    reference = getattr(resolved_tracking_env, "reference", None)
+    if reference is None or not hasattr(reference, "positions"):
+        message = "scripted reference controller requires an environment with reference.positions"
+        raise RuntimeError(message)
+
+    reference_index = min(step_index, int(reference.positions.shape[0]) - 1)
+    reference_position = np.asarray(reference.positions[reference_index], dtype=np.float32)
     action_shape = tuple(int(dimension) for dimension in tracking_env.action_space.shape)
     return reference_position.reshape(action_shape)
 
@@ -851,7 +904,8 @@ def _capture_external_frame(frames: list[np.ndarray], tracking_env: Any, setting
         message = f"pybullet is required for external camera rendering: {exc}"
         raise RuntimeError(message) from exc
 
-    base_env = getattr(tracking_env, "base_env", None)
+    resolved_tracking_env = resolve_tracking_env_for_rendering(tracking_env)
+    base_env = getattr(resolved_tracking_env, "base_env", None)
     client_id = getattr(base_env, "CLIENT", None)
     if base_env is None or client_id is None:
         message = "TrajectoryTrackingEnv does not expose the required simulator client for camera capture"
@@ -913,6 +967,7 @@ def _write_gif(frames: list[np.ndarray], path: Path, frame_interval: int) -> Non
 def _build_metrics(
     rewards: list[float],
     position_errors: list[float],
+    trace_records: list[dict[str, Any]],
     evaluation_run_name: str,
     mode: str,
     task_shape: str,
@@ -931,6 +986,9 @@ def _build_metrics(
         message = "trained-policy rollout produced no step metrics"
         raise RuntimeError(message)
 
+    tracking_errors = _tracking_position_errors(trace_records=trace_records, fallback_errors=position_errors)
+    start_hold_metrics = _start_hold_metrics_from_trace(trace_records)
+
     return {
         "run_type": "evaluation",
         "evaluation_run_name": evaluation_run_name,
@@ -948,12 +1006,44 @@ def _build_metrics(
         "mean_reward": float(np.mean(rewards)),
         "final_reward": float(rewards[-1]),
         "mean_position_error_m": float(np.mean(position_errors)),
+        "mean_position_error_tracking_m": float(np.mean(tracking_errors)),
         "final_position_error_m": float(position_errors[-1]),
         "min_position_error_m": float(np.min(position_errors)),
         "max_position_error_m": float(np.max(position_errors)),
+        **start_hold_metrics,
         "terminated": bool(terminated),
         "truncated": bool(truncated),
         "warnings": list(warnings),
+    }
+
+
+def _tracking_position_errors(trace_records: list[dict[str, Any]], fallback_errors: list[float]) -> list[float]:
+    """Return tracking-only position errors from render trace records."""
+    if not trace_records:
+        return fallback_errors
+    if not any(bool(record.get("exclude_start_hold_from_tracking_metrics", False)) for record in trace_records):
+        return fallback_errors
+    errors = [float(record["position_error_m"]) for record in trace_records if not bool(record.get("is_start_hold", False))]
+    return errors or fallback_errors
+
+
+def _start_hold_metrics_from_trace(trace_records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return start-hold metadata copied from the first render trace row."""
+    if not trace_records:
+        return {
+            "start_hold_enabled": False,
+            "start_hold_sec": 0.0,
+            "exclude_start_hold_from_tracking_metrics": False,
+            "tracking_phase_start_step": 0,
+            "tracking_phase_start_time_sec": 0.0,
+        }
+    first = trace_records[0]
+    return {
+        "start_hold_enabled": bool(first.get("start_hold_enabled", False)),
+        "start_hold_sec": float(first.get("start_hold_sec", 0.0)),
+        "exclude_start_hold_from_tracking_metrics": bool(first.get("exclude_start_hold_from_tracking_metrics", False)),
+        "tracking_phase_start_step": int(first.get("tracking_phase_start_step", 0)),
+        "tracking_phase_start_time_sec": float(first.get("tracking_phase_start_time_sec", 0.0)),
     }
 
 
@@ -1355,6 +1445,7 @@ __all__ = [
     "PolicyRenderSettings",
     "default_model_path",
     "default_output_dir",
+    "resolve_tracking_env_for_rendering",
     "run_trained_policy_render",
     "run_trained_policy_render_from_paths",
 ]

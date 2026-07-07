@@ -60,6 +60,20 @@ def test_mutating_returned_arrays_does_not_affect_separately_built_reference() -
     assert second_reference.positions[0, 0] == 0.0
 
 
+def test_line_task_reference_prepends_default_start_hold() -> None:
+    """Verify moving tracking tasks include a configurable start-alignment phase."""
+    reference = envs.task_adapter.make_task_reference(_line_task())
+
+    assert reference.start_hold_enabled is True
+    assert reference.start_hold_sec == pytest.approx(1.0)
+    assert reference.exclude_start_hold_from_tracking_metrics is True
+    assert reference.tracking_phase_start_step == 10
+    assert reference.tracking_phase_start_time_sec == pytest.approx(1.0)
+    np.testing.assert_allclose(reference.positions[: reference.tracking_phase_start_step], [0.0, 0.0, 1.0])
+    np.testing.assert_allclose(reference.positions[reference.tracking_phase_start_step], [0.0, 0.0, 1.0])
+    assert reference.positions[reference.tracking_phase_start_step + 1, 0] > 0.0
+
+
 def test_invalid_task_raises_value_error_with_validation_diagnostics() -> None:
     """Verify invalid tasks raise ValueError with validation messages."""
     task = _line_task()

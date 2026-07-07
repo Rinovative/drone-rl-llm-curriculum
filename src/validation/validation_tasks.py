@@ -33,6 +33,14 @@ from src import trajectories, validation
 MIN_TRAJECTORY_SAMPLES = 2
 POSITION_ARRAY_NDIM = 2
 XYZ_DIMENSIONS = 3
+DEFAULT_START_HOLD_SEC = 1.0
+START_HOLD_DEFAULT_SHAPES = (
+    validation.contracts.SHAPE_CIRCLE,
+    validation.contracts.SHAPE_LINE,
+    validation.contracts.SHAPE_POLYLINE,
+    validation.contracts.SHAPE_SHORT_SLOW_LINE,
+    validation.contracts.SHAPE_VERTICAL,
+)
 
 
 @dataclass(frozen=True)
@@ -81,12 +89,27 @@ class ValidationResult:
         Human-readable validation diagnostics. Empty when validation succeeds.
     trajectory
         Generated trajectory for valid task-level validation, when available.
+    start_hold_enabled
+        Whether a stationary start-hold phase is active for this task.
+    start_hold_sec
+        Effective start-hold duration in seconds after sample-grid alignment.
+    exclude_start_hold_from_tracking_metrics
+        Whether tracking-only metrics should omit start-hold samples.
+    tracking_phase_start_step
+        First reference row considered part of moving tracking.
+    tracking_phase_start_time_sec
+        Reference time in seconds for ``tracking_phase_start_step``.
 
     """
 
     is_valid: bool
     messages: tuple[str, ...] = ()
     trajectory: trajectories.primitives.Trajectory | None = None
+    start_hold_enabled: bool = False
+    start_hold_sec: float = 0.0
+    exclude_start_hold_from_tracking_metrics: bool = False
+    tracking_phase_start_step: int = 0
+    tracking_phase_start_time_sec: float = 0.0
 
 
 def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = None) -> ValidationResult:
@@ -116,17 +139,17 @@ def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = Non
         validation.contracts.SHAPE_HOVER_STABILIZATION,
         validation.contracts.SHAPE_NEARBY_TARGET_HOVER,
     }:
-        return _validate_built_task(_build_hover_trajectory(task), active_limits)
+        return _validate_built_task(_build_hover_trajectory(task), active_limits, task)
     if shape == validation.contracts.SHAPE_CIRCLE:
-        return _validate_built_task(_build_circle_trajectory(task), active_limits)
+        return _validate_built_task(_build_circle_trajectory(task), active_limits, task)
     if shape in {validation.contracts.SHAPE_LINE, validation.contracts.SHAPE_SHORT_SLOW_LINE}:
-        return _validate_built_task(_build_line_trajectory(task), active_limits)
+        return _validate_built_task(_build_line_trajectory(task), active_limits, task)
     if shape == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
-        return _validate_built_task(_build_start_hold_then_short_line_trajectory(task), active_limits)
+        return _validate_built_task(_build_start_hold_then_short_line_trajectory(task), active_limits, task)
     if shape == validation.contracts.SHAPE_VERTICAL:
-        return _validate_built_task(_build_vertical_trajectory(task), active_limits)
+        return _validate_built_task(_build_vertical_trajectory(task), active_limits, task)
     if shape == validation.contracts.SHAPE_POLYLINE:
-        return _validate_built_task(_build_polyline_trajectory(task), active_limits)
+        return _validate_built_task(_build_polyline_trajectory(task), active_limits, task)
     supported_shapes = ", ".join(validation.contracts.SUPPORTED_TRAJECTORY_SHAPES)
     return _invalid(f"{validation.contracts.FIELD_SHAPE} must be one of: {supported_shapes}")
 
@@ -178,13 +201,27 @@ def validate_trajectory(trajectory: trajectories.primitives.Trajectory, limits: 
 def _validate_built_task(
     build_result: tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]],
     limits: ValidationLimits,
+    task: Mapping[str, Any],
 ) -> ValidationResult:
     """Validate a task after attempting to build its sampled trajectory."""
     trajectory, build_messages = build_result
     if build_messages or trajectory is None:
         return ValidationResult(is_valid=False, messages=build_messages)
+    try:
+        trajectory, start_hold_metadata = _apply_task_start_hold(task=task, trajectory=trajectory)
+    except (TypeError, ValueError) as exc:
+        return ValidationResult(is_valid=False, messages=(str(exc),))
     result = validate_trajectory(trajectory=trajectory, limits=limits)
-    return ValidationResult(is_valid=result.is_valid, messages=result.messages, trajectory=trajectory if result.is_valid else None)
+    return ValidationResult(
+        is_valid=result.is_valid,
+        messages=result.messages,
+        trajectory=trajectory if result.is_valid else None,
+        start_hold_enabled=bool(start_hold_metadata["start_hold_enabled"]),
+        start_hold_sec=float(start_hold_metadata["start_hold_sec"]),
+        exclude_start_hold_from_tracking_metrics=bool(start_hold_metadata["exclude_start_hold_from_tracking_metrics"]),
+        tracking_phase_start_step=int(start_hold_metadata["tracking_phase_start_step"]),
+        tracking_phase_start_time_sec=float(start_hold_metadata["tracking_phase_start_time_sec"]),
+    )
 
 
 def _build_hover_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
@@ -246,7 +283,7 @@ def _build_line_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primit
 def _build_start_hold_then_short_line_trajectory(
     task: Mapping[str, Any],
 ) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
-    """Build a held-start then line trajectory from explicit timing fields."""
+    """Build the moving segment for a held-start then line trajectory."""
     try:
         hold_duration_sec = _require_float(task, validation.contracts.FIELD_HOLD_DURATION_SEC)
         move_duration_sec = _require_float(task, validation.contracts.FIELD_MOVE_DURATION_SEC)
@@ -254,20 +291,11 @@ def _build_start_hold_then_short_line_trajectory(
         start = _require_sequence(task, validation.contracts.FIELD_START)
         end = _require_sequence(task, validation.contracts.FIELD_END)
         _validate_positive_curriculum_durations(hold_duration_sec, move_duration_sec)
-        hold = trajectories.primitives.make_hover_trajectory(
-            position=start,
-            duration_sec=hold_duration_sec,
-            sample_rate_hz=sample_rate_hz,
-        )
-        line = trajectories.primitives.make_line_trajectory(
+        trajectory = trajectories.primitives.make_line_trajectory(
             start=start,
             end=end,
             duration_sec=move_duration_sec,
             sample_rate_hz=sample_rate_hz,
-        )
-        trajectory = trajectories.primitives.Trajectory(
-            times=np.concatenate((hold.times, hold.times[-1] + line.times[1:])),
-            positions=np.vstack((hold.positions, line.positions[1:])),
         )
     except (TypeError, ValueError) as exc:
         return None, (str(exc),)
@@ -308,6 +336,121 @@ def _build_polyline_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.pr
     except (TypeError, ValueError) as exc:
         return None, (str(exc),)
     return trajectory, ()
+
+
+def _apply_task_start_hold(
+    task: Mapping[str, Any],
+    trajectory: trajectories.primitives.Trajectory,
+) -> tuple[trajectories.primitives.Trajectory, dict[str, Any]]:
+    """Prepend a stationary start-hold segment when the task contract requests it."""
+    enabled = _start_hold_enabled(task)
+    requested_sec = _start_hold_seconds(task, enabled=enabled)
+    exclude_from_tracking = _optional_bool(
+        task,
+        validation.contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
+        default=enabled,
+    )
+    if not enabled:
+        return trajectory, _start_hold_metadata(
+            enabled=False,
+            start_hold_sec=0.0,
+            exclude_from_tracking=False,
+            tracking_phase_start_step=0,
+            tracking_phase_start_time_sec=float(np.asarray(trajectory.times, dtype=float)[0]),
+        )
+    if requested_sec <= 0.0:
+        message = f"{validation.contracts.FIELD_START_HOLD_SEC} must be positive when start hold is enabled"
+        raise ValueError(message)
+
+    times = np.asarray(trajectory.times, dtype=float)
+    positions = np.asarray(trajectory.positions, dtype=float)
+    sample_interval = _sample_interval_sec(times)
+    hold_steps = max(1, int(round(requested_sec / sample_interval)))
+    effective_hold_sec = float(hold_steps * sample_interval)
+    hold_times = times[0] + sample_interval * np.arange(hold_steps, dtype=float)
+    hold_positions = np.repeat(positions[0].reshape(1, XYZ_DIMENSIONS), repeats=hold_steps, axis=0)
+    shifted_times = times + effective_hold_sec
+    held_trajectory = trajectories.primitives.Trajectory(
+        times=np.concatenate((hold_times, shifted_times)),
+        positions=np.vstack((hold_positions, positions)),
+    )
+    return held_trajectory, _start_hold_metadata(
+        enabled=True,
+        start_hold_sec=effective_hold_sec,
+        exclude_from_tracking=exclude_from_tracking,
+        tracking_phase_start_step=hold_steps,
+        tracking_phase_start_time_sec=float(shifted_times[0]),
+    )
+
+
+def _start_hold_metadata(
+    enabled: bool,
+    start_hold_sec: float,
+    exclude_from_tracking: bool,
+    tracking_phase_start_step: int,
+    tracking_phase_start_time_sec: float,
+) -> dict[str, Any]:
+    """Return JSON-ready start-hold metadata for validation consumers."""
+    return {
+        "start_hold_enabled": bool(enabled),
+        "start_hold_sec": float(start_hold_sec),
+        "exclude_start_hold_from_tracking_metrics": bool(exclude_from_tracking),
+        "tracking_phase_start_step": int(tracking_phase_start_step),
+        "tracking_phase_start_time_sec": float(tracking_phase_start_time_sec),
+    }
+
+
+def _start_hold_enabled(task: Mapping[str, Any]) -> bool:
+    """Return whether start-hold is enabled for a task."""
+    shape = str(task.get(validation.contracts.FIELD_SHAPE, ""))
+    default_enabled = shape in START_HOLD_DEFAULT_SHAPES or shape == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE
+    return _optional_bool(task, validation.contracts.FIELD_START_HOLD_ENABLED, default=default_enabled)
+
+
+def _start_hold_seconds(task: Mapping[str, Any], enabled: bool) -> float:
+    """Return configured or default start-hold seconds for a task."""
+    if not enabled:
+        return 0.0
+    if validation.contracts.FIELD_START_HOLD_SEC in task:
+        return _optional_float(task, validation.contracts.FIELD_START_HOLD_SEC, default=DEFAULT_START_HOLD_SEC)
+    if str(task.get(validation.contracts.FIELD_SHAPE, "")) == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
+        return _require_float(task, validation.contracts.FIELD_HOLD_DURATION_SEC)
+    return DEFAULT_START_HOLD_SEC
+
+
+def _sample_interval_sec(times: np.ndarray) -> float:
+    """Return a representative positive sample interval from built trajectory times."""
+    diffs = np.diff(times)
+    if diffs.size == 0 or np.any(diffs <= 0.0):
+        message = "trajectory times must be strictly increasing before start-hold can be applied"
+        raise ValueError(message)
+    sample_interval = float(np.median(diffs))
+    if not np.isfinite(sample_interval) or sample_interval <= 0.0:
+        message = "trajectory sample interval must be finite and positive"
+        raise ValueError(message)
+    return sample_interval
+
+
+def _optional_bool(task: Mapping[str, Any], key: str, default: bool) -> bool:
+    """Read an optional boolean field without treating strings as truthy."""
+    if key not in task:
+        return default
+    value = task[key]
+    if not isinstance(value, bool):
+        message = f"{key} must be a boolean"
+        raise TypeError(message)
+    return value
+
+
+def _optional_float(task: Mapping[str, Any], key: str, default: float) -> float:
+    """Read an optional finite float field."""
+    if key not in task:
+        return default
+    value = float(task[key])
+    if not np.isfinite(value):
+        message = f"{key} must be finite"
+        raise ValueError(message)
+    return value
 
 
 def _check_position_bounds(positions: np.ndarray, limits: ValidationLimits, messages: list[str]) -> None:

@@ -175,8 +175,8 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert calls[1]["initial_model_path"] == summary["stages"][0]["model_path"]
     assert calls[0]["normalize_actions"] is True
     assert calls[0]["wandb_group"] == "curriculum/manual_line_v1"
-    assert Path(calls[0]["task_config_path"]).name == "manual_line_v1_stage01_hover_stabilization_seed0_task.yaml"
-    assert Path(calls[1]["task_config_path"]).name == "manual_line_v1_stage02_nearby_target_hover_seed0_task.yaml"
+    assert Path(calls[0]["task_config_path"]).name == "stage01_hover_stabilization_task.yaml"
+    assert Path(calls[1]["task_config_path"]).name == "stage02_nearby_target_hover_task.yaml"
 
 
 def test_manual_curriculum_cli_parser_accepts_expected_options() -> None:

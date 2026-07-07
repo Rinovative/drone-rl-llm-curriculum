@@ -194,6 +194,7 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             position_error_m=float(np.linalg.norm(current_position - reference_position)),
             tracking_success=False,
             base_info=base_info,
+            reference_step_index=self._step_index,
         )
         return observation, info
 
@@ -255,6 +256,7 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             ),
             requested_action=requested_action_array,
             applied_action=base_action_array,
+            reference_step_index=tracking_result.step_index,
         )
         info["base_reward"] = float(base_reward)
         info["base_action_shape"] = tuple(int(dimension) for dimension in base_action_array.shape)
@@ -340,6 +342,7 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         termination_reason: str = "reset",
         requested_action: np.ndarray | None = None,
         applied_action: np.ndarray | None = None,
+        reference_step_index: int = 0,
     ) -> dict[str, Any]:
         """Package tracking diagnostics with copied simulator metadata."""
         active_state = self._current_state_vector() if state is None else np.asarray(state, dtype=float)
@@ -349,6 +352,10 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         last_action = np.array(active_state[16:20], dtype=float, copy=True)
         current = np.array(current_position, dtype=float, copy=True)
         reference = np.array(reference_position, dtype=float, copy=True)
+        reference_index = int(np.clip(reference_step_index, 0, self.reference.times.shape[0] - 1))
+        tracking_phase_start_step = int(self.reference.tracking_phase_start_step)
+        tracking_phase_start_time_sec = float(self.reference.tracking_phase_start_time_sec)
+        is_start_hold = bool(self.reference.start_hold_enabled and reference_index < tracking_phase_start_step)
         return {
             "reference_position": reference,
             "reference_xyz": reference,
@@ -356,6 +363,15 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             "current_xyz": current,
             "position_error_m": float(position_error_m),
             "task_shape": self.reference.shape,
+            "reference_step_index": reference_index,
+            "reference_time_sec": float(self.reference.times[reference_index]),
+            "start_hold_enabled": bool(self.reference.start_hold_enabled),
+            "start_hold_sec": float(self.reference.start_hold_sec),
+            "exclude_start_hold_from_tracking_metrics": bool(self.reference.exclude_start_hold_from_tracking_metrics),
+            "tracking_phase_start_step": tracking_phase_start_step,
+            "tracking_phase_start_time_sec": tracking_phase_start_time_sec,
+            "is_start_hold": is_start_hold,
+            "is_tracking_phase": not is_start_hold,
             "tracking_success": bool(tracking_success),
             "roll_pitch_yaw": attitude,
             "velocity": velocity,

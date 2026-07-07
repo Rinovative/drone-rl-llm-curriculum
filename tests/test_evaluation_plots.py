@@ -26,7 +26,7 @@ def _trace_records(include_action: bool = True) -> list[dict[str, object]]:
                 "step_index": step_index,
                 "time_sec": float(step_index) * 0.1,
                 "reward": -0.1,
-                "position_error_m": 0.05 * step_index,
+                "position_error_m": 0.1,
                 "actual_position_xyz_m": [0.1 * step_index, 0.0, 1.0],
                 "reference_position_xyz_m": [0.1 * step_index, 0.1, 1.0],
                 "error_xyz_m": [0.0, -0.1, 0.0],
@@ -114,10 +114,10 @@ def test_policy_rollout_trace_plots_create_required_pngs(tmp_path: Path) -> None
     assert result.output_kind == "matplotlib_png"
     assert result.step_count == TRACE_STEP_COUNT
     assert set(result.plot_paths) == {
-        "xy_reference_vs_actual",
-        "xyz_vs_time",
-        "position_error_vs_time",
-        "action_vs_time",
+        "trajectory_xy",
+        "trajectory_xyz",
+        "position_error",
+        "action_trace",
     }
     for output_path in result.plot_paths.values():
         assert Path(output_path).stat().st_size > 0
@@ -130,8 +130,17 @@ def test_policy_rollout_trace_plots_omit_action_plot_without_action_data(tmp_pat
 
     result = evaluation.plots.write_policy_rollout_trace_plots(_trace_records(include_action=False), tmp_path / "plots")
 
-    assert "action_vs_time" not in result.plot_paths
-    assert "xy_reference_vs_actual" in result.plot_paths
+    assert "action_trace" not in result.plot_paths
+    assert "trajectory_xy" in result.plot_paths
+
+
+def test_policy_rollout_trace_plots_reject_mismatched_error(tmp_path: Path) -> None:
+    """Verify plot consistency checks catch same-row error mismatches."""
+    records = _trace_records(include_action=False)
+    records[0]["position_error_m"] = 42.0
+
+    with pytest.raises(ValueError, match="same-row actual/reference"):
+        evaluation.plots.write_policy_rollout_trace_plots(records, tmp_path / "plots")
 
 
 def test_plots_import_through_package_alias() -> None:

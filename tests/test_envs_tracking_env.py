@@ -74,6 +74,13 @@ def test_tracking_env_steps_once_with_sampled_action_and_diagnostics() -> None:
         assert "current_position" in info
         assert "task_shape" in info
         assert "tracking_success" in info
+        assert "reference_step_index" in info
+        assert "reference_time_sec" in info
+        assert "start_hold_enabled" in info
+        assert "tracking_phase_start_step" in info
+        assert "tracking_phase_start_time_sec" in info
+        assert "is_start_hold" in info
+        assert "is_tracking_phase" in info
         assert "base_reward" in info
         assert info["base_action_shape"] == action.shape
         assert info["base_action_dtype"] == str(action.dtype)
@@ -122,5 +129,8 @@ def test_circle_task_can_reset_headlessly() -> None:
         assert observation.shape == (10,)
         assert tracking_env.observation_space.contains(observation)
         assert info["task_shape"] == validation.contracts.SHAPE_CIRCLE
+        assert info["start_hold_enabled"] is True
+        assert info["is_start_hold"] is True
+        assert info["tracking_phase_start_step"] == 10
     finally:
         tracking_env.close()

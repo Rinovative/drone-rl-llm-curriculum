@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src import experiments
+from src import envs, experiments
 from src.experiments import cli_render_policy
 
 PARSER_CAMERA_DISTANCE = 0.95
@@ -182,8 +182,8 @@ def test_policy_render_manifest_includes_rollout_summary_fields() -> None:
         gif_path=Path("storage/evaluation_runs/eval_ppo_hover_4096_seed0_on_hover/renders/trained_policy_rollout.gif"),
         trace_path=Path("storage/evaluation_runs/eval_ppo_hover_4096_seed0_on_hover/traces/trained_policy_rollout_trace.jsonl"),
         plot_paths={
-            "xy_reference_vs_actual": "storage/evaluation_runs/eval_ppo_hover_4096_seed0_on_hover/plots/xy_reference_vs_actual.png",
-            "position_error_vs_time": "storage/evaluation_runs/eval_ppo_hover_4096_seed0_on_hover/plots/position_error_vs_time.png",
+            "trajectory_xy": "storage/evaluation_runs/eval_ppo_hover_4096_seed0_on_hover/plots/trajectory_xy.png",
+            "position_error": "storage/evaluation_runs/eval_ppo_hover_4096_seed0_on_hover/plots/position_error.png",
         },
         task_shape="line",
         task_source="config",
@@ -242,7 +242,7 @@ def test_policy_render_manifest_includes_rollout_summary_fields() -> None:
     assert payload["final_action"] == [[0.0, 0.0, 1.0]]
     assert payload["camera_settings"]["mode"] == settings.camera_mode
     assert payload["trace_path"].endswith("traces/trained_policy_rollout_trace.jsonl")
-    assert payload["plot_paths"]["xy_reference_vs_actual"].endswith("xy_reference_vs_actual.png")
+    assert payload["plot_paths"]["trajectory_xy"].endswith("trajectory_xy.png")
     assert payload["reference_path_overlay_enabled"] is True
     assert payload["waypoint_markers_enabled"] is True
     assert payload["active_target_marker_enabled"] is True
@@ -360,7 +360,7 @@ def test_policy_render_manifest_marks_scripted_reference_baseline() -> None:
         evaluation_task_shape="line",
         gif_path=Path("storage/evaluation_runs/eval_scripted_reference_on_line/renders/trained_policy_rollout.gif"),
         trace_path=Path("storage/evaluation_runs/eval_scripted_reference_on_line/traces/trained_policy_rollout_trace.jsonl"),
-        plot_paths={"xy_reference_vs_actual": "storage/evaluation_runs/eval_scripted_reference_on_line/plots/xy_reference_vs_actual.png"},
+        plot_paths={"trajectory_xy": "storage/evaluation_runs/eval_scripted_reference_on_line/plots/trajectory_xy.png"},
         task_shape="line",
         task_source="render_override",
         task_index=LINE_TASK_INDEX,
@@ -505,3 +505,60 @@ def test_cli_render_policy_help_works() -> None:
     assert "--camera-distance" in completed.stdout
     assert "--camera-yaw" in completed.stdout
     assert "--camera-pitch" in completed.stdout
+
+
+class _EnvWrapper:
+    def __init__(self, env: object) -> None:
+        self.env = env
+
+
+class _UnwrappedWrapper:
+    def __init__(self, unwrapped: object) -> None:
+        self.unwrapped = unwrapped
+
+
+def test_resolve_tracking_env_for_rendering_accepts_direct_tracking_env() -> None:
+    """Verify direct TrajectoryTrackingEnv instances resolve without wrapping."""
+    tracking_env = object.__new__(envs.tracking_env.TrajectoryTrackingEnv)
+
+    resolved = experiments.policy_render.resolve_tracking_env_for_rendering(tracking_env)
+
+    assert resolved is tracking_env
+
+
+def test_resolve_tracking_env_for_rendering_unwraps_env_chain() -> None:
+    """Verify Gymnasium-style .env wrappers resolve to the tracking base env."""
+    tracking_env = object.__new__(envs.tracking_env.TrajectoryTrackingEnv)
+    wrapped = _EnvWrapper(_EnvWrapper(tracking_env))
+
+    resolved = experiments.policy_render.resolve_tracking_env_for_rendering(wrapped)
+
+    assert resolved is tracking_env
+
+
+def test_resolve_tracking_env_for_rendering_unwraps_unwrapped_chain() -> None:
+    """Verify .unwrapped chains resolve to the tracking base env."""
+    tracking_env = object.__new__(envs.tracking_env.TrajectoryTrackingEnv)
+    wrapped = _UnwrappedWrapper(_UnwrappedWrapper(tracking_env))
+
+    resolved = experiments.policy_render.resolve_tracking_env_for_rendering(wrapped)
+
+    assert resolved is tracking_env
+
+
+def test_resolve_tracking_env_for_rendering_fails_for_incompatible_object() -> None:
+    """Verify incompatible objects raise a clear rendering resolution error."""
+    with pytest.raises(RuntimeError, match="could not resolve TrajectoryTrackingEnv"):
+        experiments.policy_render.resolve_tracking_env_for_rendering(object())
+
+
+def test_resolve_tracking_env_for_rendering_does_not_loop_forever() -> None:
+    """Verify cyclic wrappers terminate and fail clearly instead of looping forever."""
+
+    class _Cyclic:
+        def __init__(self) -> None:
+            self.env = self
+            self.unwrapped = self
+
+    with pytest.raises(RuntimeError, match="could not resolve TrajectoryTrackingEnv"):
+        experiments.policy_render.resolve_tracking_env_for_rendering(_Cyclic())

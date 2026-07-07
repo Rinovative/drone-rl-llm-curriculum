@@ -59,6 +59,9 @@ FIELD_END_HEIGHT = "end_height"
 FIELD_POINTS = "points"
 FIELD_HOLD_DURATION_SEC = "hold_duration_sec"
 FIELD_MOVE_DURATION_SEC = "move_duration_sec"
+FIELD_START_HOLD_ENABLED = "start_hold_enabled"
+FIELD_START_HOLD_SEC = "start_hold_sec"
+FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS = "exclude_start_hold_from_tracking_metrics"
 
 __all__ = [
     "FIELD_CENTER",
@@ -66,6 +69,7 @@ __all__ = [
     "FIELD_DURATION_SEC",
     "FIELD_END",
     "FIELD_END_HEIGHT",
+    "FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS",
     "FIELD_HEIGHT",
     "FIELD_HOLD_DURATION_SEC",
     "FIELD_MOVE_DURATION_SEC",
@@ -76,6 +80,8 @@ __all__ = [
     "FIELD_SHAPE",
     "FIELD_START",
     "FIELD_START_HEIGHT",
+    "FIELD_START_HOLD_ENABLED",
+    "FIELD_START_HOLD_SEC",
     "FIELD_TASK_TYPE",
     "FIELD_XY",
     "SHAPE_CIRCLE",

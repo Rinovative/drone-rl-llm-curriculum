@@ -215,6 +215,8 @@ def summarize_policy_evaluation_trace(
     if not records:
         message = "trace_records must contain at least one step"
         raise ValueError(message)
+    _validate_trace_consistency(records)
+    _validate_trace_task_shape(records=records, task_shape=task_shape)
     episode_summaries = _episode_summaries(records, action_space)
     metrics = _overall_metrics(records, episode_summaries, action_space)
     metrics.update(
@@ -335,6 +337,7 @@ def build_failure_report(
     action_saturation_fraction = _float_list(metrics.get("action_saturation_fraction"))
     max_action_saturation = max(action_saturation_fraction, default=0.0)
     moving_reference = reference_xy_span_m > REFERENCE_XY_SPAN_MOVING_TASK_MIN_M
+    mean_position_error_m = _float(metrics.get("mean_position_error_tracking_m", mean_position_error_m))
     high_error = mean_position_error_m >= HIGH_MEAN_POSITION_ERROR_M
 
     if moving_reference and actual_xy_span_m < HOVER_LOCK_ACTUAL_XY_SPAN_MAX_M:
@@ -465,16 +468,19 @@ def _make_trace_record(
     current_position = _array3(info.get("current_position"))
     reference_position = _array3(info.get("reference_position"))
     axis_error = current_position - reference_position
+    position_error_m = float(np.linalg.norm(axis_error))
+    reference_step_index = _int(info.get("reference_step_index", episode_step_index))
     record = {
         "step_index": int(step_index),
         "episode_index": int(episode_index),
         "episode_step_index": int(episode_step_index),
-        "time_sec": float(step_index),
+        "reference_step_index": reference_step_index,
+        "time_sec": float(info.get("reference_time_sec", episode_step_index)),
         "current_position": current_position,
         "reference_position": reference_position,
         "actual_position_xyz_m": current_position,
         "reference_position_xyz_m": reference_position,
-        "position_error_m": float(info.get("position_error_m", np.linalg.norm(axis_error))),
+        "position_error_m": position_error_m,
         "axis_error_xyz": axis_error,
         "error_xyz_m": axis_error,
         "velocity": _array_to_jsonable(info.get("velocity", [])),
@@ -491,6 +497,14 @@ def _make_trace_record(
         "terminated": bool(terminated),
         "truncated": bool(truncated),
         "termination_reason": str(info.get("termination_reason", "running")),
+        "task_shape": str(info.get("task_shape", "unknown")),
+        "start_hold_enabled": bool(info.get("start_hold_enabled", False)),
+        "start_hold_sec": _float(info.get("start_hold_sec")),
+        "exclude_start_hold_from_tracking_metrics": bool(info.get("exclude_start_hold_from_tracking_metrics", False)),
+        "tracking_phase_start_step": _int(info.get("tracking_phase_start_step")),
+        "tracking_phase_start_time_sec": _float(info.get("tracking_phase_start_time_sec")),
+        "is_start_hold": bool(info.get("is_start_hold", False)),
+        "is_tracking_phase": bool(info.get("is_tracking_phase", not bool(info.get("is_start_hold", False)))),
         "base_terminated": bool(info.get("base_terminated", False)),
         "base_truncated": bool(info.get("base_truncated", False)),
         "base_truncation_causes": list(info.get("base_truncation_causes", [])),
@@ -521,6 +535,7 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
     references = _array_field(records, "reference_position")
     rewards = np.asarray([_float(record.get("reward")) for record in records], dtype=float)
     errors = np.asarray([_float(record.get("position_error_m")) for record in records], dtype=float)
+    tracking_errors = np.asarray([_float(record.get("position_error_m")) for record in _tracking_metric_records(records)], dtype=float)
     axis_errors = np.abs(positions - references)
     action_metrics = _action_distribution_metrics(_array_field(records, "action"), action_space)
     real_action_metrics = _prefixed_action_distribution_metrics(
@@ -542,8 +557,10 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
         "mean_reward": float(np.mean(rewards)),
         "final_reward": float(rewards[-1]),
         "mean_position_error_m": float(np.mean(errors)),
+        "mean_position_error_tracking_m": float(np.mean(tracking_errors)),
         "final_position_error_m": float(errors[-1]),
         "max_position_error_m": float(np.max(errors)),
+        **_start_hold_summary(records),
         "mean_abs_x_error_m": float(np.mean(axis_errors[:, 0])),
         "mean_abs_y_error_m": float(np.mean(axis_errors[:, 1])),
         "mean_abs_z_error_m": float(np.mean(axis_errors[:, 2])),
@@ -571,6 +588,7 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
     references = _array_field(records, "reference_position")
     rewards = np.asarray([_float(record.get("reward")) for record in records], dtype=float)
     errors = np.asarray([_float(record.get("position_error_m")) for record in records], dtype=float)
+    tracking_errors = np.asarray([_float(record.get("position_error_m")) for record in _tracking_metric_records(records)], dtype=float)
     axis_errors = np.abs(positions - references)
     position_bounds = _position_bounds(positions)
     reference_bounds = _position_bounds(references)
@@ -580,8 +598,10 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         "mean_eval_reward": float(np.mean(rewards)),
         "final_eval_reward": float(rewards[-1]),
         "mean_position_error_m": float(np.mean(errors)),
+        "mean_position_error_tracking_m": float(np.mean(tracking_errors)),
         "final_position_error_m": float(errors[-1]),
         "max_position_error_m": float(np.max(errors)),
+        **_start_hold_summary(records),
         "position_bounds": position_bounds,
         "reference_position_bounds": reference_bounds,
         "action_bounds": _position_bounds(_array_field(records, "action")),
@@ -605,6 +625,85 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
             _real_action_space_from_records(records, fallback_action_space=action_space),
             prefix="real_action",
         ),
+    }
+
+
+def _validate_trace_consistency(records: Sequence[Mapping[str, Any]]) -> None:
+    """Validate deterministic trace alignment before metrics or plots consume it."""
+    task_shapes = {str(record.get("task_shape", "unknown")) for record in records if record.get("task_shape") is not None}
+    if len(task_shapes) > 1:
+        message = f"trace contains multiple task shapes: {', '.join(sorted(task_shapes))}"
+        raise ValueError(message)
+
+    for row_index, record in enumerate(records):
+        actual = _trace_position_row(record, "actual_position_xyz_m", "current_position")
+        reference = _trace_position_row(record, "reference_position_xyz_m", "reference_position")
+        expected_error = float(np.linalg.norm(actual - reference))
+        reported_error = _float(record.get("position_error_m"))
+        if not np.isclose(reported_error, expected_error, atol=1.0e-9, rtol=1.0e-9):
+            message = f"trace row {row_index} position_error_m does not match same-row actual/reference positions"
+            raise ValueError(message)
+
+    for episode_index in sorted({_int(record.get("episode_index")) for record in records}):
+        episode_records = [record for record in records if _int(record.get("episode_index")) == episode_index]
+        episode_steps = np.asarray([_int(record.get("episode_step_index", record.get("step_index"))) for record in episode_records], dtype=int)
+        reference_steps = np.asarray(
+            [_int(record.get("reference_step_index", record.get("episode_step_index", record.get("step_index")))) for record in episode_records],
+            dtype=int,
+        )
+        times = np.asarray([_float(record.get("time_sec")) for record in episode_records], dtype=float)
+        if episode_steps.shape[0] > 1 and np.any(np.diff(episode_steps) <= 0):
+            message = f"episode_step_index must increase within episode {episode_index}"
+            raise ValueError(message)
+        if reference_steps.shape[0] > 1 and np.any(np.diff(reference_steps) < 0):
+            message = f"reference_step_index must be monotonic within episode {episode_index}"
+            raise ValueError(message)
+        if times.shape[0] > 1 and np.any(np.diff(times) < 0.0):
+            message = f"time_sec must be monotonic within episode {episode_index}"
+            raise ValueError(message)
+
+
+def _validate_trace_task_shape(records: Sequence[Mapping[str, Any]], task_shape: str) -> None:
+    """Raise when trace rows identify a different task than the evaluated task."""
+    trace_shapes = {str(record.get("task_shape")) for record in records if record.get("task_shape") not in (None, "unknown")}
+    if not trace_shapes:
+        return
+    if trace_shapes == {str(task_shape)}:
+        return
+    message = f"trace task_shape mismatch: expected {task_shape!r}, got {', '.join(sorted(trace_shapes))}"
+    raise ValueError(message)
+
+
+def _trace_position_row(record: Mapping[str, Any], primary_key: str, fallback_key: str) -> np.ndarray:
+    """Return one strict XYZ trace position row for consistency checks."""
+    value = record.get(primary_key, record.get(fallback_key))
+    row = np.asarray(value, dtype=float).reshape(-1)
+    if row.shape != (POSITION_DIMENSIONS,):
+        message = f"trace field {primary_key} must contain exactly {POSITION_DIMENSIONS} values"
+        raise ValueError(message)
+    if not np.all(np.isfinite(row)):
+        message = f"trace field {primary_key} must contain only finite values"
+        raise ValueError(message)
+    return row
+
+
+def _tracking_metric_records(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Return records used for tracking-only metrics."""
+    if not any(bool(record.get("exclude_start_hold_from_tracking_metrics", False)) for record in records):
+        return list(records)
+    filtered = [record for record in records if not bool(record.get("is_start_hold", False))]
+    return filtered or list(records)
+
+
+def _start_hold_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Return start-hold metadata shared by one trace or episode."""
+    first = records[0]
+    return {
+        "start_hold_enabled": bool(first.get("start_hold_enabled", False)),
+        "start_hold_sec": _float(first.get("start_hold_sec")),
+        "exclude_start_hold_from_tracking_metrics": bool(first.get("exclude_start_hold_from_tracking_metrics", False)),
+        "tracking_phase_start_step": _int(first.get("tracking_phase_start_step")),
+        "tracking_phase_start_time_sec": _float(first.get("tracking_phase_start_time_sec")),
     }
 
 
@@ -662,10 +761,8 @@ def _action_distribution_metrics(actions: np.ndarray, action_space: Any) -> dict
 
 def _tracking_acceptable(metrics: Mapping[str, Any]) -> bool:
     """Return whether tracking metrics look acceptable when no major failure is detected."""
-    return (
-        _float(metrics.get("mean_position_error_m")) <= ACCEPTABLE_MEAN_POSITION_ERROR_M
-        and _float(metrics.get("final_position_error_m")) <= ACCEPTABLE_FINAL_POSITION_ERROR_M
-    )
+    mean_error = _float(metrics.get("mean_position_error_tracking_m", metrics.get("mean_position_error_m")))
+    return mean_error <= ACCEPTABLE_MEAN_POSITION_ERROR_M and _float(metrics.get("final_position_error_m")) <= ACCEPTABLE_FINAL_POSITION_ERROR_M
 
 
 def _overall_status(failure_modes: Sequence[str], tracking_acceptable: bool) -> str:
@@ -683,6 +780,7 @@ def _failure_evidence(metrics: Mapping[str, Any], episode_summaries: Sequence[Ma
     """Return compact evidence values supporting failure classification."""
     return {
         "mean_position_error_m": _float(metrics.get("mean_position_error_m")),
+        "mean_position_error_tracking_m": _float(metrics.get("mean_position_error_tracking_m", metrics.get("mean_position_error_m"))),
         "final_position_error_m": _float(metrics.get("final_position_error_m")),
         "max_position_error_m": _float(metrics.get("max_position_error_m")),
         "reference_xy_span_m": _float(metrics.get("reference_xy_span_m")),

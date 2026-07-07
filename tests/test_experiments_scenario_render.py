@@ -356,7 +356,7 @@ def test_build_scenario_manifest_includes_required_fields(tmp_path: Path) -> Non
         training_task_shape=None,
         gif_path=tmp_path / "renders" / "scenario_rollout.gif",
         trace_path=tmp_path / "traces" / "scenario_rollout_trace.jsonl",
-        plot_paths={"xy_reference_vs_actual": str(tmp_path / "plots" / "xy_reference_vs_actual.png")},
+        plot_paths={"trajectory_xy": str(tmp_path / "plots" / "trajectory_xy.png")},
         actual_steps=composition.total_reference_steps,
         requested_max_steps=settings.max_steps,
         effective_max_steps=effective_max_steps,
@@ -423,4 +423,4 @@ def test_build_scenario_manifest_includes_required_fields(tmp_path: Path) -> Non
     assert payload["reset_count"] == 1
     assert payload["gif_path"].endswith("renders/scenario_rollout.gif")
     assert payload["trace_path"].endswith("traces/scenario_rollout_trace.jsonl")
-    assert payload["plot_paths"]["xy_reference_vs_actual"].endswith("xy_reference_vs_actual.png")
+    assert payload["plot_paths"]["trajectory_xy"].endswith("trajectory_xy.png")
