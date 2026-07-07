@@ -446,15 +446,14 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest = _build_manifest(active_settings, metrics, task_source=task_source, selected_task_index=selected_task_index, task=task)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    utils.wandb.log_wandb_metrics(wandb_run, metrics)
-    utils.wandb.log_wandb_artifacts(
-        wandb_run,
-        {
-            f"{training_run_name}_model": model_path,
-            f"{training_run_name}_metrics": metrics_path,
-            f"{training_run_name}_manifest": manifest_path,
-        },
-    )
+    utils.wandb.log_wandb_summary(wandb_run, metrics)
+    artifact_paths = {
+        f"{training_run_name}_model": model_path,
+        f"{training_run_name}_metrics": metrics_path,
+        f"{training_run_name}_manifest": manifest_path,
+    }
+    artifact_paths.update(_diagnostic_artifact_paths(training_run_name, metrics))
+    utils.wandb.log_wandb_artifacts(wandb_run, artifact_paths)
     if wandb_run is not None:
         wandb_run.finish()
     return PPOTrackingSmokeResult(
@@ -820,6 +819,22 @@ def _build_manifest(
         "diagnostics": diagnostics,
         **diagnostics,
     }
+
+
+def _diagnostic_artifact_paths(training_run_name: str, metrics: dict[str, Any]) -> dict[str, Path]:
+    """Return diagnostic JSON paths that should be preserved as W&B artifacts."""
+    artifact_keys = {
+        "failure_report": "failure_report_path",
+        "curriculum_feedback": "curriculum_feedback_path",
+        "episode_summaries": "episode_summaries_path",
+        "evaluation_trace": "evaluation_trace_path",
+    }
+    paths: dict[str, Path] = {}
+    for artifact_label, metric_key in artifact_keys.items():
+        metric_value = metrics.get(metric_key)
+        if isinstance(metric_value, str) and metric_value:
+            paths[f"{training_run_name}_{artifact_label}"] = Path(metric_value)
+    return paths
 
 
 def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:

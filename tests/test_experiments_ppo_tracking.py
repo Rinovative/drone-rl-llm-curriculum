@@ -170,6 +170,26 @@ def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path
     assert manifest["curriculum_readiness_level"] == "line_not_ready"
 
 
+def test_ppo_tracking_diagnostic_artifact_paths_include_feedback_files(tmp_path: Path) -> None:
+    """Verify W&B artifact path selection includes final diagnostic files."""
+    metrics = {
+        "failure_report_path": str(tmp_path / "failure_report.json"),
+        "curriculum_feedback_path": str(tmp_path / "curriculum_feedback.json"),
+        "episode_summaries_path": str(tmp_path / "episode_summaries.json"),
+        "evaluation_trace_path": str(tmp_path / "evaluation_trace.jsonl"),
+        "metrics_path": str(tmp_path / "metrics.json"),
+    }
+
+    artifact_paths = experiments.ppo_tracking._diagnostic_artifact_paths("ppo_line_smoke", metrics)  # noqa: SLF001
+
+    assert artifact_paths == {
+        "ppo_line_smoke_failure_report": tmp_path / "failure_report.json",
+        "ppo_line_smoke_curriculum_feedback": tmp_path / "curriculum_feedback.json",
+        "ppo_line_smoke_episode_summaries": tmp_path / "episode_summaries.json",
+        "ppo_line_smoke_evaluation_trace": tmp_path / "evaluation_trace.jsonl",
+    }
+
+
 def test_ppo_tracking_explicit_output_dir_remains_direct(tmp_path: Path) -> None:
     """Verify explicit output directory overrides preserve direct metrics placement."""
     settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(

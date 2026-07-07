@@ -14,6 +14,11 @@ from src import utils
 if TYPE_CHECKING:
     from pathlib import Path
 
+MEAN_POSITION_ERROR_M = 0.4
+MEAN_ABS_Z_ERROR_M = 0.3
+ACTION_MEAN_0 = 0.1
+EVAL_STEPS = 120
+
 
 def test_wandb_defaults_are_auto_and_training_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify W&B defaults are auto mode and scoped under the training run."""
@@ -87,3 +92,103 @@ def test_wandb_key_can_be_loaded_from_home_file(tmp_path: Path, monkeypatch: pyt
 
     assert "WANDB_API_KEY" in __import__("os").environ
     assert __import__("os").environ["WANDB_API_KEY"] == "secret-test-key"
+
+
+def test_wandb_summary_metrics_group_final_diagnostics() -> None:
+    """Verify final PPO diagnostics are grouped into W&B summary namespaces."""
+    metrics = {
+        "training_run_name": "ppo_line_smoke",
+        "task_shape": "line",
+        "task_index": 2,
+        "seed": 7,
+        "total_timesteps": 4096,
+        "eval_steps": EVAL_STEPS,
+        "actual_eval_steps": 118,
+        "eval_terminated_count": 1,
+        "eval_truncated_count": 0,
+        "eval_reset_count": 1,
+        "episode_count": 2,
+        "mean_eval_reward": -1.5,
+        "final_eval_reward": -0.5,
+        "mean_position_error_m": MEAN_POSITION_ERROR_M,
+        "final_position_error_m": 0.3,
+        "max_position_error_m": 0.9,
+        "mean_abs_x_error": 0.1,
+        "mean_abs_y_error": 0.2,
+        "mean_abs_z_error": MEAN_ABS_Z_ERROR_M,
+        "final_abs_x_error": 0.4,
+        "final_abs_y_error": 0.5,
+        "final_abs_z_error": 0.6,
+        "reference_xy_span_m": 1.2,
+        "actual_xy_span_m": 0.8,
+        "xy_tracking_ratio": 0.67,
+        "action_mean": [ACTION_MEAN_0, 0.2, MEAN_ABS_Z_ERROR_M],
+        "action_std": [0.01, 0.02, 0.03],
+        "action_min": [-1.0, -0.5, 0.0],
+        "action_max": [0.9, 0.8, 1.0],
+        "action_saturation_fraction": [0.0, 0.25, 1.0],
+        "failure_modes": ["hover_lock", "action_saturation"],
+        "failure_primary_mode": "hover_lock",
+        "curriculum_readiness_level": "line_not_ready",
+        "curriculum_recommended_next_tasks": ["short_slow_line"],
+        "curriculum_avoid_next_tasks": ["circle"],
+        "position_bounds": {"min": [0, 0, 0], "max": [1, 1, 1]},
+        "liftoff_diagnostics": {"zero_action": {"z_max": 0.1}},
+        "evaluation_trace_path": "storage/tmp/evaluation_trace.jsonl",
+    }
+
+    summary = utils.wandb.build_wandb_summary_metrics(metrics)
+
+    assert summary["tracking/mean_position_error_m"] == MEAN_POSITION_ERROR_M
+    assert summary["tracking/mean_abs_z_error_m"] == MEAN_ABS_Z_ERROR_M
+    assert summary["actions/saturation_fraction_2"] == 1.0
+    assert summary["actions/mean_0"] == ACTION_MEAN_0
+    assert summary["evaluation/eval_steps"] == EVAL_STEPS
+    assert summary["evaluation/terminated_count"] == 1
+    assert summary["failure/hover_lock"] == 1
+    assert summary["failure/action_saturation"] == 1
+    assert summary["failure/no_failure_detected"] == 0
+    assert summary["curriculum/readiness_level"] == "line_not_ready"
+    assert summary["curriculum/recommended_next_tasks"] == ["short_slow_line"]
+    assert summary["run/training_run_name"] == "ppo_line_smoke"
+    assert "position_bounds" not in summary
+    assert "liftoff_diagnostics" not in summary
+    assert "evaluation_trace_path" not in summary
+    assert "eval_steps" not in summary
+    assert "xy_tracking_ratio" not in summary
+
+
+def test_wandb_summary_writer_uses_summary_not_history() -> None:
+    """Verify final diagnostics do not get logged as a one-point W&B history row."""
+
+    class FakeRun:
+        """Tiny W&B run stand-in for summary writes."""
+
+        def __init__(self) -> None:
+            """Create empty summary and history containers."""
+            self.summary: dict[str, Any] = {}
+            self.history: list[dict[str, Any]] = []
+
+        def log(self, payload: dict[str, Any]) -> None:
+            """Record unexpected history logs for assertions."""
+            self.history.append(payload)
+
+    run = FakeRun()
+
+    utils.wandb.log_wandb_summary(run, {"mean_position_error_m": 0.25, "eval_steps": 10})
+
+    assert run.summary == {
+        "tracking/mean_position_error_m": 0.25,
+        "evaluation/eval_steps": 10,
+        "failure/hover_lock": 0,
+        "failure/insufficient_xy_motion": 0,
+        "failure/action_saturation": 0,
+        "failure/overshoot": 0,
+        "failure/z_instability": 0,
+        "failure/attitude_instability": 0,
+        "failure/early_termination": 0,
+        "failure/repeated_truncation": 0,
+        "failure/reference_too_fast_or_too_hard": 0,
+        "failure/no_failure_detected": 0,
+    }
+    assert run.history == []

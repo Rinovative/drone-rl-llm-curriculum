@@ -8,6 +8,7 @@ Responsibilities:
   - Resolve W&B auto/online/offline/disabled modes without storing secrets
   - Lazily initialize W&B with run-specific directories and non-secret metadata
   - Safely load WANDB_API_KEY from the environment or an optional home key file
+  - Map final PPO diagnostics into grouped run summary fields
 
 Design principles:
   - Never store or print secrets
@@ -15,7 +16,7 @@ Design principles:
   - Fall back to offline tracking when auto mode lacks credentials
 
 Boundaries:
-  - Training modules decide which metrics to log
+  - Training modules decide when final metrics are ready
   - This module does not own Stable-Baselines3 callbacks or long-running tracking
 ===============================================================================
 
@@ -197,11 +198,102 @@ def start_wandb_run(settings: WandbTrackingSettings, config: dict[str, Any]) -> 
     )
 
 
+TRACKING_SUMMARY_KEYS = {
+    "mean_position_error_m": "tracking/mean_position_error_m",
+    "final_position_error_m": "tracking/final_position_error_m",
+    "max_position_error_m": "tracking/max_position_error_m",
+    "mean_abs_x_error": "tracking/mean_abs_x_error_m",
+    "mean_abs_y_error": "tracking/mean_abs_y_error_m",
+    "mean_abs_z_error": "tracking/mean_abs_z_error_m",
+    "final_abs_x_error": "tracking/final_abs_x_error_m",
+    "final_abs_y_error": "tracking/final_abs_y_error_m",
+    "final_abs_z_error": "tracking/final_abs_z_error_m",
+    "reference_xy_span_m": "tracking/reference_xy_span_m",
+    "actual_xy_span_m": "tracking/actual_xy_span_m",
+    "xy_tracking_ratio": "tracking/xy_tracking_ratio",
+}
+ACTION_VECTOR_SUMMARY_KEYS = {
+    "action_mean": "actions/mean",
+    "action_std": "actions/std",
+    "action_min": "actions/min",
+    "action_max": "actions/max",
+    "action_saturation_fraction": "actions/saturation_fraction",
+}
+EVALUATION_SUMMARY_KEYS = {
+    "eval_steps": "evaluation/eval_steps",
+    "actual_eval_steps": "evaluation/actual_eval_steps",
+    "eval_terminated_count": "evaluation/terminated_count",
+    "eval_truncated_count": "evaluation/truncated_count",
+    "eval_reset_count": "evaluation/reset_count",
+    "episode_count": "evaluation/episode_count",
+    "mean_eval_reward": "evaluation/mean_reward",
+    "final_eval_reward": "evaluation/final_reward",
+}
+RUN_SUMMARY_KEYS = {
+    "task_shape": "run/task_shape",
+    "task_index": "run/task_index",
+    "seed": "run/seed",
+    "total_timesteps": "run/total_timesteps",
+    "training_run_name": "run/training_run_name",
+}
+CURRICULUM_SUMMARY_KEYS = {
+    "curriculum_readiness_level": "curriculum/readiness_level",
+    "curriculum_recommended_next_tasks": "curriculum/recommended_next_tasks",
+    "curriculum_avoid_next_tasks": "curriculum/avoid_next_tasks",
+}
+FAILURE_SUMMARY_MODES = (
+    "hover_lock",
+    "insufficient_xy_motion",
+    "action_saturation",
+    "overshoot",
+    "z_instability",
+    "attitude_instability",
+    "early_termination",
+    "repeated_truncation",
+    "reference_too_fast_or_too_hard",
+    "no_failure_detected",
+)
+
+
 def log_wandb_metrics(run: Any | None, metrics: dict[str, Any]) -> None:
-    """Log final metrics when W&B tracking is enabled."""
+    """Write final run-level metrics to W&B summary fields when tracking is enabled."""
+    log_wandb_summary(run, metrics)
+
+
+def log_wandb_summary(run: Any | None, metrics: dict[str, Any]) -> None:
+    """Write grouped final diagnostics to ``run.summary`` without creating history charts."""
     if run is None:
         return
-    run.log(_flatten_wandb_metrics(metrics))
+    summary_metrics = build_wandb_summary_metrics(metrics)
+    for key, value in summary_metrics.items():
+        run.summary[key] = value
+
+
+def build_wandb_summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    """
+    Build grouped W&B summary metrics from flat PPO diagnostic metrics.
+
+    Parameters
+    ----------
+    metrics
+        Final training metrics payload written to the local metrics JSON.
+
+    Returns
+    -------
+    dict[str, Any]
+        Compact summary payload with grouped W&B keys. Large nested fields, paths,
+        full diagnostics dictionaries, traces and unsupported objects are omitted.
+
+    """
+    summary: dict[str, Any] = {}
+    _copy_scalar_summary(metrics, TRACKING_SUMMARY_KEYS, summary)
+    _copy_scalar_summary(metrics, EVALUATION_SUMMARY_KEYS, summary)
+    _copy_scalar_summary(metrics, RUN_SUMMARY_KEYS, summary)
+    _copy_text_summary(metrics, CURRICULUM_SUMMARY_KEYS, summary)
+    for source_key, key_prefix in ACTION_VECTOR_SUMMARY_KEYS.items():
+        _copy_vector_summary(metrics.get(source_key), key_prefix, summary)
+    _copy_failure_summary(metrics, summary)
+    return summary
 
 
 def log_wandb_artifacts(run: Any | None, paths: dict[str, Path]) -> None:
@@ -235,9 +327,47 @@ def _load_wandb_api_key_from_home_file() -> None:
         os.environ["WANDB_API_KEY"] = key
 
 
-def _flatten_wandb_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
-    """Return scalar metrics suitable for a compact W&B summary log."""
-    return {key: value for key, value in metrics.items() if isinstance(value, (str, int, float, bool)) or value is None}
+def _copy_scalar_summary(source: dict[str, Any], key_map: dict[str, str], target: dict[str, Any]) -> None:
+    """Copy scalar summary values from source to grouped target keys."""
+    for source_key, target_key in key_map.items():
+        if source_key not in source:
+            continue
+        value = source[source_key]
+        if _is_summary_scalar(value):
+            target[target_key] = value
+
+
+def _copy_text_summary(source: dict[str, Any], key_map: dict[str, str], target: dict[str, Any]) -> None:
+    """Copy string or string-list summary values from source to grouped target keys."""
+    for source_key, target_key in key_map.items():
+        value = source.get(source_key)
+        if isinstance(value, str) or (isinstance(value, list) and all(isinstance(item, str) for item in value)):
+            target[target_key] = value
+
+
+def _copy_vector_summary(value: Any, key_prefix: str, target: dict[str, Any]) -> None:
+    """Copy a short numeric vector to indexed grouped summary keys."""
+    if not isinstance(value, (list, tuple)):
+        return
+    for index, item in enumerate(value):
+        if _is_summary_scalar(item) and not isinstance(item, str):
+            target[f"{key_prefix}_{index}"] = item
+
+
+def _copy_failure_summary(metrics: dict[str, Any], target: dict[str, Any]) -> None:
+    """Convert detected failure modes into grouped 0/1 indicator fields."""
+    modes = metrics.get("failure_modes")
+    active_modes = {str(mode) for mode in modes} if isinstance(modes, list) else set()
+    primary_mode = metrics.get("failure_primary_mode")
+    if isinstance(primary_mode, str):
+        active_modes.add(primary_mode)
+    for mode in FAILURE_SUMMARY_MODES:
+        target[f"failure/{mode}"] = int(mode in active_modes)
+
+
+def _is_summary_scalar(value: Any) -> bool:
+    """Return whether a value is safe to store as a compact W&B summary scalar."""
+    return isinstance(value, (int, float, bool)) or value is None or isinstance(value, str)
 
 
 __all__ = [
@@ -248,9 +378,11 @@ __all__ = [
     "WANDB_MODE_OFFLINE",
     "WANDB_MODE_ONLINE",
     "WandbTrackingSettings",
+    "build_wandb_summary_metrics",
     "default_wandb_dir",
     "log_wandb_artifacts",
     "log_wandb_metrics",
+    "log_wandb_summary",
     "parse_wandb_tags",
     "resolve_wandb_mode",
     "start_wandb_run",
