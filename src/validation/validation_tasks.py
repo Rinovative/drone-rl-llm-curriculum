@@ -5,7 +5,7 @@ validation_tasks.py
 Validate simple trajectory tasks before they can enter training or evaluation.
 
 Responsibilities:
-  - Validate minimal hover, circle, line, vertical, and polyline task dictionaries
+  - Validate minimal hover, curriculum line, circle, vertical, and polyline task dictionaries
   - Check sampled trajectories against deterministic feasibility limits
   - Return structured validation results with diagnostic messages
 
@@ -111,12 +111,18 @@ def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = Non
         return _invalid(f"{validation.contracts.FIELD_TASK_TYPE} must be '{validation.contracts.TASK_TYPE_TRAJECTORY}'")
 
     shape = task.get(validation.contracts.FIELD_SHAPE)
-    if shape == validation.contracts.SHAPE_HOVER:
+    if shape in {
+        validation.contracts.SHAPE_HOVER,
+        validation.contracts.SHAPE_HOVER_STABILIZATION,
+        validation.contracts.SHAPE_NEARBY_TARGET_HOVER,
+    }:
         return _validate_built_task(_build_hover_trajectory(task), active_limits)
     if shape == validation.contracts.SHAPE_CIRCLE:
         return _validate_built_task(_build_circle_trajectory(task), active_limits)
-    if shape == validation.contracts.SHAPE_LINE:
+    if shape in {validation.contracts.SHAPE_LINE, validation.contracts.SHAPE_SHORT_SLOW_LINE}:
         return _validate_built_task(_build_line_trajectory(task), active_limits)
+    if shape == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
+        return _validate_built_task(_build_start_hold_then_short_line_trajectory(task), active_limits)
     if shape == validation.contracts.SHAPE_VERTICAL:
         return _validate_built_task(_build_vertical_trajectory(task), active_limits)
     if shape == validation.contracts.SHAPE_POLYLINE:
@@ -237,6 +243,37 @@ def _build_line_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primit
     return trajectory, ()
 
 
+def _build_start_hold_then_short_line_trajectory(
+    task: Mapping[str, Any],
+) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
+    """Build a held-start then line trajectory from explicit timing fields."""
+    try:
+        hold_duration_sec = _require_float(task, validation.contracts.FIELD_HOLD_DURATION_SEC)
+        move_duration_sec = _require_float(task, validation.contracts.FIELD_MOVE_DURATION_SEC)
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        start = _require_sequence(task, validation.contracts.FIELD_START)
+        end = _require_sequence(task, validation.contracts.FIELD_END)
+        _validate_positive_curriculum_durations(hold_duration_sec, move_duration_sec)
+        hold = trajectories.primitives.make_hover_trajectory(
+            position=start,
+            duration_sec=hold_duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+        line = trajectories.primitives.make_line_trajectory(
+            start=start,
+            end=end,
+            duration_sec=move_duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+        trajectory = trajectories.primitives.Trajectory(
+            times=np.concatenate((hold.times, hold.times[-1] + line.times[1:])),
+            positions=np.vstack((hold.positions, line.positions[1:])),
+        )
+    except (TypeError, ValueError) as exc:
+        return None, (str(exc),)
+    return trajectory, ()
+
+
 def _build_vertical_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
     """Build a vertical trajectory from a task mapping, returning messages on failure."""
     try:
@@ -339,3 +376,10 @@ def _optional_sequence(task: Mapping[str, Any], key: str, default: Sequence[Any]
 def _invalid(message: str) -> ValidationResult:
     """Create an invalid validation result with one diagnostic message."""
     return ValidationResult(is_valid=False, messages=(message,))
+
+
+def _validate_positive_curriculum_durations(hold_duration_sec: float, move_duration_sec: float) -> None:
+    """Validate positive curriculum task durations."""
+    if hold_duration_sec <= 0.0 or move_duration_sec <= 0.0:
+        message = "hold_duration_sec and move_duration_sec must be positive"
+        raise ValueError(message)

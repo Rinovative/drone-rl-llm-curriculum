@@ -105,6 +105,8 @@ class PPOTrackingSmokeSettings:
         Optional W&B run tags.
     wandb_dir
         Optional W&B output directory. Defaults to the run-specific wandb directory.
+    initial_model_path
+        Optional Stable-Baselines3 PPO model zip used to initialize this run.
 
     """
 
@@ -130,6 +132,7 @@ class PPOTrackingSmokeSettings:
     wandb_name: str | None = None
     wandb_tags: tuple[str, ...] = ()
     wandb_dir: Path | None = None
+    initial_model_path: Path | None = None
 
     def __post_init__(self) -> None:
         """Validate PPO smoke-run settings."""
@@ -164,6 +167,9 @@ class PPOTrackingSmokeSettings:
             raise ValueError(message)
         if not self.wandb_project.strip():
             message = "wandb_project must be non-empty"
+            raise ValueError(message)
+        if self.initial_model_path is not None and self.initial_model_path.suffix != ".zip":
+            message = "initial_model_path must point to a .zip model"
             raise ValueError(message)
 
 
@@ -362,19 +368,30 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     try:
         action_metadata = _tracking_env_action_metadata(training_env)
         rollout_steps = _ppo_rollout_steps(active_settings.total_timesteps)
-        model = PPO(
-            "MlpPolicy",
-            training_env,
-            batch_size=rollout_steps,
-            device="cpu",
-            gamma=0.95,
-            learning_rate=1.0e-3,
-            n_epochs=4,
-            n_steps=rollout_steps,
-            seed=active_settings.seed,
-            tensorboard_log=str(logs_dir),
-            verbose=0,
-        )
+        if active_settings.initial_model_path is None:
+            model = PPO(
+                "MlpPolicy",
+                training_env,
+                batch_size=rollout_steps,
+                device="cpu",
+                gamma=0.95,
+                learning_rate=1.0e-3,
+                n_epochs=4,
+                n_steps=rollout_steps,
+                seed=active_settings.seed,
+                tensorboard_log=str(logs_dir),
+                verbose=0,
+            )
+        else:
+            if not active_settings.initial_model_path.exists():
+                message = f"initial_model_path does not exist: {active_settings.initial_model_path}"
+                raise FileNotFoundError(message)
+            model = PPO.load(
+                str(active_settings.initial_model_path),
+                env=training_env,
+                device="cpu",
+                tensorboard_log=str(logs_dir),
+            )
         wandb_run = utils.wandb.start_wandb_run(
             settings=wandb_settings,
             config=_wandb_config(
@@ -458,6 +475,9 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "trained": True,
         "env_checked": active_settings.check_env,
         "normalize_actions": active_settings.normalize_actions,
+        "initial_model_path": str(active_settings.initial_model_path) if active_settings.initial_model_path is not None else None,
+        "model_transfer_enabled": active_settings.initial_model_path is not None,
+        "model_transfer_source": str(active_settings.initial_model_path) if active_settings.initial_model_path is not None else None,
         "wandb": _wandb_run_metadata(wandb_settings, wandb_run),
         **eval_metrics,
         **diagnostic_artifact_fields,
@@ -486,6 +506,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
 
 def run_ppo_tracking_smoke_from_config(
     config_path: str | Path = DEFAULT_PPO_TRACKING_CONFIG_PATH,
+    task_config_path: str | Path | None = None,
     task_index: int | None = None,
     task_shape: str | None = None,
     run_name: str | None = None,
@@ -501,6 +522,8 @@ def run_ppo_tracking_smoke_from_config(
     wandb_name: str | None = None,
     wandb_tags: tuple[str, ...] | None = None,
     wandb_dir: str | Path | None = None,
+    normalize_actions: bool | None = None,
+    initial_model_path: str | Path | None = None,
 ) -> PPOTrackingSmokeResult:
     """
     Load settings, apply CLI-style overrides, and run PPO smoke training.
@@ -509,6 +532,8 @@ def run_ppo_tracking_smoke_from_config(
     ----------
     config_path
         YAML settings path.
+    task_config_path
+        Optional task-list config path override.
     task_index
         Optional task-index override.
     task_shape
@@ -539,6 +564,10 @@ def run_ppo_tracking_smoke_from_config(
         Optional W&B tag override.
     wandb_dir
         Optional W&B directory override.
+    normalize_actions
+        Optional PPO-facing normalized-action override.
+    initial_model_path
+        Optional Stable-Baselines3 PPO model zip used to initialize training.
 
     Returns
     -------
@@ -548,7 +577,7 @@ def run_ppo_tracking_smoke_from_config(
     """
     settings = load_ppo_tracking_settings(config_path)
     overridden = PPOTrackingSmokeSettings(
-        task_config_path=settings.task_config_path,
+        task_config_path=settings.task_config_path if task_config_path is None else Path(task_config_path),
         task_index=settings.task_index if task_index is None else task_index,
         task_shape=settings.task_shape if task_shape is None else task_shape,
         run_name=settings.run_name if run_name is None else run_name,
@@ -561,7 +590,7 @@ def run_ppo_tracking_smoke_from_config(
         model_filename=settings.model_filename,
         metrics_filename=settings.metrics_filename,
         check_env=settings.check_env,
-        normalize_actions=settings.normalize_actions,
+        normalize_actions=settings.normalize_actions if normalize_actions is None else normalize_actions,
         wandb_mode=settings.wandb_mode if wandb_mode is None else wandb_mode,
         training_config_path=settings.training_config_path,
         wandb_project=settings.wandb_project if wandb_project is None else wandb_project,
@@ -570,6 +599,7 @@ def run_ppo_tracking_smoke_from_config(
         wandb_name=settings.wandb_name if wandb_name is None else wandb_name,
         wandb_tags=settings.wandb_tags if wandb_tags is None else wandb_tags,
         wandb_dir=settings.wandb_dir if wandb_dir is None else Path(wandb_dir),
+        initial_model_path=settings.initial_model_path if initial_model_path is None else Path(initial_model_path),
     )
     return run_ppo_tracking_smoke(overridden)
 
@@ -579,6 +609,7 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
     output_dir_value = config.get("output_dir")
     model_dir_value = config.get("model_dir")
     wandb_dir_value = config.get("wandb_dir")
+    initial_model_path_value = config.get("initial_model_path")
     settings_kwargs: dict[str, Any] = {
         "training_config_path": training_config_path,
         "task_config_path": Path(config.get("task_config_path", DEFAULT_TASK_CONFIG_PATH)),
@@ -604,6 +635,8 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
     }
     if wandb_dir_value is not None:
         settings_kwargs["wandb_dir"] = Path(wandb_dir_value)
+    if initial_model_path_value is not None:
+        settings_kwargs["initial_model_path"] = Path(initial_model_path_value)
     return PPOTrackingSmokeSettings(**settings_kwargs)
 
 
@@ -830,6 +863,9 @@ def _build_manifest(
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
+        "initial_model_path": metrics.get("initial_model_path"),
+        "model_transfer_enabled": metrics.get("model_transfer_enabled", False),
+        "model_transfer_source": metrics.get("model_transfer_source"),
         "model_path": metrics["model_path"],
         "metrics_path": metrics["metrics_path"],
         "manifest_path": metrics["manifest_path"],
@@ -923,6 +959,9 @@ def _wandb_config(
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
+        "initial_model_path": str(settings.initial_model_path) if settings.initial_model_path is not None else None,
+        "model_transfer_enabled": settings.initial_model_path is not None,
+        "model_transfer_source": str(settings.initial_model_path) if settings.initial_model_path is not None else None,
         "model_path": str(model_path),
         "metrics_path": str(metrics_path),
         "manifest_path": str(manifest_path),

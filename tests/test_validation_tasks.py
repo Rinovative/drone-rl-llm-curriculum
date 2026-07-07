@@ -131,6 +131,61 @@ def test_valid_line_task_passes_validation() -> None:
     assert result.trajectory is not None
 
 
+def test_manual_curriculum_hover_shapes_pass_validation() -> None:
+    """Verify hover-like manual curriculum tasks are accepted explicitly."""
+    contracts = validation.contracts
+    for shape, position in (
+        (contracts.SHAPE_HOVER_STABILIZATION, [0.0, 0.0, 1.0]),
+        (contracts.SHAPE_NEARBY_TARGET_HOVER, [0.15, 0.0, 1.0]),
+    ):
+        result = validation.tasks.validate_task(
+            {
+                contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+                contracts.FIELD_SHAPE: shape,
+                contracts.FIELD_DURATION_SEC: 2.0,
+                contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+                contracts.FIELD_POSITION: position,
+            }
+        )
+
+        assert result.is_valid
+        assert result.messages == ()
+        assert result.trajectory is not None
+
+
+def test_manual_curriculum_line_shapes_pass_validation() -> None:
+    """Verify short line and start-hold line curriculum tasks are accepted."""
+    contracts = validation.contracts
+    short_line = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_SHORT_SLOW_LINE,
+            contracts.FIELD_DURATION_SEC: 4.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_START: [0.0, 0.0, 1.0],
+            contracts.FIELD_END: [0.5, 0.0, 1.0],
+        }
+    )
+    held_line = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
+            contracts.FIELD_HOLD_DURATION_SEC: 1.0,
+            contracts.FIELD_MOVE_DURATION_SEC: 3.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_START: [0.0, 0.0, 1.0],
+            contracts.FIELD_END: [0.25, 0.0, 1.0],
+        }
+    )
+
+    assert short_line.is_valid
+    assert short_line.messages == ()
+    assert short_line.trajectory is not None
+    assert held_line.is_valid
+    assert held_line.messages == ()
+    assert held_line.trajectory is not None
+
+
 def test_valid_vertical_task_passes_validation() -> None:
     """Verify a feasible vertical task is accepted."""
     contracts = validation.contracts
