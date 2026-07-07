@@ -33,6 +33,7 @@ def test_storage_root_respects_environment(tmp_path: Path, monkeypatch: pytest.M
     assert utils.artifacts.get_training_models_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "models"
     assert utils.artifacts.get_evaluation_plots_dir("eval_example_on_hover") == storage_root / "evaluation_runs" / "eval_example_on_hover" / "plots"
     assert utils.artifacts.get_training_logs_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "logs"
+    assert utils.artifacts.get_training_diagnostics_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "diagnostics"
     assert utils.artifacts.get_training_wandb_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "wandb"
 
 
@@ -45,7 +46,7 @@ def test_ensure_category_run_dirs_create_new_layouts(tmp_path: Path) -> None:
     assert training_paths["run"] == tmp_path / "training_runs" / "example_training_run"
     assert evaluation_paths["run"] == tmp_path / "evaluation_runs" / "eval_example_on_hover"
     assert comparison_paths["run"] == tmp_path / "comparison_reports" / "comparison_smoke"
-    for name in ("models", "metrics", "manifests", "logs", "wandb"):
+    for name in ("models", "metrics", "manifests", "logs", "wandb", "diagnostics"):
         assert training_paths[name].is_dir()
     for name in ("renders", "traces", "plots", "manifests"):
         assert evaluation_paths[name].is_dir()

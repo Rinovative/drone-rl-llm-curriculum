@@ -33,7 +33,7 @@ from typing import Any
 
 import numpy as np
 
-from src import envs, experiments, utils
+from src import envs, evaluation, experiments, utils
 
 DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking.yaml")
 DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
@@ -321,6 +321,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     metrics_path = _resolve_metrics_path(active_settings, resolved_task_shape)
     manifest_path = _resolve_manifest_path(active_settings, resolved_task_shape)
     logs_dir = utils.artifacts.get_training_logs_dir(training_run_name)
+    diagnostics_dir = utils.artifacts.get_training_diagnostics_dir(training_run_name)
     wandb_settings = _wandb_settings(active_settings, resolved_task_shape)
 
     warnings = [*selection_warnings, *(_check_tracking_env(task) if active_settings.check_env else ())]
@@ -334,6 +335,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
 
     from stable_baselines3 import PPO  # noqa: PLC0415
 
@@ -364,6 +366,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
                 metrics_path,
                 manifest_path,
                 logs_dir,
+                diagnostics_dir,
                 selected_task_index,
                 task,
             ),
@@ -379,7 +382,16 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         model.learn(**learn_kwargs)
         model.save(str(model_path))
         ppo_device = str(model.device)
-        eval_metrics = _evaluate_model(model, training_env, active_settings)
+        eval_diagnostics = evaluation.diagnostics.collect_policy_evaluation_diagnostics(
+            model=model,
+            tracking_env=training_env,
+            eval_steps=active_settings.eval_steps,
+            seed=active_settings.seed,
+            training_run_name=training_run_name,
+            task_shape=resolved_task_shape,
+            total_timesteps=active_settings.total_timesteps,
+        )
+        eval_metrics = eval_diagnostics.metrics
     finally:
         training_env.close()
 
@@ -394,6 +406,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         **simple_liftoff_diagnostics,
         **trained_liftoff_diagnostics,
     }
+    diagnostic_artifact_fields = evaluation.diagnostics.write_policy_evaluation_diagnostics(eval_diagnostics, diagnostics_dir)
     warnings.extend(_movement_warnings(eval_metrics=eval_metrics, action_metadata=action_metadata))
 
     metrics: dict[str, Any] = {
@@ -417,6 +430,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "metrics_path": str(metrics_path),
         "manifest_path": str(manifest_path),
         "logs_dir": str(logs_dir),
+        "diagnostics_dir": str(diagnostics_dir),
         "dependency_available": dependencies,
         "runtime": runtime_info,
         "ppo_device": ppo_device,
@@ -427,6 +441,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "env_checked": active_settings.check_env,
         "wandb": _wandb_run_metadata(wandb_settings, wandb_run),
         **eval_metrics,
+        **diagnostic_artifact_fields,
     }
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest = _build_manifest(active_settings, metrics, task_source=task_source, selected_task_index=selected_task_index, task=task)
@@ -799,6 +814,7 @@ def _build_manifest(
         "manifest_path": metrics["manifest_path"],
         "output_dir": str(settings.output_dir) if settings.output_dir is not None else str(utils.artifacts.get_training_run_dir(run_name)),
         "logs_dir": metrics["logs_dir"],
+        "diagnostics_dir": metrics.get("diagnostics_dir"),
         "warnings": list(metrics.get("warnings", [])),
         "wandb": metrics.get("wandb", {}),
         "diagnostics": diagnostics,
@@ -825,6 +841,17 @@ def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
         "xy_tracking_ratio",
         "eval_terminated_count",
         "eval_truncated_count",
+        "diagnostics_dir",
+        "evaluation_trace_path",
+        "episode_summaries_path",
+        "failure_report_path",
+        "curriculum_feedback_path",
+        "failure_primary_mode",
+        "failure_modes",
+        "failure_overall_status",
+        "curriculum_readiness_level",
+        "curriculum_recommended_next_tasks",
+        "curriculum_avoid_next_tasks",
     )
     return {key: metrics[key] for key in diagnostic_keys if key in metrics}
 
@@ -836,6 +863,7 @@ def _wandb_config(
     metrics_path: Path,
     manifest_path: Path,
     logs_dir: Path,
+    diagnostics_dir: Path,
     selected_task_index: int,
     task: dict[str, Any],
 ) -> dict[str, Any]:
@@ -855,6 +883,7 @@ def _wandb_config(
         "metrics_path": str(metrics_path),
         "manifest_path": str(manifest_path),
         "logs_dir": str(logs_dir),
+        "diagnostics_dir": str(diagnostics_dir),
     }
 
 
@@ -894,56 +923,17 @@ def _ppo_rollout_steps(total_timesteps: int) -> int:
 
 def _evaluate_model(model: Any, tracking_env: Any, settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
     """Evaluate a trained model for a deterministic rollout with tracking diagnostics."""
-    observation, _ = tracking_env.reset(seed=settings.seed)
-    rewards: list[float] = []
-    errors: list[float] = []
-    positions: list[np.ndarray] = []
-    reference_positions: list[np.ndarray] = []
-    actions: list[np.ndarray] = []
-    terminated_count = 0
-    truncated_count = 0
-    reset_count = 0
-    for _ in range(settings.eval_steps):
-        action, _ = model.predict(observation, deterministic=True)
-        observation, reward, terminated, truncated, info = tracking_env.step(action)
-        rewards.append(float(reward))
-        errors.append(float(info["position_error_m"]))
-        positions.append(np.asarray(info["current_position"], dtype=float))
-        reference_positions.append(np.asarray(info["reference_position"], dtype=float))
-        actions.append(np.asarray(action, dtype=float))
-        if terminated:
-            terminated_count += 1
-        if truncated:
-            truncated_count += 1
-        if terminated or truncated:
-            reset_count += 1
-            observation, _ = tracking_env.reset(seed=settings.seed + reset_count)
-
-    position_bounds = _position_bounds(positions)
-    reference_position_bounds = _position_bounds(reference_positions)
-    action_bounds = _position_bounds(actions)
-    actual_xy_span_m = float(np.linalg.norm([_axis_span(position_bounds, axis=0), _axis_span(position_bounds, axis=1)]))
-    reference_xy_span_m = float(np.linalg.norm([_axis_span(reference_position_bounds, axis=0), _axis_span(reference_position_bounds, axis=1)]))
-    return {
-        "actual_eval_steps": len(rewards),
-        "eval_resets": reset_count,
-        "eval_terminated_count": terminated_count,
-        "eval_truncated_count": truncated_count,
-        "mean_eval_reward": float(np.mean(rewards)),
-        "final_eval_reward": float(rewards[-1]),
-        "mean_position_error_m": float(np.mean(errors)),
-        "final_position_error_m": float(errors[-1]),
-        "position_bounds": position_bounds,
-        "reference_position_bounds": reference_position_bounds,
-        "action_bounds": action_bounds,
-        "actual_z_span_m": _axis_span(position_bounds, axis=2),
-        "actual_xy_span_m": actual_xy_span_m,
-        "reference_z_span_m": _axis_span(reference_position_bounds, axis=2),
-        "reference_xy_span_m": reference_xy_span_m,
-        "xy_tracking_ratio": _xy_tracking_ratio(actual_xy_span_m, reference_xy_span_m),
-        **_tracking_error_metrics(positions, reference_positions),
-        **_action_distribution_metrics(actions, tracking_env.action_space),
-    }
+    task_shape = str(getattr(getattr(tracking_env, "reference", None), "shape", settings.task_shape or "unknown"))
+    diagnostics = evaluation.diagnostics.collect_policy_evaluation_diagnostics(
+        model=model,
+        tracking_env=tracking_env,
+        eval_steps=settings.eval_steps,
+        seed=settings.seed,
+        training_run_name=_run_name(settings, task_shape),
+        task_shape=task_shape,
+        total_timesteps=settings.total_timesteps,
+    )
+    return diagnostics.metrics
 
 
 def _tracking_error_metrics(positions: list[np.ndarray], reference_positions: list[np.ndarray]) -> dict[str, float]:

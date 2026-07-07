@@ -134,6 +134,42 @@ def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, mo
     assert wandb_settings.group == "ppo_tracking/line"
 
 
+def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path) -> None:
+    """Verify PPO manifests duplicate compact diagnostics summary and artifact paths."""
+    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(run_name="ppo_line_smoke")
+    metrics = {
+        "training_run_name": "ppo_line_smoke",
+        "model_path": str(tmp_path / "models" / "ppo_line_smoke.zip"),
+        "metrics_path": str(tmp_path / "metrics" / "ppo_line_smoke_metrics.json"),
+        "manifest_path": str(tmp_path / "manifests" / "ppo_line_smoke_manifest.json"),
+        "logs_dir": str(tmp_path / "logs"),
+        "diagnostics_dir": str(tmp_path / "diagnostics"),
+        "evaluation_trace_path": str(tmp_path / "diagnostics" / "evaluation_trace.jsonl"),
+        "episode_summaries_path": str(tmp_path / "diagnostics" / "episode_summaries.json"),
+        "failure_report_path": str(tmp_path / "diagnostics" / "failure_report.json"),
+        "curriculum_feedback_path": str(tmp_path / "diagnostics" / "curriculum_feedback.json"),
+        "failure_primary_mode": "hover_lock",
+        "failure_modes": ["hover_lock", "insufficient_xy_motion"],
+        "failure_overall_status": "failed",
+        "curriculum_readiness_level": "line_not_ready",
+        "curriculum_recommended_next_tasks": ["short_slow_line"],
+        "curriculum_avoid_next_tasks": ["circle"],
+    }
+
+    manifest = experiments.ppo_tracking._build_manifest(  # noqa: SLF001
+        settings=settings,
+        metrics=metrics,
+        task_source="config",
+        selected_task_index=0,
+        task={"shape": "line"},
+    )
+
+    assert manifest["diagnostics_dir"] == str(tmp_path / "diagnostics")
+    assert manifest["evaluation_trace_path"].endswith("evaluation_trace.jsonl")
+    assert manifest["failure_primary_mode"] == "hover_lock"
+    assert manifest["curriculum_readiness_level"] == "line_not_ready"
+
+
 def test_ppo_tracking_explicit_output_dir_remains_direct(tmp_path: Path) -> None:
     """Verify explicit output directory overrides preserve direct metrics placement."""
     settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(

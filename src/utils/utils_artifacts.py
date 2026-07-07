@@ -38,6 +38,7 @@ MODELS_DIRNAME = "models"
 LOGS_DIRNAME = "logs"
 LLM_LOGS_DIRNAME = "llm_logs"
 WANDB_DIRNAME = "wandb"
+DIAGNOSTICS_DIRNAME = "diagnostics"
 
 _TRAINING_RUN_SUBDIRS = (
     MODELS_DIRNAME,
@@ -45,6 +46,7 @@ _TRAINING_RUN_SUBDIRS = (
     MANIFESTS_DIRNAME,
     LOGS_DIRNAME,
     WANDB_DIRNAME,
+    DIAGNOSTICS_DIRNAME,
 )
 
 _EVALUATION_RUN_SUBDIRS = (
@@ -104,6 +106,11 @@ def get_evaluation_renders_dir(run_name: str, storage_root: str | Path | None = 
 def get_evaluation_traces_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
     """Return the trace artifact directory for an evaluation run."""
     return get_evaluation_run_dir(run_name, storage_root) / TRACES_DIRNAME
+
+
+def get_training_diagnostics_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Return the diagnostics artifact directory for a training run."""
+    return get_training_run_dir(run_name, storage_root) / DIAGNOSTICS_DIRNAME
 
 
 def get_training_models_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
@@ -245,6 +252,7 @@ def _validate_run_name(run_name: str) -> str:
 __all__ = [
     "COMPARISON_REPORTS_DIRNAME",
     "CONFIG_DIRNAME",
+    "DIAGNOSTICS_DIRNAME",
     "EVALUATION_RUNS_DIRNAME",
     "MANIFESTS_DIRNAME",
     "METRICS_DIRNAME",
@@ -268,6 +276,7 @@ __all__ = [
     "get_evaluation_traces_dir",
     "get_evaluation_wandb_dir",
     "get_storage_root",
+    "get_training_diagnostics_dir",
     "get_training_logs_dir",
     "get_training_manifests_dir",
     "get_training_metrics_dir",
