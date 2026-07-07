@@ -218,6 +218,11 @@ ACTION_VECTOR_SUMMARY_KEYS = {
     "action_min": "actions/min",
     "action_max": "actions/max",
     "action_saturation_fraction": "actions/saturation_fraction",
+    "real_action_mean": "actions/real_mean",
+    "real_action_std": "actions/real_std",
+    "real_action_min": "actions/real_min",
+    "real_action_max": "actions/real_max",
+    "real_action_saturation_fraction": "actions/real_saturation_fraction",
 }
 EVALUATION_SUMMARY_KEYS = {
     "eval_steps": "evaluation/eval_steps",
@@ -234,6 +239,7 @@ RUN_SUMMARY_KEYS = {
     "task_index": "run/task_index",
     "seed": "run/seed",
     "total_timesteps": "run/total_timesteps",
+    "normalize_actions": "run/normalize_actions",
     "training_run_name": "run/training_run_name",
 }
 CURRICULUM_SUMMARY_KEYS = {

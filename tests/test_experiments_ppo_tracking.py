@@ -42,6 +42,7 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.seed == 0
     assert settings.output_dir is None
     assert settings.model_dir is None
+    assert settings.normalize_actions is True
     assert settings.wandb_mode == "auto"
     assert settings.wandb_project == utils.wandb.DEFAULT_WANDB_PROJECT
     assert settings.wandb_entity is None
@@ -229,8 +230,52 @@ def test_tracking_action_metadata_reports_pid_contract() -> None:
     metadata = experiments.ppo_tracking.describe_tracking_env_action_metadata(task)
 
     assert metadata["action_space_shape"] == [1, 3]
+    assert metadata["action_space_low"] == [[-1.0, -1.0, -1.0]]
+    assert metadata["action_space_high"] == [[1.0, 1.0, 1.0]]
+    assert metadata["actions_normalized"] is True
+    assert metadata["real_action_space_low"] != metadata["action_space_low"]
     assert metadata["base_action_type"] == "pid"
     assert "x/y/z movement" in metadata["base_action_semantics"]
+
+
+def test_normalized_action_wrapper_maps_to_real_pid_bounds() -> None:
+    """Verify normalized PPO actions map explicitly to real tracking action bounds."""
+    task = experiments.ppo_tracking._load_task(  # noqa: SLF001
+        experiments.ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        experiments.ppo_tracking.DEFAULT_TASK_INDEX,
+    )
+    real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False, max_steps=DIAGNOSTIC_STEPS)
+    wrapped_env = envs.tracking_env.make_normalized_action_env(real_env)
+    try:
+        low = np.asarray(real_env.action_space.low, dtype=np.float32)
+        high = np.asarray(real_env.action_space.high, dtype=np.float32)
+        midpoint = (low + high) * 0.5
+
+        assert np.allclose(wrapped_env.action_space.low, -1.0)
+        assert np.allclose(wrapped_env.action_space.high, 1.0)
+        assert np.allclose(wrapped_env.normalized_to_real_action(np.zeros((1, 3), dtype=np.float32)), midpoint)
+        assert np.allclose(wrapped_env.normalized_to_real_action(-np.ones((1, 3), dtype=np.float32)), low)
+        assert np.allclose(wrapped_env.normalized_to_real_action(np.ones((1, 3), dtype=np.float32)), high)
+        assert np.allclose(wrapped_env.real_to_normalized_action(midpoint), 0.0)
+    finally:
+        wrapped_env.close()
+
+
+def test_ppo_training_env_uses_normalized_action_space_when_enabled() -> None:
+    """Verify PPO receives the normalized action wrapper when configured."""
+    task = experiments.ppo_tracking._load_task(  # noqa: SLF001
+        experiments.ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        experiments.ppo_tracking.DEFAULT_TASK_INDEX,
+    )
+    real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False, max_steps=DIAGNOSTIC_STEPS)
+    training_env = experiments.ppo_tracking._ppo_training_env(real_env, normalize_actions=True)  # noqa: SLF001
+    try:
+        assert training_env.action_space.shape == (1, 3)
+        assert np.allclose(training_env.action_space.low, -1.0)
+        assert np.allclose(training_env.action_space.high, 1.0)
+        assert training_env.real_action_space is real_env.action_space
+    finally:
+        training_env.close()
 
 
 def test_liftoff_diagnostics_report_simple_policy_bounds() -> None:
@@ -262,7 +307,8 @@ def test_evaluate_model_metrics_include_movement_bounds() -> None:
         experiments.ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
         experiments.ppo_tracking.DEFAULT_TASK_INDEX,
     )
-    tracking_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False, max_steps=DIAGNOSTIC_STEPS)
+    real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False, max_steps=DIAGNOSTIC_STEPS)
+    tracking_env = envs.tracking_env.make_normalized_action_env(real_env)
     try:
         settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(eval_steps=DIAGNOSTIC_STEPS)
         metrics = experiments.ppo_tracking._evaluate_model(HighActionModel(), tracking_env, settings)  # noqa: SLF001
@@ -275,7 +321,10 @@ def test_evaluate_model_metrics_include_movement_bounds() -> None:
     assert "xy_tracking_ratio" in metrics
     assert metrics["action_bounds"]["max"] == [1.0, 1.0, 1.0]
     assert metrics["action_mean"] == [1.0, 1.0, 1.0]
-    assert metrics["action_saturation_fraction"] == [0.0, 0.0, 1.0]
+    assert metrics["action_saturation_fraction"] == [1.0, 1.0, 1.0]
+    assert metrics["actions_normalized"] is True
+    assert "real_action_mean" in metrics
+    assert metrics["real_action_saturation_fraction"] == [1.0, 1.0, 1.0]
     assert "mean_abs_x_error" in metrics
     assert "final_abs_z_error" in metrics
 

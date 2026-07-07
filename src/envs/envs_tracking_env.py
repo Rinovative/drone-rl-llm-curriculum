@@ -30,7 +30,7 @@ Notes:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import gymnasium as gym
 import numpy as np
@@ -50,6 +50,58 @@ BASE_Z_TRUNCATION_LIMIT_M = 2.0
 BASE_ATTITUDE_TRUNCATION_LIMIT_RAD = 0.4
 TRACKING_ACTION_XY_MARGIN_M = 0.2
 TRACKING_ACTION_Z_MARGIN_M = 0.5
+NORMALIZED_ACTION_LOW = -1.0
+NORMALIZED_ACTION_HIGH = 1.0
+
+
+class NormalizedActionWrapper(gym.Wrapper[np.ndarray, Any, np.ndarray, Any]):
+    """
+    Map symmetric PPO actions in ``[-1, 1]`` to real PID target-position actions.
+
+    Parameters
+    ----------
+    env
+        Trajectory tracking environment exposing the real PID target-position action space.
+
+    Notes
+    -----
+    The wrapped environment physics and PID semantics are unchanged. Only the
+    action interface seen by PPO is normalized; every step forwards the mapped
+    real action to the underlying environment and records both forms in ``info``.
+
+    """
+
+    def __init__(self, env: gym.Env[np.ndarray, Any]) -> None:
+        """Initialize the normalized action interface around a tracking environment."""
+        super().__init__(env)
+        self.real_action_space = cast("spaces.Box", env.action_space)
+        self.normalized_action_space = spaces.Box(
+            low=np.full(self.real_action_space.shape, NORMALIZED_ACTION_LOW, dtype=np.float32),
+            high=np.full(self.real_action_space.shape, NORMALIZED_ACTION_HIGH, dtype=np.float32),
+            dtype=np.float32,
+        )
+        self.action_space = self.normalized_action_space
+
+    def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Map a normalized PPO action to a real PID action before stepping."""
+        normalized_action = _clip_action_to_space(np.asarray(action), self.normalized_action_space)
+        real_action = normalized_to_real_action(normalized_action, self.real_action_space)
+        observation, reward, terminated, truncated, info = self.env.step(real_action)
+        info = dict(info)
+        info["normalized_action"] = np.array(normalized_action, dtype=float, copy=True)
+        info["real_action"] = np.array(real_action, dtype=float, copy=True)
+        info["action_normalized"] = True
+        info["real_action_space_low"] = np.array(self.real_action_space.low, dtype=float, copy=True)
+        info["real_action_space_high"] = np.array(self.real_action_space.high, dtype=float, copy=True)
+        return observation, float(reward), terminated, truncated, info
+
+    def normalized_to_real_action(self, action: Any) -> np.ndarray:
+        """Map a normalized action from ``[-1, 1]`` into the real PID action bounds."""
+        return normalized_to_real_action(action, self.real_action_space)
+
+    def real_to_normalized_action(self, action: Any) -> np.ndarray:
+        """Map a real PID target-position action into normalized PPO coordinates."""
+        return real_to_normalized_action(action, self.real_action_space)
 
 
 class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
@@ -361,6 +413,59 @@ def make_trajectory_tracking_env(
         max_steps=max_steps,
         episode_len_sec=episode_len_sec,
     )
+
+
+def make_normalized_action_env(env: gym.Env[np.ndarray, Any]) -> NormalizedActionWrapper:
+    """Wrap a tracking environment with a symmetric normalized action interface."""
+    return NormalizedActionWrapper(env)
+
+
+def normalized_to_real_action(action: Any, real_action_space: spaces.Box) -> np.ndarray:
+    """
+    Map normalized ``[-1, 1]`` actions to real PID target-position bounds.
+
+    Parameters
+    ----------
+    action
+        PPO-facing normalized action. Values are clipped to ``[-1, 1]`` before mapping.
+    real_action_space
+        Underlying tracking environment action space with real PID target-position bounds.
+
+    Returns
+    -------
+    np.ndarray
+        Real action computed as ``low + (normalized + 1) * 0.5 * (high - low)``.
+
+    """
+    normalized = np.asarray(action, dtype=np.float32)
+    normalized = np.clip(normalized, NORMALIZED_ACTION_LOW, NORMALIZED_ACTION_HIGH)
+    low = np.asarray(real_action_space.low, dtype=np.float32)
+    high = np.asarray(real_action_space.high, dtype=np.float32)
+    return (low + (normalized + 1.0) * 0.5 * (high - low)).astype(real_action_space.dtype, copy=False)
+
+
+def real_to_normalized_action(action: Any, real_action_space: spaces.Box) -> np.ndarray:
+    """
+    Map real PID target-position actions back to normalized PPO coordinates.
+
+    Parameters
+    ----------
+    action
+        Real PID target-position action.
+    real_action_space
+        Underlying tracking environment action space with real PID target-position bounds.
+
+    Returns
+    -------
+    np.ndarray
+        Normalized action computed as ``2 * (real - low) / (high - low) - 1``.
+
+    """
+    real = np.asarray(action, dtype=np.float32)
+    low = np.asarray(real_action_space.low, dtype=np.float32)
+    high = np.asarray(real_action_space.high, dtype=np.float32)
+    normalized = 2.0 * (real - low) / (high - low) - 1.0
+    return np.clip(normalized, NORMALIZED_ACTION_LOW, NORMALIZED_ACTION_HIGH).astype(np.float32, copy=False)
 
 
 def _make_tracking_action_space(

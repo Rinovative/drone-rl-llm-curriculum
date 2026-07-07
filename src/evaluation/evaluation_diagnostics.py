@@ -480,7 +480,12 @@ def _make_trace_record(
         "velocity": _array_to_jsonable(info.get("velocity", [])),
         "angular_velocity": _array_to_jsonable(info.get("angular_velocity", [])),
         "roll_pitch_yaw": _array_to_jsonable(info.get("roll_pitch_yaw", [])),
-        "action": _array_to_jsonable(action),
+        "action": _array_to_jsonable(info.get("normalized_action", action)),
+        "normalized_action": _array_to_jsonable(info.get("normalized_action", action)),
+        "real_action": _array_to_jsonable(info.get("real_action", info.get("applied_action", action))),
+        "actions_normalized": bool(info.get("action_normalized", False)),
+        "real_action_space_low": _array_to_jsonable(info.get("real_action_space_low", [])),
+        "real_action_space_high": _array_to_jsonable(info.get("real_action_space_high", [])),
         "last_action": _array_to_jsonable(info.get("last_action", [])),
         "reward": float(reward),
         "terminated": bool(terminated),
@@ -518,6 +523,11 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
     errors = np.asarray([_float(record.get("position_error_m")) for record in records], dtype=float)
     axis_errors = np.abs(positions - references)
     action_metrics = _action_distribution_metrics(_array_field(records, "action"), action_space)
+    real_action_metrics = _prefixed_action_distribution_metrics(
+        _array_field(records, "real_action"),
+        _real_action_space_from_records(records, fallback_action_space=action_space),
+        prefix="real_action",
+    )
     position_bounds = _position_bounds(positions)
     reference_bounds = _position_bounds(references)
     actual_xy_span_m = _xy_span(position_bounds)
@@ -544,6 +554,7 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
         "actual_xy_span_m": actual_xy_span_m,
         "xy_tracking_ratio": _xy_tracking_ratio(actual_xy_span_m, reference_xy_span_m),
         **action_metrics,
+        **real_action_metrics,
         "z_min": _axis_min(position_bounds, axis=2),
         "z_max": _axis_max(position_bounds, axis=2),
         "max_abs_roll_pitch_rad": float(np.max(np.abs(roll_pitch))) if roll_pitch.size else 0.0,
@@ -574,6 +585,8 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         "position_bounds": position_bounds,
         "reference_position_bounds": reference_bounds,
         "action_bounds": _position_bounds(_array_field(records, "action")),
+        "real_action_bounds": _position_bounds(_array_field(records, "real_action")),
+        "actions_normalized": any(bool(record.get("actions_normalized", False)) for record in records),
         "actual_z_span_m": _axis_span(position_bounds, axis=2),
         "actual_xy_span_m": actual_xy_span_m,
         "reference_z_span_m": _axis_span(reference_bounds, axis=2),
@@ -587,7 +600,36 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         "final_abs_z_error": float(axis_errors[-1, 2]),
         "episode_count": len(episode_summaries),
         **_action_distribution_metrics(_array_field(records, "action"), action_space),
+        **_prefixed_action_distribution_metrics(
+            _array_field(records, "real_action"),
+            _real_action_space_from_records(records, fallback_action_space=action_space),
+            prefix="real_action",
+        ),
     }
+
+
+def _prefixed_action_distribution_metrics(actions: np.ndarray, action_space: Any, prefix: str) -> dict[str, list[float]]:
+    """Return action distribution metrics with a custom key prefix."""
+    metrics = _action_distribution_metrics(actions, action_space)
+    return {key.replace("action_", f"{prefix}_", 1): value for key, value in metrics.items()}
+
+
+def _real_action_space_from_records(records: Sequence[Mapping[str, Any]], fallback_action_space: Any) -> Any:
+    """Build a Box-like real action space from trace info when normalized wrappers record it."""
+    for record in records:
+        low = np.asarray(record.get("real_action_space_low", []), dtype=float)
+        high = np.asarray(record.get("real_action_space_high", []), dtype=float)
+        if low.size and low.shape == high.shape:
+            return _ArrayActionSpace(low=low, high=high)
+    return fallback_action_space
+
+
+@dataclass(frozen=True)
+class _ArrayActionSpace:
+    """Small Box-like action-space stand-in used for diagnostic saturation checks."""
+
+    low: np.ndarray
+    high: np.ndarray
 
 
 def _action_distribution_metrics(actions: np.ndarray, action_space: Any) -> dict[str, list[float]]:
@@ -647,6 +689,8 @@ def _failure_evidence(metrics: Mapping[str, Any], episode_summaries: Sequence[Ma
         "actual_xy_span_m": _float(metrics.get("actual_xy_span_m")),
         "xy_tracking_ratio": metrics.get("xy_tracking_ratio"),
         "action_saturation_fraction": _float_list(metrics.get("action_saturation_fraction")),
+        "actions_normalized": bool(metrics.get("actions_normalized", False)),
+        "real_action_saturation_fraction": _float_list(metrics.get("real_action_saturation_fraction")),
         "eval_terminated_count": _int(metrics.get("eval_terminated_count")),
         "eval_truncated_count": _int(metrics.get("eval_truncated_count")),
         "actual_z_span_m": _float(metrics.get("actual_z_span_m")),

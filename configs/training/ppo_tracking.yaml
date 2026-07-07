@@ -4,6 +4,7 @@ total_timesteps: 4096
 eval_steps: 120
 seed: 0
 check_env: true
+normalize_actions: true
 wandb_mode: auto
 wandb_project: drone-rl-llm-curriculum
 wandb_entity: null

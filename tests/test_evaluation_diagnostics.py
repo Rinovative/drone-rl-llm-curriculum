@@ -89,6 +89,34 @@ def test_diagnostics_classify_hover_lock_and_write_artifacts(tmp_path: Path) -> 
     assert failure_payload["training_run_name"] == "ppo_line_smoke"
 
 
+def test_diagnostics_keep_normalized_and_real_action_metrics_separate() -> None:
+    """Verify action diagnostics state whether PPO-facing actions are normalized."""
+    records = [_record(index, current_x=0.0, reference_x=0.0, action=[1.0, 0.0, -1.0]) for index in range(3)]
+    for record in records:
+        record["normalized_action"] = [[1.0, 0.0, -1.0]]
+        record["real_action"] = [[1.0, 0.0, 0.5]]
+        record["actions_normalized"] = True
+        record["real_action_space_low"] = [[-0.2, -0.2, 0.5]]
+        record["real_action_space_high"] = [[1.0, 0.2, 1.0]]
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="ppo_hover_normalized",
+        task_shape="hover",
+        total_timesteps=64,
+        eval_steps=3,
+        seed=0,
+    )
+
+    assert diagnostics.metrics["actions_normalized"] is True
+    assert diagnostics.metrics["action_mean"] == [1.0, 0.0, -1.0]
+    assert diagnostics.metrics["action_saturation_fraction"] == [1.0, 0.0, 1.0]
+    assert diagnostics.metrics["real_action_mean"] == [1.0, 0.0, 0.5]
+    assert diagnostics.metrics["real_action_saturation_fraction"] == [1.0, 0.0, 1.0]
+    assert diagnostics.episode_summaries[0]["real_action_max"] == [1.0, 0.0, 0.5]
+
+
 def test_diagnostics_report_no_failure_for_accurate_hover() -> None:
     """Verify accurate hover evaluations produce successful curriculum feedback."""
     records = [_record(index, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0]) for index in range(3)]

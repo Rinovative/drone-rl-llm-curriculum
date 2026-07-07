@@ -44,6 +44,7 @@ DEFAULT_SEED = 0
 _MIN_PPO_ROLLOUT_STEPS = 2
 _MAX_PPO_ROLLOUT_STEPS = 64
 DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS = 120
+DEFAULT_NORMALIZE_ACTIONS = True
 _MOVEMENT_WARNING_SPAN_THRESHOLD_M = 0.05
 _POSITION_BOUNDS_MAX_NDIM = 2
 _XY_TRACKING_RATIO_MIN_REFERENCE_SPAN_M = 1.0e-9
@@ -88,6 +89,8 @@ class PPOTrackingSmokeSettings:
         Optional explicit metrics JSON filename within ``output_dir``.
     check_env
         Whether to run the Stable-Baselines3 environment checker before training.
+    normalize_actions
+        Whether PPO should see a symmetric normalized action space mapped to real PID bounds.
     wandb_mode
         Optional W&B mode. Auto mode uses online credentials when available and offline otherwise.
     wandb_project
@@ -119,6 +122,7 @@ class PPOTrackingSmokeSettings:
     model_filename: str | None = None
     metrics_filename: str | None = None
     check_env: bool = True
+    normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS
     wandb_mode: str = utils.wandb.WANDB_MODE_AUTO
     wandb_project: str = utils.wandb.DEFAULT_WANDB_PROJECT
     wandb_entity: str | None = None
@@ -152,6 +156,9 @@ class PPOTrackingSmokeSettings:
         if self.manifest_filename is not None and not self.manifest_filename.endswith(".json"):
             message = "manifest_filename must end with .json"
             raise ValueError(message)
+        if not isinstance(self.normalize_actions, bool):
+            message = "normalize_actions must be a boolean"
+            raise TypeError(message)
         if self.wandb_mode not in utils.wandb.WANDB_MODES:
             message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
             raise ValueError(message)
@@ -261,7 +268,7 @@ def detect_ppo_runtime_info() -> dict[str, Any]:
     }
 
 
-def describe_tracking_env_action_metadata(task: dict[str, Any]) -> dict[str, Any]:
+def describe_tracking_env_action_metadata(task: dict[str, Any], normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS) -> dict[str, Any]:
     """
     Build TrajectoryTrackingEnv and return action-space metadata for diagnostics.
 
@@ -269,6 +276,8 @@ def describe_tracking_env_action_metadata(task: dict[str, Any]) -> dict[str, Any
     ----------
     task
         Valid trajectory task mapping used to construct the tracking environment.
+    normalize_actions
+        Whether to describe the PPO-facing normalized wrapper instead of the real environment.
 
     Returns
     -------
@@ -276,11 +285,19 @@ def describe_tracking_env_action_metadata(task: dict[str, Any]) -> dict[str, Any
         JSON-serializable action-space and upstream action-type metadata.
 
     """
-    tracking_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
+    real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
+    tracking_env = _ppo_training_env(real_env, normalize_actions=normalize_actions)
     try:
         return _tracking_env_action_metadata(tracking_env)
     finally:
         tracking_env.close()
+
+
+def _ppo_training_env(tracking_env: Any, normalize_actions: bool) -> Any:
+    """Return the environment interface PPO should train against."""
+    if not normalize_actions:
+        return tracking_env
+    return envs.tracking_env.make_normalized_action_env(tracking_env)
 
 
 def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> PPOTrackingSmokeResult:
@@ -324,7 +341,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     diagnostics_dir = utils.artifacts.get_training_diagnostics_dir(training_run_name)
     wandb_settings = _wandb_settings(active_settings, resolved_task_shape)
 
-    warnings = [*selection_warnings, *(_check_tracking_env(task) if active_settings.check_env else ())]
+    warnings = [*selection_warnings, *(_check_tracking_env(task, active_settings.normalize_actions) if active_settings.check_env else ())]
     diagnostic_steps = min(active_settings.eval_steps, DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS)
     simple_liftoff_diagnostics = run_liftoff_diagnostics(
         task=task,
@@ -340,7 +357,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     from stable_baselines3 import PPO  # noqa: PLC0415
 
     wandb_run = None
-    training_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
+    real_training_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
+    training_env = _ppo_training_env(real_training_env, normalize_actions=active_settings.normalize_actions)
     try:
         action_metadata = _tracking_env_action_metadata(training_env)
         rollout_steps = _ppo_rollout_steps(active_settings.total_timesteps)
@@ -439,6 +457,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "warnings": warnings,
         "trained": True,
         "env_checked": active_settings.check_env,
+        "normalize_actions": active_settings.normalize_actions,
         "wandb": _wandb_run_metadata(wandb_settings, wandb_run),
         **eval_metrics,
         **diagnostic_artifact_fields,
@@ -542,6 +561,7 @@ def run_ppo_tracking_smoke_from_config(
         model_filename=settings.model_filename,
         metrics_filename=settings.metrics_filename,
         check_env=settings.check_env,
+        normalize_actions=settings.normalize_actions,
         wandb_mode=settings.wandb_mode if wandb_mode is None else wandb_mode,
         training_config_path=settings.training_config_path,
         wandb_project=settings.wandb_project if wandb_project is None else wandb_project,
@@ -574,6 +594,7 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
         "model_filename": config.get("model_filename") or None,
         "metrics_filename": config.get("metrics_filename") or None,
         "check_env": bool(config.get("check_env", True)),
+        "normalize_actions": bool(config.get("normalize_actions", DEFAULT_NORMALIZE_ACTIONS)),
         "wandb_mode": str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_AUTO),
         "wandb_project": str(config.get("wandb_project") or utils.wandb.DEFAULT_WANDB_PROJECT),
         "wandb_entity": config.get("wandb_entity") or None,
@@ -808,6 +829,7 @@ def _build_manifest(
         "total_timesteps": settings.total_timesteps,
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
+        "normalize_actions": settings.normalize_actions,
         "model_path": metrics["model_path"],
         "metrics_path": metrics["metrics_path"],
         "manifest_path": metrics["manifest_path"],
@@ -845,6 +867,12 @@ def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
         "action_min",
         "action_max",
         "action_saturation_fraction",
+        "real_action_mean",
+        "real_action_std",
+        "real_action_min",
+        "real_action_max",
+        "real_action_saturation_fraction",
+        "actions_normalized",
         "mean_abs_x_error",
         "mean_abs_y_error",
         "mean_abs_z_error",
@@ -894,6 +922,7 @@ def _wandb_config(
         "total_timesteps": settings.total_timesteps,
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
+        "normalize_actions": settings.normalize_actions,
         "model_path": str(model_path),
         "metrics_path": str(metrics_path),
         "manifest_path": str(manifest_path),
@@ -911,14 +940,15 @@ def _require_training_dependencies(dependencies: dict[str, bool]) -> None:
         raise RuntimeError(message)
 
 
-def _check_tracking_env(task: dict[str, Any]) -> tuple[str, ...]:
+def _check_tracking_env(task: dict[str, Any], normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS) -> tuple[str, ...]:
     """Run Stable-Baselines3's environment checker and return captured warnings."""
     try:
         from stable_baselines3.common.env_checker import check_env  # noqa: PLC0415
     except ImportError as exc:
         return (f"stable_baselines3 env checker unavailable: {exc}",)
 
-    checker_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
+    real_checker_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
+    checker_env = _ppo_training_env(real_checker_env, normalize_actions=normalize_actions)
     try:
         with py_warnings.catch_warnings(record=True) as records:
             py_warnings.simplefilter("always")
@@ -1197,8 +1227,10 @@ def _high_action(tracking_env: Any, _observation: np.ndarray, _step_index: int) 
 def _tracking_env_action_metadata(tracking_env: Any) -> dict[str, Any]:
     """Return JSON-serializable action-space metadata for a tracking environment."""
     action_space = tracking_env.action_space
+    real_action_space = getattr(tracking_env, "real_action_space", action_space)
     sample = action_space.sample()
-    action_type = getattr(getattr(tracking_env, "base_env", None), "ACT_TYPE", None)
+    tracking_core = getattr(tracking_env, "unwrapped", tracking_env)
+    action_type = getattr(getattr(tracking_core, "base_env", None), "ACT_TYPE", None)
     action_type_value = _enum_value(action_type)
     return {
         "action_space": str(action_space),
@@ -1206,6 +1238,11 @@ def _tracking_env_action_metadata(tracking_env: Any) -> dict[str, Any]:
         "action_space_dtype": str(getattr(action_space, "dtype", "")),
         "action_space_low": _array_to_jsonable(getattr(action_space, "low", [])),
         "action_space_high": _array_to_jsonable(getattr(action_space, "high", [])),
+        "actions_normalized": bool(getattr(tracking_env, "real_action_space", None) is not None),
+        "ppo_action_space": str(action_space),
+        "real_action_space": str(real_action_space),
+        "real_action_space_low": _array_to_jsonable(getattr(real_action_space, "low", [])),
+        "real_action_space_high": _array_to_jsonable(getattr(real_action_space, "high", [])),
         "sampled_action_shape": _shape_list(np.asarray(sample).shape),
         "sampled_action_dtype": str(np.asarray(sample).dtype),
         "sampled_action": _array_to_jsonable(sample),

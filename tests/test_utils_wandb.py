@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 MEAN_POSITION_ERROR_M = 0.4
 MEAN_ABS_Z_ERROR_M = 0.3
 ACTION_MEAN_0 = 0.1
+REAL_ACTION_SATURATION_0 = 0.5
+REAL_ACTION_MEAN_2 = 0.75
 EVAL_STEPS = 120
 
 
@@ -102,6 +104,7 @@ def test_wandb_summary_metrics_group_final_diagnostics() -> None:
         "task_index": 2,
         "seed": 7,
         "total_timesteps": 4096,
+        "normalize_actions": True,
         "eval_steps": EVAL_STEPS,
         "actual_eval_steps": 118,
         "eval_terminated_count": 1,
@@ -127,6 +130,11 @@ def test_wandb_summary_metrics_group_final_diagnostics() -> None:
         "action_min": [-1.0, -0.5, 0.0],
         "action_max": [0.9, 0.8, 1.0],
         "action_saturation_fraction": [0.0, 0.25, 1.0],
+        "real_action_mean": [0.4, 0.0, REAL_ACTION_MEAN_2],
+        "real_action_std": [0.1, 0.0, 0.05],
+        "real_action_min": [-0.2, -0.2, 0.5],
+        "real_action_max": [1.0, 0.2, 1.0],
+        "real_action_saturation_fraction": [REAL_ACTION_SATURATION_0, 0.0, 1.0],
         "failure_modes": ["hover_lock", "action_saturation"],
         "failure_primary_mode": "hover_lock",
         "curriculum_readiness_level": "line_not_ready",
@@ -142,6 +150,8 @@ def test_wandb_summary_metrics_group_final_diagnostics() -> None:
     assert summary["tracking/mean_position_error_m"] == MEAN_POSITION_ERROR_M
     assert summary["tracking/mean_abs_z_error_m"] == MEAN_ABS_Z_ERROR_M
     assert summary["actions/saturation_fraction_2"] == 1.0
+    assert summary["actions/real_saturation_fraction_0"] == REAL_ACTION_SATURATION_0
+    assert summary["actions/real_mean_2"] == REAL_ACTION_MEAN_2
     assert summary["actions/mean_0"] == ACTION_MEAN_0
     assert summary["evaluation/eval_steps"] == EVAL_STEPS
     assert summary["evaluation/terminated_count"] == 1
@@ -151,6 +161,7 @@ def test_wandb_summary_metrics_group_final_diagnostics() -> None:
     assert summary["curriculum/readiness_level"] == "line_not_ready"
     assert summary["curriculum/recommended_next_tasks"] == ["short_slow_line"]
     assert summary["run/training_run_name"] == "ppo_line_smoke"
+    assert summary["run/normalize_actions"] is True
     assert "position_bounds" not in summary
     assert "liftoff_diagnostics" not in summary
     assert "evaluation_trace_path" not in summary
