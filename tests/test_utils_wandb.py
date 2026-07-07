@@ -15,14 +15,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_wandb_defaults_are_disabled_and_training_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify W&B defaults are safe and scoped under the training run."""
+def test_wandb_defaults_are_auto_and_training_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify W&B defaults are auto mode and scoped under the training run."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     settings = utils.wandb.WandbTrackingSettings()
 
-    assert settings.mode == "disabled"
+    assert settings.mode == "auto"
     assert settings.project == "drone-rl-llm-curriculum"
-    assert utils.wandb.default_wandb_dir() == tmp_path / "training_runs" / "ppo_hover_smoke" / "wandb"
+    assert utils.wandb.default_wandb_dir("ppo_hover_4096_seed0") == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "wandb"
 
 
 def test_disabled_wandb_does_not_import_wandb(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,6 +50,18 @@ def test_wandb_tags_parse_comma_separated_values() -> None:
     assert utils.wandb.parse_wandb_tags(" smoke, docker ,,offline ") == ("smoke", "docker", "offline")
     assert utils.wandb.parse_wandb_tags(None) == ()
     assert utils.wandb.parse_wandb_tags([" smoke ", "", "docker"]) == ("smoke", "docker")
+
+
+def test_auto_wandb_mode_resolves_from_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify auto mode uses offline without credentials and online when a key is present."""
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "missing-home"))
+
+    assert utils.wandb.resolve_wandb_mode("auto") == "offline"
+
+    monkeypatch.setenv("WANDB_API_KEY", "secret-test-key")
+
+    assert utils.wandb.resolve_wandb_mode("auto") == "online"
 
 
 def test_online_wandb_without_key_fails_before_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,12 +1,10 @@
 task_config_path: configs/smoke/trajectory_validation.yaml
-task_index: 0
+task_shape: hover
 total_timesteps: 4096
 eval_steps: 120
 seed: 0
-model_filename: ppo_hover_smoke.zip
-metrics_filename: ppo_hover_smoke_metrics.json
 check_env: true
-wandb_mode: disabled
+wandb_mode: auto
 wandb_project: drone-rl-llm-curriculum
 wandb_entity: null
 wandb_group: null

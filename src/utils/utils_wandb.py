@@ -5,14 +5,14 @@ utils_wandb.py
 Provide optional Weights & Biases tracking for bounded experiment smoke runs.
 
 Responsibilities:
-  - Keep W&B disabled and dependency-free unless explicitly requested
+  - Resolve W&B auto/online/offline/disabled modes without storing secrets
   - Lazily initialize W&B with run-specific directories and non-secret metadata
   - Safely load WANDB_API_KEY from the environment or an optional home key file
 
 Design principles:
   - Never store or print secrets
-  - Keep online tracking opt-in and fail clearly when credentials are missing
-  - Make disabled mode a no-op for tests, Docker, and local smoke runs
+  - Keep disabled mode a no-op for tests and explicit local opt-out
+  - Fall back to offline tracking when auto mode lacks credentials
 
 Boundaries:
   - Training modules decide which metrics to log
@@ -34,12 +34,12 @@ if TYPE_CHECKING:
 
 from . import utils_artifacts as artifacts
 
+WANDB_MODE_AUTO = "auto"
 WANDB_MODE_DISABLED = "disabled"
 WANDB_MODE_OFFLINE = "offline"
 WANDB_MODE_ONLINE = "online"
-WANDB_MODES = (WANDB_MODE_DISABLED, WANDB_MODE_OFFLINE, WANDB_MODE_ONLINE)
+WANDB_MODES = (WANDB_MODE_AUTO, WANDB_MODE_ONLINE, WANDB_MODE_OFFLINE, WANDB_MODE_DISABLED)
 DEFAULT_WANDB_PROJECT = "drone-rl-llm-curriculum"
-DEFAULT_WANDB_RUN_NAME = "ppo_hover_smoke"
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ class WandbTrackingSettings:
     Parameters
     ----------
     mode
-        Tracking mode. ``disabled`` performs no import or logging.
+        Tracking mode. ``auto`` uses online when credentials are available and offline otherwise.
     project
         W&B project name used when tracking is enabled.
     entity
@@ -66,7 +66,7 @@ class WandbTrackingSettings:
 
     """
 
-    mode: str = WANDB_MODE_DISABLED
+    mode: str = WANDB_MODE_AUTO
     project: str = DEFAULT_WANDB_PROJECT
     entity: str | None = None
     group: str | None = None
@@ -84,9 +84,20 @@ class WandbTrackingSettings:
             raise ValueError(message)
 
 
-def default_wandb_dir() -> Path:
-    """Return the default run-specific W&B directory for PPO tracking smoke."""
-    return artifacts.get_training_wandb_dir(DEFAULT_WANDB_RUN_NAME)
+def default_wandb_dir(training_run_name: str) -> Path:
+    """Return the W&B directory for an explicit training run name."""
+    return artifacts.get_training_wandb_dir(training_run_name)
+
+
+def resolve_wandb_mode(mode: str) -> str:
+    """Resolve ``auto`` W&B mode to ``online`` or ``offline`` based on credentials."""
+    if mode not in WANDB_MODES:
+        message = f"wandb mode must be one of: {', '.join(WANDB_MODES)}"
+        raise ValueError(message)
+    if mode != WANDB_MODE_AUTO:
+        return mode
+    _load_wandb_api_key_from_home_file()
+    return WANDB_MODE_ONLINE if os.environ.get("WANDB_API_KEY") else WANDB_MODE_OFFLINE
 
 
 def parse_wandb_tags(value: str | Sequence[str] | None) -> tuple[str, ...]:
@@ -151,11 +162,12 @@ def start_wandb_run(settings: WandbTrackingSettings, config: dict[str, Any]) -> 
         If W&B is requested but cannot be initialized safely.
 
     """
-    if settings.mode == WANDB_MODE_DISABLED:
+    resolved_mode = resolve_wandb_mode(settings.mode)
+    if resolved_mode == WANDB_MODE_DISABLED:
         return None
 
     _load_wandb_api_key_from_home_file()
-    if settings.mode == WANDB_MODE_ONLINE and not os.environ.get("WANDB_API_KEY"):
+    if resolved_mode == WANDB_MODE_ONLINE and not os.environ.get("WANDB_API_KEY"):
         message = "W&B online mode requires WANDB_API_KEY in the environment or ${HOME}/wandb_key.txt"
         raise RuntimeError(message)
 
@@ -165,10 +177,13 @@ def start_wandb_run(settings: WandbTrackingSettings, config: dict[str, Any]) -> 
         message = f"W&B tracking requested with mode={settings.mode!r}, but wandb is not installed"
         raise RuntimeError(message) from exc
 
-    wandb_dir = settings.dir or default_wandb_dir()
+    if settings.dir is None and settings.name is None:
+        message = "W&B tracking requires settings.dir or settings.name to resolve a run-scoped directory"
+        raise RuntimeError(message)
+    wandb_dir = settings.dir or default_wandb_dir(str(settings.name))
     wandb_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("WANDB_MODE", settings.mode)
-    wandb_mode = cast("Literal['disabled', 'offline', 'online']", settings.mode)
+    os.environ["WANDB_MODE"] = resolved_mode
+    wandb_mode = cast("Literal['disabled', 'offline', 'online']", resolved_mode)
     return wandb.init(
         project=settings.project,
         entity=settings.entity,
@@ -178,6 +193,7 @@ def start_wandb_run(settings: WandbTrackingSettings, config: dict[str, Any]) -> 
         config=config,
         dir=str(wandb_dir),
         mode=wandb_mode,
+        sync_tensorboard=True,
     )
 
 
@@ -186,6 +202,22 @@ def log_wandb_metrics(run: Any | None, metrics: dict[str, Any]) -> None:
     if run is None:
         return
     run.log(_flatten_wandb_metrics(metrics))
+
+
+def log_wandb_artifacts(run: Any | None, paths: dict[str, Path]) -> None:
+    """Log small final training artifacts to W&B when tracking is enabled."""
+    if run is None:
+        return
+    try:
+        import wandb  # noqa: PLC0415
+    except ImportError:
+        return
+    for name, path in paths.items():
+        if not path.is_file():
+            continue
+        artifact = wandb.Artifact(name=name, type="training-artifact")
+        artifact.add_file(str(path))
+        run.log_artifact(artifact)
 
 
 def _load_wandb_api_key_from_home_file() -> None:
@@ -210,15 +242,17 @@ def _flatten_wandb_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_WANDB_PROJECT",
-    "DEFAULT_WANDB_RUN_NAME",
     "WANDB_MODES",
+    "WANDB_MODE_AUTO",
     "WANDB_MODE_DISABLED",
     "WANDB_MODE_OFFLINE",
     "WANDB_MODE_ONLINE",
     "WandbTrackingSettings",
     "default_wandb_dir",
+    "log_wandb_artifacts",
     "log_wandb_metrics",
     "parse_wandb_tags",
+    "resolve_wandb_mode",
     "start_wandb_run",
     "wandb_run",
 ]

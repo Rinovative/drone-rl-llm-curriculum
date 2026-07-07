@@ -32,7 +32,10 @@ from src import experiments, utils
 def build_parser() -> argparse.ArgumentParser:
     """Build the PPO trajectory-tracking smoke CLI parser."""
     parser = argparse.ArgumentParser(
-        description="Run tiny PPO training and write model/metrics/manifests under storage/training_runs/<run_name>.",
+        description=(
+            "Run PPO tracking training with derived run names, auto W&B logging, "
+            "and model/metrics/manifests under storage/training_runs/<training_run_name>."
+        ),
     )
     parser.add_argument("--config", type=Path, default=experiments.ppo_tracking.DEFAULT_PPO_TRACKING_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
@@ -40,9 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--task-shape",
         type=str,
         default=None,
-        help="Train on the first configured task with this shape; the training run will be written under storage/training_runs.",
+        help="Override the config task shape; optional when the training config already defines task_shape.",
     )
-    parser.add_argument("--run-name", type=str, default=None, help="Training run name under storage/training_runs.")
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Optional training run name; derived as ppo_<task_shape>_<timesteps>_seed<seed> when omitted.",
+    )
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -52,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--wandb-mode",
         choices=utils.wandb.WANDB_MODES,
         default=None,
+        help="W&B mode; defaults to auto, while disabled explicitly turns W&B off.",
     )
     parser.add_argument("--wandb-project", default=None)
     parser.add_argument("--wandb-entity", default=None)

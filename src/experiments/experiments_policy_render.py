@@ -35,11 +35,11 @@ import numpy as np
 
 from src import envs, evaluation, experiments, utils
 
-DEFAULT_PPO_CONFIG_PATH = Path("configs/smoke/ppo_hover_smoke.yaml")
-DEFAULT_MODEL_FILENAME = "ppo_hover_smoke.zip"
-DEFAULT_METRICS_FILENAME = "ppo_hover_smoke_metrics.json"
-DEFAULT_MODEL_RUN_NAME = "ppo_hover_smoke"
-DEFAULT_EVALUATION_RUN_NAME = "eval_ppo_hover_smoke_on_hover"
+DEFAULT_PPO_CONFIG_PATH = Path("configs/training/ppo_tracking.yaml")
+DEFAULT_MODEL_RUN_NAME = "ppo_hover_4096_seed0"
+DEFAULT_MODEL_FILENAME = f"{DEFAULT_MODEL_RUN_NAME}.zip"
+DEFAULT_METRICS_FILENAME = f"{DEFAULT_MODEL_RUN_NAME}_metrics.json"
+DEFAULT_EVALUATION_RUN_NAME = "eval_ppo_hover_4096_seed0_on_hover"
 DEFAULT_MODEL_PATH = Path(f"storage/training_runs/{DEFAULT_MODEL_RUN_NAME}/models/{DEFAULT_MODEL_FILENAME}")
 DEFAULT_OUTPUT_DIR = Path(f"storage/evaluation_runs/{DEFAULT_EVALUATION_RUN_NAME}")
 DEFAULT_MAX_STEPS = 60
@@ -258,7 +258,7 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         message = (
             "trained PPO model was not found at "
             f"{model_path}. Create it with: "
-            "python -m src.experiments.cli_train_tracking --config configs/smoke/ppo_hover_smoke.yaml"
+            "python -m src.experiments.cli_train_tracking --config configs/training/ppo_tracking.yaml"
         )
         raise FileNotFoundError(message)
 
@@ -1107,12 +1107,7 @@ def _resolve_model_path(settings: PolicyRenderSettings) -> Path:
     """Resolve a PPO model path from an explicit path or training run name."""
     if settings.model_run_name is not None:
         training_dir = utils.artifacts.get_training_models_dir(settings.model_run_name).expanduser().resolve(strict=False)
-        preferred_filename = f"{settings.model_run_name}.zip"
-        candidate_paths = [training_dir / preferred_filename, training_dir / DEFAULT_MODEL_FILENAME]
-        for candidate in candidate_paths:
-            if candidate.exists():
-                return candidate.resolve(strict=False)
-        return candidate_paths[0].resolve(strict=False)
+        return (training_dir / f"{settings.model_run_name}.zip").resolve(strict=False)
     return settings.model_path.expanduser().resolve(strict=False)
 
 
@@ -1121,12 +1116,8 @@ def _load_training_metadata(model_run_name: str | None) -> tuple[dict[str, Any],
     if model_run_name is None:
         return {}, ()
     training_metrics_dir = utils.artifacts.get_training_metrics_dir(model_run_name).expanduser().resolve(strict=False)
-    candidate_paths = [
-        training_metrics_dir / f"{model_run_name}_metrics.json",
-        training_metrics_dir / DEFAULT_METRICS_FILENAME,
-        *sorted(training_metrics_dir.glob("*.json")),
-    ]
-    metrics_path = next((candidate for candidate in candidate_paths if candidate.exists()), None)
+    candidate_metrics_path = training_metrics_dir / f"{model_run_name}_metrics.json"
+    metrics_path: Path | None = candidate_metrics_path if candidate_metrics_path.exists() else None
     if metrics_path is None:
         warning = f"training metrics not found for model_run_name '{model_run_name}' under {training_metrics_dir}"
         return {}, (warning,)

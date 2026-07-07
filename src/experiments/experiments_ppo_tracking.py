@@ -35,21 +35,22 @@ import numpy as np
 
 from src import envs, experiments, utils
 
-DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/smoke/ppo_hover_smoke.yaml")
+DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking.yaml")
 DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
-DEFAULT_RUN_NAME = "ppo_hover_smoke"
 DEFAULT_TASK_INDEX = 0
 DEFAULT_TOTAL_TIMESTEPS = 4096
 DEFAULT_EVAL_STEPS = 120
 DEFAULT_SEED = 0
-DEFAULT_MODEL_FILENAME = f"{DEFAULT_RUN_NAME}.zip"
-DEFAULT_METRICS_FILENAME = f"{DEFAULT_RUN_NAME}_metrics.json"
-DEFAULT_MANIFEST_FILENAME = f"{DEFAULT_RUN_NAME}_manifest.json"
 _MIN_PPO_ROLLOUT_STEPS = 2
 _MAX_PPO_ROLLOUT_STEPS = 64
 DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS = 120
 _MOVEMENT_WARNING_SPAN_THRESHOLD_M = 0.05
 _POSITION_BOUNDS_MAX_NDIM = 2
+_XY_TRACKING_RATIO_MIN_REFERENCE_SPAN_M = 1.0e-9
+_ACTION_SATURATION_TOLERANCE = 1.0e-6
+_TIMESTEPS_PER_THOUSAND_LABEL = 1_000
+_TIMESTEPS_PER_MILLION_LABEL = 1_000_000
+_MIN_TIMESTEPS_FOR_COMPACT_THOUSAND_LABEL = 10_000
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,8 @@ class PPOTrackingSmokeSettings:
 
     Parameters
     ----------
+    training_config_path
+        Optional YAML training settings path used for reproducibility metadata.
     task_config_path
         YAML config containing a top-level list of trajectory tasks.
     task_index
@@ -78,15 +81,15 @@ class PPOTrackingSmokeSettings:
     model_dir
         Directory where the trained PPO model zip is written.
     manifest_filename
-        Manifest JSON filename within the training run manifests directory.
+        Optional explicit manifest JSON filename within the training run manifests directory.
     model_filename
-        Trained model filename within ``model_dir``.
+        Optional explicit trained model filename within ``model_dir``.
     metrics_filename
-        Metrics JSON filename within ``output_dir``.
+        Optional explicit metrics JSON filename within ``output_dir``.
     check_env
         Whether to run the Stable-Baselines3 environment checker before training.
     wandb_mode
-        Optional W&B mode. Disabled by default for safe local and test execution.
+        Optional W&B mode. Auto mode uses online credentials when available and offline otherwise.
     wandb_project
         W&B project name used when tracking is enabled.
     wandb_entity
@@ -102,6 +105,7 @@ class PPOTrackingSmokeSettings:
 
     """
 
+    training_config_path: Path | None = None
     task_config_path: Path = DEFAULT_TASK_CONFIG_PATH
     task_index: int = DEFAULT_TASK_INDEX
     task_shape: str | None = None
@@ -111,11 +115,11 @@ class PPOTrackingSmokeSettings:
     seed: int = DEFAULT_SEED
     output_dir: Path | None = None
     model_dir: Path | None = None
-    manifest_filename: str = DEFAULT_MANIFEST_FILENAME
-    model_filename: str = DEFAULT_MODEL_FILENAME
-    metrics_filename: str = DEFAULT_METRICS_FILENAME
+    manifest_filename: str | None = None
+    model_filename: str | None = None
+    metrics_filename: str | None = None
     check_env: bool = True
-    wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED
+    wandb_mode: str = utils.wandb.WANDB_MODE_AUTO
     wandb_project: str = utils.wandb.DEFAULT_WANDB_PROJECT
     wandb_entity: str | None = None
     wandb_group: str | None = None
@@ -139,11 +143,14 @@ class PPOTrackingSmokeSettings:
         if self.eval_steps <= 0:
             message = "eval_steps must be positive"
             raise ValueError(message)
-        if not self.model_filename.endswith(".zip"):
+        if self.model_filename is not None and not self.model_filename.endswith(".zip"):
             message = "model_filename must end with .zip"
             raise ValueError(message)
-        if not self.metrics_filename.endswith(".json"):
+        if self.metrics_filename is not None and not self.metrics_filename.endswith(".json"):
             message = "metrics_filename must end with .json"
+            raise ValueError(message)
+        if self.manifest_filename is not None and not self.manifest_filename.endswith(".json"):
+            message = "manifest_filename must end with .json"
             raise ValueError(message)
         if self.wandb_mode not in utils.wandb.WANDB_MODES:
             message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
@@ -195,28 +202,29 @@ def load_ppo_tracking_settings(path: str | Path) -> PPOTrackingSmokeSettings:
         Validated settings with paths expanded as ``Path`` objects.
 
     """
-    config = experiments.config.load_experiment_config(path)
-    return _settings_from_mapping(config)
+    config_path = Path(path)
+    config = experiments.config.load_experiment_config(config_path)
+    return _settings_from_mapping(config, training_config_path=config_path)
 
 
 def default_output_dir() -> Path:
-    """Return the default PPO training run directory under the training layout."""
-    return utils.artifacts.get_training_run_dir(DEFAULT_RUN_NAME)
+    """Return the derived default-config PPO training run directory."""
+    return utils.artifacts.get_training_run_dir(_default_training_run_name())
 
 
 def default_metrics_dir() -> Path:
-    """Return the default PPO training metrics directory under the training layout."""
-    return utils.artifacts.get_training_metrics_dir(DEFAULT_RUN_NAME)
+    """Return the derived default-config PPO training metrics directory."""
+    return utils.artifacts.get_training_metrics_dir(_default_training_run_name())
 
 
 def default_model_dir() -> Path:
-    """Return the default PPO training model directory under the training layout."""
-    return utils.artifacts.get_training_models_dir(DEFAULT_RUN_NAME)
+    """Return the derived default-config PPO training model directory."""
+    return utils.artifacts.get_training_models_dir(_default_training_run_name())
 
 
 def default_manifests_dir() -> Path:
-    """Return the default PPO training manifest directory under the training layout."""
-    return utils.artifacts.get_training_manifests_dir(DEFAULT_RUN_NAME)
+    """Return the derived default-config PPO training manifest directory."""
+    return utils.artifacts.get_training_manifests_dir(_default_training_run_name())
 
 
 def detect_ppo_tracking_dependencies() -> dict[str, bool]:
@@ -306,6 +314,14 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         default_task_index=active_settings.task_index,
         task_shape=active_settings.task_shape,
     )
+    resolved_task_shape = str(task.get("shape", "unknown"))
+    training_run_name = _run_name(active_settings, resolved_task_shape)
+    timesteps_label = _timesteps_label(active_settings.total_timesteps)
+    model_path = _resolve_model_path(active_settings, resolved_task_shape)
+    metrics_path = _resolve_metrics_path(active_settings, resolved_task_shape)
+    manifest_path = _resolve_manifest_path(active_settings, resolved_task_shape)
+    logs_dir = utils.artifacts.get_training_logs_dir(training_run_name)
+    wandb_settings = _wandb_settings(active_settings, resolved_task_shape)
 
     warnings = [*selection_warnings, *(_check_tracking_env(task) if active_settings.check_env else ())]
     diagnostic_steps = min(active_settings.eval_steps, DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS)
@@ -314,16 +330,14 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         max_steps=diagnostic_steps,
         seed=active_settings.seed,
     )
-    model_path = _resolve_model_path(active_settings)
-    metrics_path = _resolve_metrics_path(active_settings)
-    manifest_path = _resolve_manifest_path(active_settings)
-    wandb_settings = _wandb_settings(active_settings)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
 
     from stable_baselines3 import PPO  # noqa: PLC0415
 
+    wandb_run = None
     training_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
     try:
         action_metadata = _tracking_env_action_metadata(training_env)
@@ -338,13 +352,31 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             n_epochs=4,
             n_steps=rollout_steps,
             seed=active_settings.seed,
+            tensorboard_log=str(logs_dir),
             verbose=0,
         )
         wandb_run = utils.wandb.start_wandb_run(
             settings=wandb_settings,
-            config=_wandb_config(active_settings, model_path, metrics_path, selected_task_index, task),
+            config=_wandb_config(
+                active_settings,
+                training_run_name,
+                model_path,
+                metrics_path,
+                manifest_path,
+                logs_dir,
+                selected_task_index,
+                task,
+            ),
         )
-        model.learn(total_timesteps=active_settings.total_timesteps, progress_bar=False)
+        learn_kwargs: dict[str, Any] = {
+            "total_timesteps": active_settings.total_timesteps,
+            "progress_bar": False,
+            "tb_log_name": training_run_name,
+        }
+        callback = _wandb_callback(wandb_run)
+        if callback is not None:
+            learn_kwargs["callback"] = callback
+        model.learn(**learn_kwargs)
         model.save(str(model_path))
         ppo_device = str(model.device)
         eval_metrics = _evaluate_model(model, training_env, active_settings)
@@ -367,21 +399,24 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     metrics: dict[str, Any] = {
         "run_type": "training",
         "mode": "ppo_smoke",
-        "training_run_name": _run_name(active_settings),
-        "run_name": _run_name(active_settings),
-        "task_config_path": str(active_settings.task_config_path),
+        "training_run_name": training_run_name,
+        "run_name": training_run_name,
+        "training_task_shape": resolved_task_shape,
+        "task_shape": resolved_task_shape,
         "task_index": selected_task_index,
         "configured_task_index": active_settings.task_index,
+        "task_config_path": str(active_settings.task_config_path),
+        "training_config_path": str(active_settings.training_config_path) if active_settings.training_config_path is not None else None,
         "task_source": task_source,
-        "task_shape": str(task.get("shape", "unknown")),
-        "training_task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": active_settings.task_shape,
         "total_timesteps": active_settings.total_timesteps,
+        "timesteps_label": timesteps_label,
         "eval_steps": active_settings.eval_steps,
         "seed": active_settings.seed,
         "model_path": str(model_path),
         "metrics_path": str(metrics_path),
         "manifest_path": str(manifest_path),
+        "logs_dir": str(logs_dir),
         "dependency_available": dependencies,
         "runtime": runtime_info,
         "ppo_device": ppo_device,
@@ -390,24 +425,23 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "warnings": warnings,
         "trained": True,
         "env_checked": active_settings.check_env,
-        "wandb": {
-            "mode": active_settings.wandb_mode,
-            "project": active_settings.wandb_project,
-            "entity": active_settings.wandb_entity,
-            "group": active_settings.wandb_group,
-            "name": active_settings.wandb_name,
-            "tags": list(active_settings.wandb_tags),
-            "dir": str(wandb_settings.dir or utils.wandb.default_wandb_dir()),
-            "enabled": active_settings.wandb_mode != utils.wandb.WANDB_MODE_DISABLED,
-        },
+        "wandb": _wandb_run_metadata(wandb_settings, wandb_run),
         **eval_metrics,
     }
-    utils.wandb.log_wandb_metrics(wandb_run, metrics)
-    if wandb_run is not None:
-        wandb_run.finish()
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest = _build_manifest(active_settings, metrics, task_source=task_source, selected_task_index=selected_task_index, task=task)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    utils.wandb.log_wandb_metrics(wandb_run, metrics)
+    utils.wandb.log_wandb_artifacts(
+        wandb_run,
+        {
+            f"{training_run_name}_model": model_path,
+            f"{training_run_name}_metrics": metrics_path,
+            f"{training_run_name}_manifest": manifest_path,
+        },
+    )
+    if wandb_run is not None:
+        wandb_run.finish()
     return PPOTrackingSmokeResult(
         model_path=str(model_path),
         metrics_path=str(metrics_path),
@@ -495,6 +529,7 @@ def run_ppo_tracking_smoke_from_config(
         metrics_filename=settings.metrics_filename,
         check_env=settings.check_env,
         wandb_mode=settings.wandb_mode if wandb_mode is None else wandb_mode,
+        training_config_path=settings.training_config_path,
         wandb_project=settings.wandb_project if wandb_project is None else wandb_project,
         wandb_entity=settings.wandb_entity if wandb_entity is None else wandb_entity,
         wandb_group=settings.wandb_group if wandb_group is None else wandb_group,
@@ -505,24 +540,27 @@ def run_ppo_tracking_smoke_from_config(
     return run_ppo_tracking_smoke(overridden)
 
 
-def _settings_from_mapping(config: dict[str, Any]) -> PPOTrackingSmokeSettings:
+def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | None = None) -> PPOTrackingSmokeSettings:
     """Build settings from a loaded YAML mapping."""
     output_dir_value = config.get("output_dir")
     model_dir_value = config.get("model_dir")
     wandb_dir_value = config.get("wandb_dir")
     settings_kwargs: dict[str, Any] = {
+        "training_config_path": training_config_path,
         "task_config_path": Path(config.get("task_config_path", DEFAULT_TASK_CONFIG_PATH)),
         "task_index": int(config.get("task_index", DEFAULT_TASK_INDEX)),
+        "task_shape": config.get("task_shape") or None,
+        "run_name": config.get("run_name") or None,
         "total_timesteps": int(config.get("total_timesteps", DEFAULT_TOTAL_TIMESTEPS)),
         "eval_steps": int(config.get("eval_steps", DEFAULT_EVAL_STEPS)),
         "seed": int(config.get("seed", DEFAULT_SEED)),
         "output_dir": Path(output_dir_value) if output_dir_value is not None else None,
         "model_dir": Path(model_dir_value) if model_dir_value is not None else None,
-        "manifest_filename": str(config.get("manifest_filename", DEFAULT_MANIFEST_FILENAME)),
-        "model_filename": str(config.get("model_filename", DEFAULT_MODEL_FILENAME)),
-        "metrics_filename": str(config.get("metrics_filename", DEFAULT_METRICS_FILENAME)),
+        "manifest_filename": config.get("manifest_filename") or None,
+        "model_filename": config.get("model_filename") or None,
+        "metrics_filename": config.get("metrics_filename") or None,
         "check_env": bool(config.get("check_env", True)),
-        "wandb_mode": str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_DISABLED),
+        "wandb_mode": str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_AUTO),
         "wandb_project": str(config.get("wandb_project") or utils.wandb.DEFAULT_WANDB_PROJECT),
         "wandb_entity": config.get("wandb_entity") or None,
         "wandb_group": config.get("wandb_group") or None,
@@ -578,34 +616,68 @@ def _select_task(
     raise ValueError(message)
 
 
-def _run_name(settings: PPOTrackingSmokeSettings) -> str:
-    """Return the configured training run name or the default smoke training run name."""
-    return DEFAULT_RUN_NAME if settings.run_name is None else settings.run_name
+def _timesteps_label(total_timesteps: int) -> str:
+    """Return a compact timestep label for generated training run names."""
+    if total_timesteps >= _TIMESTEPS_PER_MILLION_LABEL and total_timesteps % _TIMESTEPS_PER_MILLION_LABEL == 0:
+        return f"{total_timesteps // _TIMESTEPS_PER_MILLION_LABEL}m"
+    if total_timesteps >= _MIN_TIMESTEPS_FOR_COMPACT_THOUSAND_LABEL and total_timesteps % _TIMESTEPS_PER_THOUSAND_LABEL == 0:
+        return f"{total_timesteps // _TIMESTEPS_PER_THOUSAND_LABEL}k"
+    return str(total_timesteps)
 
 
-def _resolve_model_path(settings: PPOTrackingSmokeSettings) -> Path:
+def _auto_run_name(task_shape: str, total_timesteps: int, seed: int) -> str:
+    """Build the default PPO training run name from resolved settings."""
+    return f"ppo_{task_shape}_{_timesteps_label(total_timesteps)}_seed{seed}"
+
+
+def _default_training_run_name() -> str:
+    """Derive the run name produced by the default training config."""
+    settings = load_ppo_tracking_settings(DEFAULT_PPO_TRACKING_CONFIG_PATH)
+    task, _, _, _ = _select_task(
+        task_config_path=settings.task_config_path,
+        default_task_index=settings.task_index,
+        task_shape=settings.task_shape,
+    )
+    return _run_name(settings, str(task.get("shape", "unknown")))
+
+
+def _run_name(settings: PPOTrackingSmokeSettings, task_shape: str | None = None) -> str:
+    """Return the explicit or derived training run name."""
+    if settings.run_name is not None:
+        return settings.run_name
+    resolved_shape = task_shape or settings.task_shape
+    if resolved_shape is None:
+        message = "task_shape is required to derive a training run name"
+        raise ValueError(message)
+    return _auto_run_name(resolved_shape, settings.total_timesteps, settings.seed)
+
+
+def _resolve_model_path(settings: PPOTrackingSmokeSettings, task_shape: str | None = None) -> Path:
     """Resolve the trained model output path."""
-    default_dir = utils.artifacts.get_training_models_dir(_run_name(settings))
-    filename = settings.model_filename if settings.model_filename != DEFAULT_MODEL_FILENAME else f"{_run_name(settings)}.zip"
+    run_name = _run_name(settings, task_shape)
+    default_dir = utils.artifacts.get_training_models_dir(run_name)
+    filename = settings.model_filename or f"{run_name}.zip"
     return _resolve_directory(settings.model_dir, default_dir) / filename
 
 
-def _resolve_metrics_path(settings: PPOTrackingSmokeSettings) -> Path:
+def _resolve_metrics_path(settings: PPOTrackingSmokeSettings, task_shape: str | None = None) -> Path:
     """Resolve the metrics output path."""
-    filename = settings.metrics_filename if settings.metrics_filename != DEFAULT_METRICS_FILENAME else f"{_run_name(settings)}_metrics.json"
+    run_name = _run_name(settings, task_shape)
+    filename = settings.metrics_filename or f"{run_name}_metrics.json"
     if settings.output_dir is None:
-        return utils.artifacts.get_training_metrics_dir(_run_name(settings)) / filename
+        return utils.artifacts.get_training_metrics_dir(run_name) / filename
     output_dir = settings.output_dir.expanduser().resolve(strict=False)
     if "results" in output_dir.parts or output_dir.name == utils.artifacts.METRICS_DIRNAME:
         return output_dir / filename
     return output_dir / utils.artifacts.METRICS_DIRNAME / filename
 
 
-def _resolve_manifest_path(settings: PPOTrackingSmokeSettings) -> Path:
+def _resolve_manifest_path(settings: PPOTrackingSmokeSettings, task_shape: str | None = None) -> Path:
     """Resolve the manifest output path."""
-    filename = settings.manifest_filename if settings.manifest_filename != DEFAULT_MANIFEST_FILENAME else f"{_run_name(settings)}_manifest.json"
+    run_name = _run_name(settings, task_shape)
+    filename = settings.manifest_filename or f"{run_name}_manifest.json"
     if settings.output_dir is None:
-        return utils.artifacts.get_training_manifests_dir(_run_name(settings)) / filename
+        return utils.artifacts.get_training_manifests_dir(run_name) / filename
     output_dir = settings.output_dir.expanduser().resolve(strict=False)
     if "results" in output_dir.parts or output_dir.name == utils.artifacts.MANIFESTS_DIRNAME:
         return output_dir / filename
@@ -618,17 +690,83 @@ def _resolve_directory(path: Path | None, default: Path) -> Path:
     return directory.expanduser().resolve(strict=False)
 
 
-def _wandb_settings(settings: PPOTrackingSmokeSettings) -> utils.wandb.WandbTrackingSettings:
-    """Build W&B settings from PPO smoke settings."""
+def _wandb_settings(settings: PPOTrackingSmokeSettings, task_shape: str | None = None) -> utils.wandb.WandbTrackingSettings:
+    """Build W&B settings from PPO smoke settings and resolved task metadata."""
+    run_name = _run_name(settings, task_shape)
+    resolved_shape = task_shape or settings.task_shape or "unknown"
     return utils.wandb.WandbTrackingSettings(
         mode=settings.wandb_mode,
         project=settings.wandb_project,
         entity=settings.wandb_entity,
-        group=settings.wandb_group,
-        name=settings.wandb_name,
-        tags=settings.wandb_tags,
-        dir=settings.wandb_dir or utils.artifacts.get_training_wandb_dir(_run_name(settings)),
+        group=settings.wandb_group or f"ppo_tracking/{resolved_shape}",
+        name=settings.wandb_name or run_name,
+        tags=_wandb_tags(settings, resolved_shape),
+        dir=settings.wandb_dir or utils.artifacts.get_training_wandb_dir(run_name),
     )
+
+
+def _wandb_tags(settings: PPOTrackingSmokeSettings, task_shape: str) -> tuple[str, ...]:
+    """Return derived and user-provided W&B tags without duplicates."""
+    config_stem = settings.training_config_path.stem if settings.training_config_path is not None else "direct"
+    derived = (
+        "ppo",
+        "training",
+        f"task:{task_shape}",
+        f"steps:{_timesteps_label(settings.total_timesteps)}",
+        f"seed:{settings.seed}",
+        f"config:{config_stem}",
+    )
+    return _dedupe_tags((*derived, *settings.wandb_tags))
+
+
+def _dedupe_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
+    """Deduplicate tags while preserving their first occurrence."""
+    unique: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        clean = tag.strip()
+        if not clean or clean in seen:
+            continue
+        unique.append(clean)
+        seen.add(clean)
+    return tuple(unique)
+
+
+def _wandb_run_metadata(settings: utils.wandb.WandbTrackingSettings, run: Any | None) -> dict[str, Any]:
+    """Return resolved W&B metadata for metrics and manifests."""
+    resolved_mode = utils.wandb.resolve_wandb_mode(settings.mode)
+    return {
+        "enabled": resolved_mode != utils.wandb.WANDB_MODE_DISABLED,
+        "mode": settings.mode,
+        "resolved_mode": resolved_mode,
+        "project": settings.project,
+        "entity": settings.entity,
+        "group": settings.group,
+        "name": settings.name,
+        "tags": list(settings.tags),
+        "dir": str(settings.dir) if settings.dir is not None else None,
+        "run_id": _optional_wandb_string(getattr(run, "id", None) if run is not None else None),
+        "url": _optional_wandb_string(getattr(run, "url", None) if run is not None else None),
+    }
+
+
+def _optional_wandb_string(value: Any | None) -> str | None:
+    """Return a non-empty W&B metadata string or ``None``."""
+    if value is None:
+        return None
+    text = str(value)
+    return text if text and text != "None" else None
+
+
+def _wandb_callback(run: Any | None) -> Any | None:
+    """Return the official SB3/W&B callback when tracking and integration are available."""
+    if run is None:
+        return None
+    try:
+        from wandb.integration.sb3 import WandbCallback  # noqa: PLC0415
+    except ImportError:
+        return None
+    return WandbCallback(verbose=0)
 
 
 def _build_manifest(
@@ -639,11 +777,14 @@ def _build_manifest(
     task: dict[str, Any],
 ) -> dict[str, Any]:
     """Build a manifest payload for a PPO training run."""
+    run_name = str(metrics["training_run_name"])
+    diagnostics = _diagnostic_manifest_fields(metrics)
     return {
         "run_type": "training",
         "mode": "ppo_smoke",
-        "training_run_name": _run_name(settings),
-        "run_name": _run_name(settings),
+        "training_run_name": run_name,
+        "run_name": run_name,
+        "training_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
         "task_config_path": str(settings.task_config_path),
         "task_source": task_source,
         "task_index": selected_task_index,
@@ -656,22 +797,53 @@ def _build_manifest(
         "model_path": metrics["model_path"],
         "metrics_path": metrics["metrics_path"],
         "manifest_path": metrics["manifest_path"],
-        "output_dir": str(settings.output_dir) if settings.output_dir is not None else str(default_output_dir()),
+        "output_dir": str(settings.output_dir) if settings.output_dir is not None else str(utils.artifacts.get_training_run_dir(run_name)),
+        "logs_dir": metrics["logs_dir"],
         "warnings": list(metrics.get("warnings", [])),
         "wandb": metrics.get("wandb", {}),
+        "diagnostics": diagnostics,
+        **diagnostics,
     }
+
+
+def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Select diagnostic fields that should be duplicated into the manifest."""
+    diagnostic_keys = (
+        "action_mean",
+        "action_std",
+        "action_min",
+        "action_max",
+        "action_saturation_fraction",
+        "mean_abs_x_error",
+        "mean_abs_y_error",
+        "mean_abs_z_error",
+        "final_abs_x_error",
+        "final_abs_y_error",
+        "final_abs_z_error",
+        "reference_xy_span_m",
+        "actual_xy_span_m",
+        "xy_tracking_ratio",
+        "eval_terminated_count",
+        "eval_truncated_count",
+    )
+    return {key: metrics[key] for key in diagnostic_keys if key in metrics}
 
 
 def _wandb_config(
     settings: PPOTrackingSmokeSettings,
+    run_name: str,
     model_path: Path,
     metrics_path: Path,
+    manifest_path: Path,
+    logs_dir: Path,
     selected_task_index: int,
     task: dict[str, Any],
 ) -> dict[str, Any]:
     """Build a compact W&B config payload for PPO smoke training."""
     return {
-        "run_name": _run_name(settings),
+        "run_name": run_name,
+        "training_run_name": run_name,
+        "training_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
         "task_config_path": str(settings.task_config_path),
         "task_index": selected_task_index,
         "task_shape": str(task.get("shape", "unknown")),
@@ -681,6 +853,8 @@ def _wandb_config(
         "seed": settings.seed,
         "model_path": str(model_path),
         "metrics_path": str(metrics_path),
+        "manifest_path": str(manifest_path),
+        "logs_dir": str(logs_dir),
     }
 
 
@@ -719,7 +893,7 @@ def _ppo_rollout_steps(total_timesteps: int) -> int:
 
 
 def _evaluate_model(model: Any, tracking_env: Any, settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
-    """Evaluate a trained model for a deterministic rollout with movement bounds."""
+    """Evaluate a trained model for a deterministic rollout with tracking diagnostics."""
     observation, _ = tracking_env.reset(seed=settings.seed)
     rewards: list[float] = []
     errors: list[float] = []
@@ -748,6 +922,8 @@ def _evaluate_model(model: Any, tracking_env: Any, settings: PPOTrackingSmokeSet
     position_bounds = _position_bounds(positions)
     reference_position_bounds = _position_bounds(reference_positions)
     action_bounds = _position_bounds(actions)
+    actual_xy_span_m = float(np.linalg.norm([_axis_span(position_bounds, axis=0), _axis_span(position_bounds, axis=1)]))
+    reference_xy_span_m = float(np.linalg.norm([_axis_span(reference_position_bounds, axis=0), _axis_span(reference_position_bounds, axis=1)]))
     return {
         "actual_eval_steps": len(rewards),
         "eval_resets": reset_count,
@@ -761,10 +937,74 @@ def _evaluate_model(model: Any, tracking_env: Any, settings: PPOTrackingSmokeSet
         "reference_position_bounds": reference_position_bounds,
         "action_bounds": action_bounds,
         "actual_z_span_m": _axis_span(position_bounds, axis=2),
-        "actual_xy_span_m": float(np.linalg.norm([_axis_span(position_bounds, axis=0), _axis_span(position_bounds, axis=1)])),
+        "actual_xy_span_m": actual_xy_span_m,
         "reference_z_span_m": _axis_span(reference_position_bounds, axis=2),
-        "reference_xy_span_m": float(np.linalg.norm([_axis_span(reference_position_bounds, axis=0), _axis_span(reference_position_bounds, axis=1)])),
+        "reference_xy_span_m": reference_xy_span_m,
+        "xy_tracking_ratio": _xy_tracking_ratio(actual_xy_span_m, reference_xy_span_m),
+        **_tracking_error_metrics(positions, reference_positions),
+        **_action_distribution_metrics(actions, tracking_env.action_space),
     }
+
+
+def _tracking_error_metrics(positions: list[np.ndarray], reference_positions: list[np.ndarray]) -> dict[str, float]:
+    """Return per-axis absolute tracking-error diagnostics."""
+    if not positions or not reference_positions:
+        return {
+            "mean_abs_x_error": 0.0,
+            "mean_abs_y_error": 0.0,
+            "mean_abs_z_error": 0.0,
+            "final_abs_x_error": 0.0,
+            "final_abs_y_error": 0.0,
+            "final_abs_z_error": 0.0,
+        }
+    position_array = np.asarray(positions, dtype=float).reshape(len(positions), -1)
+    reference_array = np.asarray(reference_positions, dtype=float).reshape(len(reference_positions), -1)
+    absolute_errors = np.abs(position_array[:, :3] - reference_array[:, :3])
+    mean_errors = np.mean(absolute_errors, axis=0)
+    final_errors = absolute_errors[-1]
+    return {
+        "mean_abs_x_error": float(mean_errors[0]),
+        "mean_abs_y_error": float(mean_errors[1]),
+        "mean_abs_z_error": float(mean_errors[2]),
+        "final_abs_x_error": float(final_errors[0]),
+        "final_abs_y_error": float(final_errors[1]),
+        "final_abs_z_error": float(final_errors[2]),
+    }
+
+
+def _action_distribution_metrics(actions: list[np.ndarray], action_space: Any) -> dict[str, list[float]]:
+    """Return per-dimension action distribution and saturation diagnostics."""
+    if not actions:
+        return {
+            "action_mean": [],
+            "action_std": [],
+            "action_min": [],
+            "action_max": [],
+            "action_saturation_fraction": [],
+        }
+    action_array = np.asarray(actions, dtype=float).reshape(len(actions), -1)
+    low = np.asarray(getattr(action_space, "low", []), dtype=float).reshape(-1)
+    high = np.asarray(getattr(action_space, "high", []), dtype=float).reshape(-1)
+    if low.size != action_array.shape[1] or high.size != action_array.shape[1]:
+        saturation_fraction = np.zeros(action_array.shape[1], dtype=float)
+    else:
+        near_low = np.isclose(action_array, low, atol=_ACTION_SATURATION_TOLERANCE, rtol=0.0)
+        near_high = np.isclose(action_array, high, atol=_ACTION_SATURATION_TOLERANCE, rtol=0.0)
+        saturation_fraction = np.mean(np.logical_or(near_low, near_high), axis=0)
+    return {
+        "action_mean": [float(value) for value in np.mean(action_array, axis=0)],
+        "action_std": [float(value) for value in np.std(action_array, axis=0)],
+        "action_min": [float(value) for value in np.min(action_array, axis=0)],
+        "action_max": [float(value) for value in np.max(action_array, axis=0)],
+        "action_saturation_fraction": [float(value) for value in saturation_fraction],
+    }
+
+
+def _xy_tracking_ratio(actual_xy_span_m: float, reference_xy_span_m: float) -> float | None:
+    """Return actual/reference XY span ratio when the reference span is nonzero."""
+    if reference_xy_span_m <= _XY_TRACKING_RATIO_MIN_REFERENCE_SPAN_M:
+        return None
+    return float(actual_xy_span_m / reference_xy_span_m)
 
 
 def run_liftoff_diagnostics(
@@ -1081,7 +1321,6 @@ def _rollout_termination_reason(
 __all__ = [
     "DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS",
     "DEFAULT_PPO_TRACKING_CONFIG_PATH",
-    "DEFAULT_RUN_NAME",
     "DEFAULT_TASK_CONFIG_PATH",
     "PPOTrackingSmokeResult",
     "PPOTrackingSmokeSettings",

@@ -30,28 +30,29 @@ def test_ppo_tracking_imports_through_package_alias() -> None:
 def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify the smoke YAML file loads into validated settings."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = experiments.ppo_tracking.load_ppo_tracking_settings("configs/smoke/ppo_hover_smoke.yaml")
+    settings = experiments.ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking.yaml")
 
+    assert settings.training_config_path == Path("configs/training/ppo_tracking.yaml")
     assert settings.task_config_path == Path("configs/smoke/trajectory_validation.yaml")
     assert settings.task_index == EXPECTED_SMOKE_TASK_INDEX
-    assert settings.task_shape is None
+    assert settings.task_shape == "hover"
     assert settings.run_name is None
     assert settings.total_timesteps == EXPECTED_SMOKE_TIMESTEPS
     assert settings.eval_steps == EXPECTED_SMOKE_EVAL_STEPS
     assert settings.seed == 0
     assert settings.output_dir is None
     assert settings.model_dir is None
-    assert settings.wandb_mode == "disabled"
+    assert settings.wandb_mode == "auto"
     assert settings.wandb_project == utils.wandb.DEFAULT_WANDB_PROJECT
     assert settings.wandb_entity is None
     assert settings.wandb_group is None
     assert settings.wandb_name is None
     assert settings.wandb_tags == ()
     assert settings.wandb_dir is None
-    assert experiments.ppo_tracking.default_output_dir() == tmp_path / "training_runs" / "ppo_hover_smoke"
-    assert experiments.ppo_tracking.default_model_dir() == tmp_path / "training_runs" / "ppo_hover_smoke" / "models"
-    assert experiments.ppo_tracking.default_manifests_dir() == tmp_path / "training_runs" / "ppo_hover_smoke" / "manifests"
-    assert utils.wandb.default_wandb_dir() == tmp_path / "training_runs" / "ppo_hover_smoke" / "wandb"
+    assert experiments.ppo_tracking.default_output_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0"
+    assert experiments.ppo_tracking.default_model_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "models"
+    assert experiments.ppo_tracking.default_manifests_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "manifests"
+    assert utils.wandb.default_wandb_dir("ppo_hover_4096_seed0") == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "wandb"
 
 
 def test_ppo_tracking_settings_reject_invalid_timesteps() -> None:
@@ -89,6 +90,7 @@ def test_ppo_tracking_select_task_by_shape_uses_configured_task() -> None:
 def test_ppo_tracking_paths_resolve_under_run_directories(tmp_path: Path) -> None:
     """Verify caller-provided run roots control generated artifact paths."""
     settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(
+        task_shape="hover",
         output_dir=tmp_path / "run",
         model_dir=tmp_path / "run" / "models",
     )
@@ -96,8 +98,18 @@ def test_ppo_tracking_paths_resolve_under_run_directories(tmp_path: Path) -> Non
     model_path = experiments.ppo_tracking._resolve_model_path(settings)  # noqa: SLF001
     metrics_path = experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
 
-    assert model_path == (tmp_path / "run" / "models" / "ppo_hover_smoke.zip").resolve(strict=False)
-    assert metrics_path == (tmp_path / "run" / "metrics" / "ppo_hover_smoke_metrics.json").resolve(strict=False)
+    assert model_path == (tmp_path / "run" / "models" / "ppo_hover_4096_seed0.zip").resolve(strict=False)
+    assert metrics_path == (tmp_path / "run" / "metrics" / "ppo_hover_4096_seed0_metrics.json").resolve(strict=False)
+
+
+def test_ppo_tracking_auto_run_name_uses_resolved_task_shape() -> None:
+    """Verify omitted run names are derived from task shape, timesteps, and seed."""
+    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(task_shape="line", total_timesteps=10000, seed=0)
+
+    assert experiments.ppo_tracking._timesteps_label(4096) == "4096"  # noqa: SLF001
+    assert experiments.ppo_tracking._timesteps_label(10000) == "10k"  # noqa: SLF001
+    assert experiments.ppo_tracking._timesteps_label(1000000) == "1m"  # noqa: SLF001
+    assert experiments.ppo_tracking._run_name(settings) == "ppo_line_10k_seed0"  # noqa: SLF001
 
 
 def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,16 +128,22 @@ def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, mo
         experiments.ppo_tracking._resolve_manifest_path(settings)  # noqa: SLF001
         == tmp_path / "training_runs" / "ppo_line_smoke" / "manifests" / "ppo_line_smoke_manifest.json"
     )
-    assert experiments.ppo_tracking._wandb_settings(settings).dir == tmp_path / "training_runs" / "ppo_line_smoke" / "wandb"  # noqa: SLF001
+    wandb_settings = experiments.ppo_tracking._wandb_settings(settings, "line")  # noqa: SLF001
+    assert wandb_settings.dir == tmp_path / "training_runs" / "ppo_line_smoke" / "wandb"
+    assert wandb_settings.name == "ppo_line_smoke"
+    assert wandb_settings.group == "ppo_tracking/line"
 
 
 def test_ppo_tracking_explicit_output_dir_remains_direct(tmp_path: Path) -> None:
     """Verify explicit output directory overrides preserve direct metrics placement."""
-    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(output_dir=tmp_path / "storage" / "results" / "custom")
+    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(
+        task_shape="hover",
+        output_dir=tmp_path / "storage" / "results" / "custom",
+    )
 
     metrics_path = experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
 
-    assert metrics_path == (tmp_path / "storage" / "results" / "custom" / "ppo_hover_smoke_metrics.json").resolve(strict=False)
+    assert metrics_path == (tmp_path / "storage" / "results" / "custom" / "ppo_hover_4096_seed0_metrics.json").resolve(strict=False)
 
 
 def test_ppo_tracking_dependency_detection_returns_booleans() -> None:
@@ -198,7 +216,12 @@ def test_evaluate_model_metrics_include_movement_bounds() -> None:
     assert "position_bounds" in metrics
     assert "reference_position_bounds" in metrics
     assert "actual_z_span_m" in metrics
+    assert "xy_tracking_ratio" in metrics
     assert metrics["action_bounds"]["max"] == [1.0, 1.0, 1.0]
+    assert metrics["action_mean"] == [1.0, 1.0, 1.0]
+    assert metrics["action_saturation_fraction"] == [0.0, 0.0, 1.0]
+    assert "mean_abs_x_error" in metrics
+    assert "final_abs_z_error" in metrics
 
 
 def test_cli_train_tracking_parser_accepts_task_shape_and_run_name() -> None:
