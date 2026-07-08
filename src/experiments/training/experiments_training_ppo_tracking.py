@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import warnings as py_warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -495,172 +496,173 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     from stable_baselines3 import PPO  # noqa: PLC0415
 
     wandb_run = None
-    vec_env_type = _vec_env_type(active_settings.num_envs)
-    effective_rollout_steps = active_settings.ppo_config.effective_rollout_steps(active_settings.num_envs)
-    training_env = _make_ppo_training_vec_env(
-        task=task,
-        num_envs=active_settings.num_envs,
-        normalize_actions=active_settings.normalize_actions,
-        seed=active_settings.seed,
-    )
     try:
-        if active_settings.initial_model_path is None:
-            sb3_ppo_kwargs = active_settings.ppo_config.to_sb3_kwargs()
-            policy = str(sb3_ppo_kwargs.pop("policy"))
-            model = PPO(
-                policy,
-                training_env,
-                seed=active_settings.seed,
-                tensorboard_log=str(logs_dir),
-                verbose=0,
-                **sb3_ppo_kwargs,
-            )
-        else:
-            if not active_settings.initial_model_path.exists():
-                message = f"initial_model_path does not exist: {active_settings.initial_model_path}"
-                raise FileNotFoundError(message)
-            model = PPO.load(
-                str(active_settings.initial_model_path),
-                env=training_env,
-                device=active_settings.ppo_config.device,
-                tensorboard_log=str(logs_dir),
-            )
-        wandb_run = utils.wandb.start_wandb_run(
-            settings=wandb_settings,
-            config=_wandb_config(
-                active_settings,
-                training_run_name,
-                model_path,
-                metrics_path,
-                manifest_path,
-                logs_dir,
-                diagnostics_dir,
-                selected_task_index,
-                task,
-            ),
-        )
-        learn_kwargs: dict[str, Any] = {
-            "total_timesteps": active_settings.total_timesteps,
-            "progress_bar": False,
-            "tb_log_name": training_run_name,
-        }
-        callback = _wandb_callback(wandb_run)
-        if callback is not None:
-            learn_kwargs["callback"] = callback
-        model.learn(**learn_kwargs)
-        model.save(str(model_path))
-        ppo_device = str(model.device)
-        eval_env = _make_seeded_ppo_tracking_env(
+        vec_env_type = _vec_env_type(active_settings.num_envs)
+        effective_rollout_steps = active_settings.ppo_config.effective_rollout_steps(active_settings.num_envs)
+        training_env = _make_ppo_training_vec_env(
             task=task,
+            num_envs=active_settings.num_envs,
             normalize_actions=active_settings.normalize_actions,
             seed=active_settings.seed,
         )
         try:
-            action_metadata = _tracking_env_action_metadata(eval_env)
-            eval_diagnostics = evaluation.diagnostics.collect_policy_evaluation_diagnostics(
-                model=model,
-                tracking_env=eval_env,
-                eval_steps=active_settings.eval_steps,
-                seed=active_settings.seed,
-                training_run_name=training_run_name,
-                task_shape=resolved_task_shape,
-                total_timesteps=active_settings.total_timesteps,
+            if active_settings.initial_model_path is None:
+                sb3_ppo_kwargs = active_settings.ppo_config.to_sb3_kwargs()
+                policy = str(sb3_ppo_kwargs.pop("policy"))
+                model = PPO(
+                    policy,
+                    training_env,
+                    seed=active_settings.seed,
+                    tensorboard_log=str(logs_dir),
+                    verbose=0,
+                    **sb3_ppo_kwargs,
+                )
+            else:
+                if not active_settings.initial_model_path.exists():
+                    message = f"initial_model_path does not exist: {active_settings.initial_model_path}"
+                    raise FileNotFoundError(message)
+                model = PPO.load(
+                    str(active_settings.initial_model_path),
+                    env=training_env,
+                    device=active_settings.ppo_config.device,
+                    tensorboard_log=str(logs_dir),
+                )
+            wandb_run = utils.wandb.start_wandb_run(
+                settings=wandb_settings,
+                config=_wandb_config(
+                    active_settings,
+                    training_run_name,
+                    model_path,
+                    metrics_path,
+                    manifest_path,
+                    logs_dir,
+                    diagnostics_dir,
+                    selected_task_index,
+                    task,
+                ),
             )
-            eval_metrics = eval_diagnostics.metrics
+            learn_kwargs: dict[str, Any] = {
+                "total_timesteps": active_settings.total_timesteps,
+                "progress_bar": False,
+                "tb_log_name": training_run_name,
+            }
+            callback = _wandb_callback(wandb_run)
+            if callback is not None:
+                learn_kwargs["callback"] = callback
+            model.learn(**learn_kwargs)
+            model.save(str(model_path))
+            ppo_device = str(model.device)
+            eval_env = _make_seeded_ppo_tracking_env(
+                task=task,
+                normalize_actions=active_settings.normalize_actions,
+                seed=active_settings.seed,
+            )
+            try:
+                action_metadata = _tracking_env_action_metadata(eval_env)
+                eval_diagnostics = evaluation.diagnostics.collect_policy_evaluation_diagnostics(
+                    model=model,
+                    tracking_env=eval_env,
+                    eval_steps=active_settings.eval_steps,
+                    seed=active_settings.seed,
+                    training_run_name=training_run_name,
+                    task_shape=resolved_task_shape,
+                    total_timesteps=active_settings.total_timesteps,
+                )
+                eval_metrics = eval_diagnostics.metrics
+            finally:
+                eval_env.close()
         finally:
-            eval_env.close()
+            training_env.close()
+
+        trained_liftoff_diagnostics = run_liftoff_diagnostics(
+            task=task,
+            max_steps=diagnostic_steps,
+            seed=active_settings.seed,
+            model=model,
+            include_simple_policies=False,
+        )
+        liftoff_diagnostics = {
+            **simple_liftoff_diagnostics,
+            **trained_liftoff_diagnostics,
+        }
+        diagnostic_artifact_fields = evaluation.diagnostics.write_policy_evaluation_diagnostics(eval_diagnostics, diagnostics_dir)
+        warnings.extend(_movement_warnings(eval_metrics=eval_metrics, action_metadata=action_metadata))
+
+        metrics: dict[str, Any] = {
+            "run_type": "training",
+            "run_kind": "direct_ppo",
+            "curriculum_kind": None,
+            "mode": "ppo_smoke",
+            "training_run_name": training_run_name,
+            "run_name": training_run_name,
+            "training_task_shape": resolved_task_shape,
+            "task_shape": resolved_task_shape,
+            "task_index": selected_task_index,
+            "configured_task_index": active_settings.task_index,
+            "task_config_path": str(active_settings.task_config_path),
+            "training_config_path": str(active_settings.training_config_path) if active_settings.training_config_path is not None else None,
+            "training_config_snapshot_path": config_snapshots.get("training_config_snapshot_path"),
+            "training_config_snapshot_path_relative": config_snapshots.get("training_config_snapshot_path_relative"),
+            "task_config_snapshot_path": config_snapshots.get("task_config_snapshot_path"),
+            "task_config_snapshot_path_relative": config_snapshots.get("task_config_snapshot_path_relative"),
+            "task_source": task_source,
+            "task_shape_requested": active_settings.task_shape,
+            "total_timesteps": active_settings.total_timesteps,
+            "num_envs": active_settings.num_envs,
+            "vec_env_type": vec_env_type,
+            "vec_monitor_enabled": VEC_MONITOR_ENABLED,
+            "effective_rollout_steps": effective_rollout_steps,
+            "ppo_config": active_settings.ppo_config.to_dict(),
+            "timesteps_label": timesteps_label,
+            "eval_steps": active_settings.eval_steps,
+            "seed": active_settings.seed,
+            "model_path": str(model_path),
+            "metrics_path": str(metrics_path),
+            "manifest_path": str(manifest_path),
+            "run_manifest_path": str(run_manifest_path) if run_manifest_path is not None else None,
+            "logs_dir": str(logs_dir),
+            "diagnostics_dir": str(diagnostics_dir),
+            "dependency_available": dependencies,
+            "runtime": runtime_info,
+            "ppo_device": ppo_device,
+            "action_metadata": action_metadata,
+            "liftoff_diagnostics": liftoff_diagnostics,
+            "warnings": warnings,
+            "trained": True,
+            "env_checked": active_settings.check_env,
+            "normalize_actions": active_settings.normalize_actions,
+            "initial_model_path": str(active_settings.initial_model_path) if active_settings.initial_model_path is not None else None,
+            "model_transfer_enabled": active_settings.initial_model_path is not None,
+            "model_transfer_source": str(active_settings.initial_model_path) if active_settings.initial_model_path is not None else None,
+            "wandb": _wandb_run_metadata(wandb_settings, wandb_run),
+            **eval_metrics,
+            **diagnostic_artifact_fields,
+        }
+        metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        manifest = _build_manifest(active_settings, metrics, task_source=task_source, selected_task_index=selected_task_index, task=task)
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if run_manifest_path is not None:
+            run_manifest = _build_run_manifest(active_settings, metrics, manifest)
+            run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        utils.wandb.log_wandb_summary(wandb_run, metrics)
+        artifact_paths = {
+            f"{training_run_name}_model": model_path,
+            f"{training_run_name}_metrics": metrics_path,
+            f"{training_run_name}_manifest": manifest_path,
+        }
+        if run_manifest_path is not None:
+            artifact_paths[f"{training_run_name}_run_manifest"] = run_manifest_path
+        artifact_paths.update(_diagnostic_artifact_paths(training_run_name, metrics))
+        utils.wandb.log_wandb_artifacts(wandb_run, artifact_paths)
+        return PPOTrackingSmokeResult(
+            model_path=str(model_path),
+            metrics_path=str(metrics_path),
+            manifest_path=str(manifest_path),
+            metrics=metrics,
+            warnings=tuple(warnings),
+        )
     finally:
-        training_env.close()
-
-    trained_liftoff_diagnostics = run_liftoff_diagnostics(
-        task=task,
-        max_steps=diagnostic_steps,
-        seed=active_settings.seed,
-        model=model,
-        include_simple_policies=False,
-    )
-    liftoff_diagnostics = {
-        **simple_liftoff_diagnostics,
-        **trained_liftoff_diagnostics,
-    }
-    diagnostic_artifact_fields = evaluation.diagnostics.write_policy_evaluation_diagnostics(eval_diagnostics, diagnostics_dir)
-    warnings.extend(_movement_warnings(eval_metrics=eval_metrics, action_metadata=action_metadata))
-
-    metrics: dict[str, Any] = {
-        "run_type": "training",
-        "run_kind": "direct_ppo",
-        "curriculum_kind": None,
-        "mode": "ppo_smoke",
-        "training_run_name": training_run_name,
-        "run_name": training_run_name,
-        "training_task_shape": resolved_task_shape,
-        "task_shape": resolved_task_shape,
-        "task_index": selected_task_index,
-        "configured_task_index": active_settings.task_index,
-        "task_config_path": str(active_settings.task_config_path),
-        "training_config_path": str(active_settings.training_config_path) if active_settings.training_config_path is not None else None,
-        "training_config_snapshot_path": config_snapshots.get("training_config_snapshot_path"),
-        "training_config_snapshot_path_relative": config_snapshots.get("training_config_snapshot_path_relative"),
-        "task_config_snapshot_path": config_snapshots.get("task_config_snapshot_path"),
-        "task_config_snapshot_path_relative": config_snapshots.get("task_config_snapshot_path_relative"),
-        "task_source": task_source,
-        "task_shape_requested": active_settings.task_shape,
-        "total_timesteps": active_settings.total_timesteps,
-        "num_envs": active_settings.num_envs,
-        "vec_env_type": vec_env_type,
-        "vec_monitor_enabled": VEC_MONITOR_ENABLED,
-        "effective_rollout_steps": effective_rollout_steps,
-        "ppo_config": active_settings.ppo_config.to_dict(),
-        "timesteps_label": timesteps_label,
-        "eval_steps": active_settings.eval_steps,
-        "seed": active_settings.seed,
-        "model_path": str(model_path),
-        "metrics_path": str(metrics_path),
-        "manifest_path": str(manifest_path),
-        "run_manifest_path": str(run_manifest_path) if run_manifest_path is not None else None,
-        "logs_dir": str(logs_dir),
-        "diagnostics_dir": str(diagnostics_dir),
-        "dependency_available": dependencies,
-        "runtime": runtime_info,
-        "ppo_device": ppo_device,
-        "action_metadata": action_metadata,
-        "liftoff_diagnostics": liftoff_diagnostics,
-        "warnings": warnings,
-        "trained": True,
-        "env_checked": active_settings.check_env,
-        "normalize_actions": active_settings.normalize_actions,
-        "initial_model_path": str(active_settings.initial_model_path) if active_settings.initial_model_path is not None else None,
-        "model_transfer_enabled": active_settings.initial_model_path is not None,
-        "model_transfer_source": str(active_settings.initial_model_path) if active_settings.initial_model_path is not None else None,
-        "wandb": _wandb_run_metadata(wandb_settings, wandb_run),
-        **eval_metrics,
-        **diagnostic_artifact_fields,
-    }
-    metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    manifest = _build_manifest(active_settings, metrics, task_source=task_source, selected_task_index=selected_task_index, task=task)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if run_manifest_path is not None:
-        run_manifest = _build_run_manifest(active_settings, metrics, manifest)
-        run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    utils.wandb.log_wandb_summary(wandb_run, metrics)
-    artifact_paths = {
-        f"{training_run_name}_model": model_path,
-        f"{training_run_name}_metrics": metrics_path,
-        f"{training_run_name}_manifest": manifest_path,
-    }
-    if run_manifest_path is not None:
-        artifact_paths[f"{training_run_name}_run_manifest"] = run_manifest_path
-    artifact_paths.update(_diagnostic_artifact_paths(training_run_name, metrics))
-    utils.wandb.log_wandb_artifacts(wandb_run, artifact_paths)
-    if wandb_run is not None:
-        wandb_run.finish()
-    return PPOTrackingSmokeResult(
-        model_path=str(model_path),
-        metrics_path=str(metrics_path),
-        manifest_path=str(manifest_path),
-        metrics=metrics,
-        warnings=tuple(warnings),
-    )
+        _finish_wandb_run(wandb_run)
 
 
 def run_ppo_tracking_smoke_from_config(
@@ -1032,6 +1034,18 @@ def _wandb_callback(run: Any | None) -> Any | None:
     except ImportError:
         return None
     return WandbCallback(verbose=0)
+
+
+def _finish_wandb_run(run: Any | None) -> None:
+    """Finish an active W&B run without masking an already-raising exception."""
+    if run is None:
+        return
+    has_active_exception = sys.exc_info()[0] is not None
+    try:
+        run.finish()
+    except Exception:
+        if not has_active_exception:
+            raise
 
 
 def _build_manifest(

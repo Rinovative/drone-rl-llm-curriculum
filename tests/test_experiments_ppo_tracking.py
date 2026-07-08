@@ -55,6 +55,106 @@ EXPECTED_PPO_CONFIG = {
 }
 
 
+class _FakeTrainingEnv:
+    """Minimal environment stand-in for fast PPO training tests."""
+
+    def __init__(self) -> None:
+        """Track whether the fake environment was closed."""
+        self.closed = False
+
+    def close(self) -> None:
+        """Close the fake environment."""
+        self.closed = True
+
+
+class _FakeWandbRun:
+    """Tiny W&B run stand-in that records finish calls."""
+
+    def __init__(self) -> None:
+        """Create fake W&B metadata and event tracking."""
+        self.id = "fake-run-id"
+        self.url = "https://wandb.example/fake-run"
+        self.finish_count = 0
+
+    def finish(self) -> None:
+        """Record that the run was finished."""
+        self.finish_count += 1
+
+
+def _install_fast_ppo_smoke_fakes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    wandb_run: _FakeWandbRun | None,
+    learn_error: Exception | None = None,
+) -> types.SimpleNamespace:
+    """Install fake PPO, env, diagnostics, and W&B hooks for fast lifecycle tests."""
+
+    class FakePPO:
+        """Tiny SB3 PPO stand-in that can fail during learning."""
+
+        def __init__(self, _policy: str, _env: _FakeTrainingEnv, **kwargs: Any) -> None:
+            """Record device metadata used by downstream metrics."""
+            self.device = kwargs["device"]
+
+        def learn(self, **_kwargs: Any) -> None:
+            """Succeed or raise the configured learning error."""
+            if learn_error is not None:
+                raise learn_error
+
+        def save(self, path: str) -> None:
+            """Write a tiny model marker file."""
+            Path(path).write_text("fake model", encoding="utf-8")
+
+    events: list[str] = []
+    fake_training_vec_env = _FakeTrainingEnv()
+    fake_eval_env = _FakeTrainingEnv()
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    fake_sb3 = types.ModuleType("stable_baselines3")
+    fake_sb3.PPO = FakePPO
+    monkeypatch.setitem(sys.modules, "stable_baselines3", fake_sb3)
+    monkeypatch.setattr(
+        ppo_tracking,
+        "detect_ppo_tracking_dependencies",
+        lambda: {"stable_baselines3": True, "gymnasium": True, "gym_pybullet_drones": True, "torch": True},
+    )
+    monkeypatch.setattr(ppo_tracking, "detect_ppo_runtime_info", lambda: {"torch_available": True})
+    monkeypatch.setattr(ppo_tracking, "_select_task", lambda **_kwargs: ({"shape": "line"}, "config", 0, ()))
+    monkeypatch.setattr(ppo_tracking, "run_liftoff_diagnostics", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(ppo_tracking, "_make_ppo_training_vec_env", lambda **_kwargs: fake_training_vec_env)
+    monkeypatch.setattr(ppo_tracking, "_make_seeded_ppo_tracking_env", lambda **_kwargs: fake_eval_env)
+    monkeypatch.setattr(ppo_tracking, "_tracking_env_action_metadata", lambda _env: {"actions_normalized": False})
+    monkeypatch.setattr(ppo_tracking, "_movement_warnings", lambda **_kwargs: ())
+    monkeypatch.setattr(ppo_tracking, "_wandb_callback", lambda _run: None)
+    monkeypatch.setattr(
+        ppo_tracking.evaluation.diagnostics,
+        "collect_policy_evaluation_diagnostics",
+        lambda **_kwargs: types.SimpleNamespace(metrics={"mean_position_error_m": 0.1}),
+    )
+    monkeypatch.setattr(ppo_tracking.evaluation.diagnostics, "write_policy_evaluation_diagnostics", lambda *_args, **_kwargs: {})
+
+    def fake_start_wandb_run(*, settings: Any, config: dict[str, Any]) -> _FakeWandbRun | None:
+        """Capture W&B startup without importing wandb."""
+        _ = settings, config
+        events.append("start")
+        return wandb_run
+
+    def fake_log_wandb_summary(run: Any | None, metrics: dict[str, Any]) -> None:
+        """Record successful summary logging."""
+        _ = run, metrics
+        events.append("summary")
+
+    def fake_log_wandb_artifacts(run: Any | None, paths: dict[str, Path]) -> None:
+        """Record successful artifact logging."""
+        _ = run, paths
+        events.append("artifacts")
+
+    monkeypatch.setattr(ppo_tracking.utils.wandb, "start_wandb_run", fake_start_wandb_run)
+    monkeypatch.setattr(ppo_tracking.utils.wandb, "log_wandb_summary", fake_log_wandb_summary)
+    monkeypatch.setattr(ppo_tracking.utils.wandb, "log_wandb_artifacts", fake_log_wandb_artifacts)
+    return types.SimpleNamespace(events=events, training_env=fake_training_vec_env, eval_env=fake_eval_env)
+
+
 def _manual_curriculum_task(stage_name: str) -> dict[str, object]:
     """Return a copied task from the manual line curriculum fixture."""
     config = experiments_config.load_experiment_config("configs/curricula/curriculum_manual_line_smoke.yaml")
@@ -633,6 +733,64 @@ def test_evaluate_model_metrics_include_movement_bounds() -> None:
     assert "final_abs_z_error" in metrics
 
 
+def test_run_ppo_tracking_smoke_finishes_wandb_run_on_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify successful PPO training logs W&B outputs and finishes exactly once."""
+    fake_wandb_run = _FakeWandbRun()
+    harness = _install_fast_ppo_smoke_fakes(tmp_path, monkeypatch, wandb_run=fake_wandb_run)
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
+        run_name="wandb_success",
+        total_timesteps=CONFIGURED_TEST_PPO_N_STEPS,
+        ppo_config=ppo_config.PPOConfig(n_steps=CONFIGURED_TEST_PPO_N_STEPS, batch_size=CONFIGURED_TEST_PPO_BATCH_SIZE),
+        eval_steps=4,
+        check_env=False,
+        wandb_mode=utils.wandb.WANDB_MODE_OFFLINE,
+    )
+
+    result = ppo_tracking.run_ppo_tracking_smoke(settings)
+
+    assert result.metrics["wandb"]["enabled"] is True
+    assert result.metrics["wandb"]["run_id"] == "fake-run-id"
+    assert harness.events == ["start", "summary", "artifacts"]
+    assert fake_wandb_run.finish_count == 1
+    assert harness.training_env.closed is True
+    assert harness.eval_env.closed is True
+
+
+def test_run_ppo_tracking_smoke_finishes_wandb_run_on_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify W&B is finished and the original post-start exception propagates."""
+    fake_wandb_run = _FakeWandbRun()
+    learn_error = RuntimeError("training failed after wandb start")
+    harness = _install_fast_ppo_smoke_fakes(
+        tmp_path,
+        monkeypatch,
+        wandb_run=fake_wandb_run,
+        learn_error=learn_error,
+    )
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
+        run_name="wandb_failure",
+        total_timesteps=CONFIGURED_TEST_PPO_N_STEPS,
+        ppo_config=ppo_config.PPOConfig(n_steps=CONFIGURED_TEST_PPO_N_STEPS, batch_size=CONFIGURED_TEST_PPO_BATCH_SIZE),
+        eval_steps=4,
+        check_env=False,
+        wandb_mode=utils.wandb.WANDB_MODE_OFFLINE,
+    )
+
+    with pytest.raises(RuntimeError, match="training failed after wandb start") as exc_info:
+        ppo_tracking.run_ppo_tracking_smoke(settings)
+
+    assert exc_info.value is learn_error
+    assert harness.events == ["start"]
+    assert fake_wandb_run.finish_count == 1
+    assert harness.training_env.closed is True
+    assert harness.eval_env.closed is False
+
+
 def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -781,6 +939,7 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert result.metrics["vec_env_type"] == "SubprocVecEnv"
     assert result.metrics["vec_monitor_enabled"] is True
     assert result.metrics["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
+    assert result.metrics["wandb"]["enabled"] is False
     assert captured_eval["tracking_env"] is fake_eval_env
     assert captured_eval["tracking_env"] is not fake_training_vec_env
     assert fake_training_vec_env.closed is True
