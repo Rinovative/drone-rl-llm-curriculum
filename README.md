@@ -198,6 +198,29 @@ python -m src.experiments.cli.experiments_cli_train_tracking --config configs/tr
 python -m src.experiments.cli.experiments_cli_train_curriculum --config configs/curricula/curriculum_manual_line_final.yaml --seed 0 --wandb-mode auto
 ```
 
+### Phase 6 LLM Curriculum Commands
+
+The default LLM curriculum smoke config uses a deterministic mock provider, so it does not require a running LLM server:
+
+```bash
+python -m src.experiments.cli.experiments_cli_train_llm_curriculum --config configs/curricula/curriculum_llm_smoke.yaml --seed 0 --wandb-mode disabled
+```
+
+To check a local OpenAI-compatible server without launching PPO training, start the server outside this repository and run:
+
+```bash
+python -m src.experiments.cli.experiments_cli_train_llm_curriculum \
+  --config configs/curricula/curriculum_llm_local_smoke.yaml \
+  --provider openai_compatible \
+  --api-base http://127.0.0.1:18080/v1 \
+  --model qwen2.5-coder-32b-instruct-q4_k_m.gguf \
+  --max-stages 2 \
+  --dry-run-proposals \
+  --wandb-mode disabled
+```
+
+Remove `--dry-run-proposals` only when you want the accepted tasks to launch PPO stage training. Proposal events are written under the run-scoped `storage/runs/<run_name>/llm_logs/proposals.jsonl` path.
+
 Evaluate direct PPO and manual-curriculum checkpoints as separate owned runs. When `--suite` is omitted, both evaluation CLIs run the standard profile: `own_task`, `line_eval`, `final_benchmark`, and `generalization` when `configs/evaluation/generalization_eval_suite.yaml` exists. Direct PPO evaluation artifacts stay under the direct run root. Curriculum evaluation runs every default evaluation for every stage, with artifacts written under the owning curriculum stage. The curriculum run root keeps only `evaluation_index.json`, optional `evaluation_summary.json`, and config snapshots; `config/evaluation_suites/` contains reproducibility snapshots, not duplicate result data.
 
 ```bash

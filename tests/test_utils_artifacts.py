@@ -63,6 +63,11 @@ def test_storage_root_respects_environment(tmp_path: Path, monkeypatch: pytest.M
     assert (
         utils.artifacts.get_run_training_wandb_dir("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0" / "training" / "wandb"
     )
+    assert utils.artifacts.get_run_llm_logs_dir("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0" / "llm_logs"
+    assert (
+        utils.artifacts.get_run_llm_proposals_path("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "llm_logs" / "proposals.jsonl"
+    )
     assert (
         utils.artifacts.get_run_evaluation_dir("direct_ppo_line_seed0", "line_basic")
         == storage_root / "runs" / "direct_ppo_line_seed0" / "evaluations" / "line_basic"
@@ -113,6 +118,7 @@ def test_ensure_run_dirs_create_canonical_layouts(tmp_path: Path) -> None:
         assert training_paths[name].is_dir()
     assert utils.artifacts.get_run_manifest_path("direct_ppo_line_seed0", storage_root=tmp_path).parent.is_dir()
     assert utils.artifacts.get_run_training_manifest_path("direct_ppo_line_seed0", storage_root=tmp_path).parent.is_dir()
+    assert utils.artifacts.ensure_run_llm_logs_dir("direct_ppo_line_seed0", storage_root=tmp_path).is_dir()
 
     assert evaluation_paths["evaluation"] == tmp_path / "runs" / "direct_ppo_line_seed0" / "evaluations" / "line_basic"
     for name in ("diagnostics", "traces", "plots", "renders", "metrics", "manifests"):

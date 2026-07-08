@@ -4,6 +4,7 @@ Experiment command-line entry points.
 Executable modules:
 - experiments_cli_train_tracking: Train a PPO trajectory-tracking policy
 - experiments_cli_train_curriculum: Train a fixed manual PPO curriculum
+- experiments_cli_train_llm_curriculum: Train or dry-run a local-LLM-guided PPO curriculum
 - experiments_cli_evaluate_curriculum: Evaluate curriculum checkpoints through a standard profile or suite
 - experiments_cli_evaluate_policy: Evaluate a direct PPO run through a standard profile or suite
 - experiments_cli_render_policy: Render a trained policy or scripted baseline

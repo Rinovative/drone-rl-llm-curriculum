@@ -18,6 +18,43 @@ def _valid_tasks_by_shape() -> list[dict[str, object]]:
     return [
         {
             contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_HOVER_STABILIZATION,
+            contracts.FIELD_DURATION_SEC: 2.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_POSITION: [0.0, 0.0, 1.0],
+        },
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_NEARBY_TARGET_HOVER,
+            contracts.FIELD_DURATION_SEC: 2.5,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_POSITION: [0.15, 0.0, 1.0],
+        },
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
+            contracts.FIELD_HOLD_DURATION_SEC: 1.0,
+            contracts.FIELD_MOVE_DURATION_SEC: 3.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_START_HOLD_ENABLED: True,
+            contracts.FIELD_START_HOLD_SEC: 1.0,
+            contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
+            contracts.FIELD_START: [0.0, 0.0, 1.0],
+            contracts.FIELD_END: [0.25, 0.0, 1.0],
+        },
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_SHORT_SLOW_LINE,
+            contracts.FIELD_DURATION_SEC: 4.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_START_HOLD_ENABLED: True,
+            contracts.FIELD_START_HOLD_SEC: 1.0,
+            contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
+            contracts.FIELD_START: [0.0, 0.0, 1.0],
+            contracts.FIELD_END: [0.5, 0.0, 1.0],
+        },
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
             contracts.FIELD_SHAPE: contracts.SHAPE_HOVER,
             contracts.FIELD_DURATION_SEC: 2.0,
             contracts.FIELD_SAMPLE_RATE_HZ: 5.0,
@@ -32,12 +69,18 @@ def _valid_tasks_by_shape() -> list[dict[str, object]]:
             contracts.FIELD_HEIGHT: 1.0,
             contracts.FIELD_CENTER: [0.0, 0.0],
             contracts.FIELD_CLOCKWISE: True,
+            contracts.FIELD_START_HOLD_ENABLED: True,
+            contracts.FIELD_START_HOLD_SEC: 1.0,
+            contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
         },
         {
             contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
             contracts.FIELD_SHAPE: contracts.SHAPE_LINE,
             contracts.FIELD_DURATION_SEC: 3.0,
             contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_START_HOLD_ENABLED: True,
+            contracts.FIELD_START_HOLD_SEC: 1.0,
+            contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
             contracts.FIELD_START: [0.0, 0.0, 1.0],
             contracts.FIELD_END: [0.5, 0.0, 1.0],
         },
@@ -46,6 +89,9 @@ def _valid_tasks_by_shape() -> list[dict[str, object]]:
             contracts.FIELD_SHAPE: contracts.SHAPE_VERTICAL,
             contracts.FIELD_DURATION_SEC: 3.0,
             contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_START_HOLD_ENABLED: True,
+            contracts.FIELD_START_HOLD_SEC: 1.0,
+            contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
             contracts.FIELD_XY: [0.25, -0.25],
             contracts.FIELD_START_HEIGHT: 0.8,
             contracts.FIELD_END_HEIGHT: 1.4,
@@ -55,6 +101,9 @@ def _valid_tasks_by_shape() -> list[dict[str, object]]:
             contracts.FIELD_SHAPE: contracts.SHAPE_POLYLINE,
             contracts.FIELD_DURATION_SEC: 6.0,
             contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_START_HOLD_ENABLED: True,
+            contracts.FIELD_START_HOLD_SEC: 1.0,
+            contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
             contracts.FIELD_POINTS: [[0.0, 0.0, 1.0], [0.5, 0.0, 1.1], [0.5, 0.5, 1.0]],
         },
     ]
@@ -74,12 +123,38 @@ def test_schema_shapes_match_validation_contracts() -> None:
     assert tuple(schema["shapes"]) == validation.contracts.SUPPORTED_TRAJECTORY_SHAPES
 
 
+def test_schema_includes_curriculum_specific_fields_and_shapes() -> None:
+    """Verify the LLM schema accepts every current validation field and shape."""
+    contracts = validation.contracts
+    schema = llm.task_schema.build_task_schema()
+    known_fields = set(schema["known_fields"])
+    required_by_shape = schema["shape_required_fields"]
+    optional_by_shape = schema["shape_optional_fields"]
+
+    assert contracts.SHAPE_START_HOLD_THEN_SHORT_LINE in required_by_shape
+    assert contracts.SHAPE_SHORT_SLOW_LINE in required_by_shape
+    assert contracts.FIELD_HOLD_DURATION_SEC in required_by_shape[contracts.SHAPE_START_HOLD_THEN_SHORT_LINE]
+    assert contracts.FIELD_MOVE_DURATION_SEC in required_by_shape[contracts.SHAPE_START_HOLD_THEN_SHORT_LINE]
+    for field in (
+        contracts.FIELD_HOLD_DURATION_SEC,
+        contracts.FIELD_MOVE_DURATION_SEC,
+        contracts.FIELD_START_HOLD_ENABLED,
+        contracts.FIELD_START_HOLD_SEC,
+        contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
+    ):
+        assert field in known_fields
+    for shape in validation.contracts.SUPPORTED_TRAJECTORY_SHAPES:
+        assert shape in required_by_shape
+        assert contracts.FIELD_START_HOLD_ENABLED in optional_by_shape[shape]
+
+
 def test_prompt_contract_includes_supported_shapes_and_json_only_instruction() -> None:
     """Verify prompt contract is bounded to supported JSON task output."""
     prompt_contract = llm.task_schema.build_task_prompt_contract()
 
     assert "JSON" in prompt_contract
     assert "no prose" in prompt_contract
+    assert "python_code" in prompt_contract
     for shape in validation.contracts.SUPPORTED_TRAJECTORY_SHAPES:
         assert shape in prompt_contract
 
@@ -117,7 +192,7 @@ def test_missing_required_top_level_keys_raise_value_error(missing_key: str) -> 
         llm.task_schema.normalize_proposed_task(raw_task)
 
 
-@pytest.mark.parametrize("unknown_key", ["python_code", "command"])
+@pytest.mark.parametrize("unknown_key", ["python_code", "command", "script", "shell", "imports"])
 def test_unsupported_unknown_keys_raise_value_error(unknown_key: str) -> None:
     """Verify unrelated unknown keys are rejected."""
     raw_task = _valid_tasks_by_shape()[0]
@@ -156,9 +231,11 @@ def test_reason_metadata_is_preserved_but_not_passed_to_validation() -> None:
     raw_task[llm.task_schema.REASON_FIELD] = "Next task keeps the drone hovering."
 
     normalized = llm.task_schema.normalize_proposed_task(raw_task)
+    validation_task = llm.task_schema.task_without_metadata(normalized)
     result = llm.task_schema.validate_proposed_task(raw_task)
 
     assert normalized[llm.task_schema.REASON_FIELD] == "Next task keeps the drone hovering."
+    assert llm.task_schema.REASON_FIELD not in validation_task
     assert result.is_valid
 
 

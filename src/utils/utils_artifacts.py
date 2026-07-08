@@ -46,6 +46,7 @@ TRACES_DIRNAME = "traces"
 MODELS_DIRNAME = "models"
 LOGS_DIRNAME = "logs"
 LLM_LOGS_DIRNAME = "llm_logs"
+LLM_PROPOSALS_FILENAME = "proposals.jsonl"
 WANDB_DIRNAME = "wandb"
 DIAGNOSTICS_DIRNAME = "diagnostics"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -143,6 +144,23 @@ def get_run_training_logs_dir(run_name: str, storage_root: str | Path | None = N
 def get_run_training_wandb_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
     """Return the W&B artifact directory for canonical-run training."""
     return get_run_training_dir(run_name, storage_root) / WANDB_DIRNAME
+
+
+def get_run_llm_logs_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Return the run-scoped LLM proposal log directory."""
+    return get_run_dir(run_name, storage_root) / LLM_LOGS_DIRNAME
+
+
+def get_run_llm_proposals_path(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Return the run-scoped LLM proposal JSONL path."""
+    return get_run_llm_logs_dir(run_name, storage_root) / LLM_PROPOSALS_FILENAME
+
+
+def ensure_run_llm_logs_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Create and return the run-scoped LLM proposal log directory."""
+    llm_logs_dir = get_run_llm_logs_dir(run_name, storage_root)
+    llm_logs_dir.mkdir(parents=True, exist_ok=True)
+    return llm_logs_dir
 
 
 def get_run_evaluations_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
@@ -511,6 +529,7 @@ __all__ = [
     "EVALUATION_SUITES_DIRNAME",
     "EVALUATION_SUMMARY_FILENAME",
     "LLM_LOGS_DIRNAME",
+    "LLM_PROPOSALS_FILENAME",
     "LOGS_DIRNAME",
     "MANIFESTS_DIRNAME",
     "MANIFEST_FILENAME",
@@ -529,6 +548,7 @@ __all__ = [
     "ensure_curriculum_stage_evaluation_dirs",
     "ensure_curriculum_stage_training_dirs",
     "ensure_run_evaluation_dirs",
+    "ensure_run_llm_logs_dir",
     "ensure_run_training_dirs",
     "get_curriculum_stage_dir",
     "get_curriculum_stage_evaluation_dir",
@@ -549,6 +569,8 @@ __all__ = [
     "get_run_evaluation_summary_path",
     "get_run_evaluation_traces_dir",
     "get_run_evaluations_dir",
+    "get_run_llm_logs_dir",
+    "get_run_llm_proposals_path",
     "get_run_manifest_path",
     "get_run_task_config_snapshot_path",
     "get_run_training_config_snapshot_path",

@@ -1,0 +1,34 @@
+curriculum_name: curriculum_llm_local_smoke
+base_training_config: configs/training/ppo_tracking_smoke.yaml
+seed: 0
+wandb_mode: disabled
+normalize_actions: true
+max_stages: 2
+stage_defaults:
+  total_timesteps: 4096
+  eval_steps: 120
+bootstrap:
+  enabled: true
+  stage_name: hover_stabilization
+  task_shape: hover_stabilization
+  total_timesteps: 4096
+  eval_steps: 120
+  notes: Bootstrap with a deterministic hover task before asking the local LLM for one next task.
+  task:
+    task_type: trajectory
+    shape: hover_stabilization
+    duration_sec: 2.0
+    sample_rate_hz: 10.0
+    position: [0.0, 0.0, 1.0]
+llm:
+  provider: openai_compatible
+  api_base: http://127.0.0.1:18080/v1
+  model: qwen2.5-coder-32b-instruct-q4_k_m.gguf
+  api_key_env: LLAMA_CPP_API_KEY
+  api_key: anything
+  temperature: 0.1
+  max_tokens: 800
+  timeout_sec: 60.0
+  max_repair_attempts: 1
+  skip_invalid_proposals: false
+  recent_context_limit: 3

@@ -6,7 +6,7 @@ Describe and normalize LLM-proposed trajectory task dictionaries.
 
 Responsibilities:
   - Build a compact JSON-serializable task schema from validation contracts
-  - Provide bounded prompt-contract text for future LLM curriculum prompts
+  - Provide bounded prompt-contract text for LLM curriculum prompts
   - Normalize raw decoded task mappings before deterministic validation
 
 Design principles:
@@ -22,11 +22,19 @@ Boundaries:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 
 from src import validation
 
 REASON_FIELD = "reason"
+_FORBIDDEN_EXAMPLE_FIELDS = (
+    "python_code",
+    "command",
+    "script",
+    "shell",
+    "imports",
+)
 
 
 def build_task_schema() -> dict[str, object]:
@@ -47,64 +55,38 @@ def build_task_schema() -> dict[str, object]:
         "required_fields": [contracts.FIELD_TASK_TYPE, contracts.FIELD_SHAPE],
         "known_fields": list(_known_task_fields()),
         "optional_metadata_fields": [REASON_FIELD],
-        "shape_required_fields": {
-            contracts.SHAPE_HOVER: [
-                contracts.FIELD_DURATION_SEC,
-                contracts.FIELD_SAMPLE_RATE_HZ,
-                contracts.FIELD_POSITION,
-            ],
-            contracts.SHAPE_CIRCLE: [
-                contracts.FIELD_DURATION_SEC,
-                contracts.FIELD_SAMPLE_RATE_HZ,
-                contracts.FIELD_RADIUS,
-                contracts.FIELD_HEIGHT,
-            ],
-            contracts.SHAPE_LINE: [
-                contracts.FIELD_DURATION_SEC,
-                contracts.FIELD_SAMPLE_RATE_HZ,
-                contracts.FIELD_START,
-                contracts.FIELD_END,
-            ],
-            contracts.SHAPE_VERTICAL: [
-                contracts.FIELD_DURATION_SEC,
-                contracts.FIELD_SAMPLE_RATE_HZ,
-                contracts.FIELD_XY,
-                contracts.FIELD_START_HEIGHT,
-                contracts.FIELD_END_HEIGHT,
-            ],
-            contracts.SHAPE_POLYLINE: [
-                contracts.FIELD_DURATION_SEC,
-                contracts.FIELD_SAMPLE_RATE_HZ,
-                contracts.FIELD_POINTS,
-            ],
-        },
-        "shape_optional_fields": {
-            contracts.SHAPE_CIRCLE: [contracts.FIELD_CENTER, contracts.FIELD_CLOCKWISE],
-        },
+        "forbidden_example_fields": list(_FORBIDDEN_EXAMPLE_FIELDS),
+        "shape_required_fields": _shape_required_fields(),
+        "shape_optional_fields": _shape_optional_fields(),
     }
 
 
 def build_task_prompt_contract() -> str:
     """
-    Build bounded plain-text instructions for future trajectory task prompts.
+    Build bounded plain-text instructions for trajectory task prompts.
 
     Returns
     -------
     str
         Deterministic prompt contract that names supported shapes, known keys,
-        and JSON-only output expectations.
+        shape-specific required keys, and JSON-only output expectations.
 
     """
     shapes = ", ".join(validation.contracts.SUPPORTED_TRAJECTORY_SHAPES)
     known_fields = ", ".join(_known_task_fields())
-    optional_metadata = REASON_FIELD
+    forbidden_fields = ", ".join(_FORBIDDEN_EXAMPLE_FIELDS)
+    required_by_shape = json.dumps(_shape_required_fields(), sort_keys=True, separators=(",", ":"))
+    optional_by_shape = json.dumps(_shape_optional_fields(), sort_keys=True, separators=(",", ":"))
     return (
         "Return exactly one JSON object and no prose. "
         f"Use task_type={validation.contracts.TASK_TYPE_TRAJECTORY!r}. "
         f"Supported shapes: {shapes}. "
         f"Known task keys: {known_fields}. "
-        f"Optional metadata keys: {optional_metadata}. "
-        "Do not include code, commands, markdown, or unsupported keys."
+        f"Required keys by shape: {required_by_shape}. "
+        f"Optional keys by shape: {optional_by_shape}. "
+        f"Optional metadata keys: {REASON_FIELD}. "
+        "The optional reason field is metadata only and is never used for deterministic validation. "
+        f"Do not include code, commands, markdown, unsupported keys, or fields such as {forbidden_fields}."
     )
 
 
@@ -173,6 +155,24 @@ def validate_proposed_task(raw_task: object) -> validation.tasks.ValidationResul
     return validation.tasks.validate_task(validation_task)
 
 
+def task_without_metadata(task: Mapping[str, object]) -> dict[str, object]:
+    """
+    Return a copied task without LLM-only metadata fields.
+
+    Parameters
+    ----------
+    task
+        Normalized proposed task mapping.
+
+    Returns
+    -------
+    dict[str, object]
+        Copy suitable for deterministic validation and PPO task configs.
+
+    """
+    return {key: value for key, value in task.items() if key != REASON_FIELD}
+
+
 def _required_top_level_fields() -> tuple[str, ...]:
     """Return required keys for every proposed task."""
     contracts = validation.contracts
@@ -180,6 +180,67 @@ def _required_top_level_fields() -> tuple[str, ...]:
         contracts.FIELD_TASK_TYPE,
         contracts.FIELD_SHAPE,
     )
+
+
+def _shape_required_fields() -> dict[str, list[str]]:
+    """Return shape-specific required fields supported by deterministic validation."""
+    contracts = validation.contracts
+    hover_fields = [
+        contracts.FIELD_DURATION_SEC,
+        contracts.FIELD_SAMPLE_RATE_HZ,
+        contracts.FIELD_POSITION,
+    ]
+    line_fields = [
+        contracts.FIELD_DURATION_SEC,
+        contracts.FIELD_SAMPLE_RATE_HZ,
+        contracts.FIELD_START,
+        contracts.FIELD_END,
+    ]
+    return {
+        contracts.SHAPE_HOVER_STABILIZATION: list(hover_fields),
+        contracts.SHAPE_NEARBY_TARGET_HOVER: list(hover_fields),
+        contracts.SHAPE_START_HOLD_THEN_SHORT_LINE: [
+            contracts.FIELD_HOLD_DURATION_SEC,
+            contracts.FIELD_MOVE_DURATION_SEC,
+            contracts.FIELD_SAMPLE_RATE_HZ,
+            contracts.FIELD_START,
+            contracts.FIELD_END,
+        ],
+        contracts.SHAPE_SHORT_SLOW_LINE: list(line_fields),
+        contracts.SHAPE_HOVER: list(hover_fields),
+        contracts.SHAPE_CIRCLE: [
+            contracts.FIELD_DURATION_SEC,
+            contracts.FIELD_SAMPLE_RATE_HZ,
+            contracts.FIELD_RADIUS,
+            contracts.FIELD_HEIGHT,
+        ],
+        contracts.SHAPE_LINE: list(line_fields),
+        contracts.SHAPE_VERTICAL: [
+            contracts.FIELD_DURATION_SEC,
+            contracts.FIELD_SAMPLE_RATE_HZ,
+            contracts.FIELD_XY,
+            contracts.FIELD_START_HEIGHT,
+            contracts.FIELD_END_HEIGHT,
+        ],
+        contracts.SHAPE_POLYLINE: [
+            contracts.FIELD_DURATION_SEC,
+            contracts.FIELD_SAMPLE_RATE_HZ,
+            contracts.FIELD_POINTS,
+        ],
+    }
+
+
+def _shape_optional_fields() -> dict[str, list[str]]:
+    """Return shape-specific optional fields supported by deterministic validation."""
+    contracts = validation.contracts
+    start_hold_fields = [
+        contracts.FIELD_START_HOLD_ENABLED,
+        contracts.FIELD_START_HOLD_SEC,
+        contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
+    ]
+    optional_fields = {shape: list(start_hold_fields) for shape in contracts.SUPPORTED_TRAJECTORY_SHAPES}
+    optional_fields[contracts.SHAPE_CIRCLE] = [contracts.FIELD_CENTER, contracts.FIELD_CLOCKWISE, *start_hold_fields]
+    return optional_fields
 
 
 def _known_task_fields() -> tuple[str, ...]:
@@ -201,6 +262,11 @@ def _known_task_fields() -> tuple[str, ...]:
         contracts.FIELD_START_HEIGHT,
         contracts.FIELD_END_HEIGHT,
         contracts.FIELD_POINTS,
+        contracts.FIELD_HOLD_DURATION_SEC,
+        contracts.FIELD_MOVE_DURATION_SEC,
+        contracts.FIELD_START_HOLD_ENABLED,
+        contracts.FIELD_START_HOLD_SEC,
+        contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
     )
 
 
@@ -209,5 +275,6 @@ __all__ = [
     "build_task_prompt_contract",
     "build_task_schema",
     "normalize_proposed_task",
+    "task_without_metadata",
     "validate_proposed_task",
 ]

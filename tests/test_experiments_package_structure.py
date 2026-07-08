@@ -20,6 +20,7 @@ CANONICAL_MODULE_SYMBOLS = [
     ("src.experiments.evaluation.experiments_evaluation_policy", "PolicyEvaluationSpec"),
     ("src.experiments.curriculum.experiments_curriculum_validation", "summarize_config_tasks"),
     ("src.experiments.curriculum.experiments_curriculum_training", "ManualCurriculumSettings"),
+    ("src.experiments.curriculum.experiments_curriculum_llm_training", "LLMCurriculumSettings"),
     ("src.experiments.curriculum.experiments_curriculum_evaluation", "CurriculumEvaluationResult"),
     ("src.experiments.rendering.experiments_rendering_policy", "PolicyRenderSettings"),
     ("src.experiments.rendering.experiments_rendering_scenario", "ScenarioRenderSettings"),
@@ -31,6 +32,7 @@ REMOVED_ROOT_MODULES = [
     for module_name in (
         "cli_train_tracking",
         "cli_train_curriculum",
+        "cli_train_llm_curriculum",
         "cli_evaluate_curriculum",
         "cli_render_policy",
         "cli_render_scenario",
@@ -43,6 +45,7 @@ REMOVED_ROOT_MODULES = [
         "experiments_" + "policy_evaluation",
         "experiments_" + "curriculum",
         "experiments_" + "curriculum_training",
+        "experiments_" + "curriculum_llm_training",
         "experiments_" + "curriculum_evaluation",
         "experiments_" + "policy_render",
         "experiments_" + "scenario_render",
@@ -53,6 +56,7 @@ REMOVED_ROOT_MODULES = [
 CANONICAL_CLI_MODULE_PATHS = [
     "src.experiments.cli.experiments_cli_train_tracking",
     "src.experiments.cli.experiments_cli_train_curriculum",
+    "src.experiments.cli.experiments_cli_train_llm_curriculum",
     "src.experiments.cli.experiments_cli_evaluate_curriculum",
     "src.experiments.cli.experiments_cli_evaluate_policy",
     "src.experiments.cli.experiments_cli_render_policy",
