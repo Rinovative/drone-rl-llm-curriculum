@@ -1,7 +1,7 @@
 curriculum_name: curriculum_manual_line_medium
 base_training_config: configs/training/ppo_tracking_medium.yaml
 seed: 0
-wandb_mode: offline
+wandb_mode: auto
 normalize_actions: true
 stages:
   - stage_name: hover_stabilization

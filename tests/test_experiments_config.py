@@ -77,7 +77,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
             "n_steps": 512,
             "batch_size": 128,
             "n_epochs": 5,
-            "wandb_mode": "offline",
+            "wandb_mode": "auto",
             "task_index": 0,
         },
         "configs/training/ppo_tracking_final.yaml": {
@@ -149,7 +149,7 @@ def test_real_manual_curriculum_configs_are_canonical_and_valid() -> None:
             "run_name": "curriculum_manual_line_medium_seed0",
             "base": "configs/training/ppo_tracking_medium.yaml",
             "budgets": [25000, 25000, 50000, 50000, 100000],
-            "wandb_mode": "offline",
+            "wandb_mode": "auto",
         },
         "configs/curricula/curriculum_manual_line_final.yaml": {
             "name": "curriculum_manual_line_final",

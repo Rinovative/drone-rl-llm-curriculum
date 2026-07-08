@@ -54,6 +54,7 @@ _ACTION_SATURATION_TOLERANCE = 1.0e-6
 _TIMESTEPS_PER_THOUSAND_LABEL = 1_000
 _TIMESTEPS_PER_MILLION_LABEL = 1_000_000
 _MIN_TIMESTEPS_FOR_COMPACT_THOUSAND_LABEL = 10_000
+VEC_MONITOR_ENABLED = True
 
 
 @dataclass(frozen=True)
@@ -363,6 +364,19 @@ def _vec_env_classes() -> tuple[type[Any], type[Any]]:
     return DummyVecEnv, SubprocVecEnv
 
 
+def _vec_monitor_class() -> type[Any]:
+    """Return the Stable-Baselines3 VecMonitor class without importing SB3 at module import time."""
+    from stable_baselines3.common.vec_env import VecMonitor  # noqa: PLC0415
+
+    return VecMonitor
+
+
+def _monitor_ppo_training_vec_env(vec_env: Any) -> Any:
+    """Wrap a PPO training VecEnv so SB3 receives episode reward and length statistics."""
+    vec_monitor_cls = _vec_monitor_class()
+    return vec_monitor_cls(vec_env)
+
+
 def _vec_env_type(num_envs: int) -> str:
     """Return the Stable-Baselines3 vector environment type for a training env count."""
     return "DummyVecEnv" if _positive_int_setting(num_envs, "num_envs") == 1 else "SubprocVecEnv"
@@ -389,7 +403,7 @@ def _make_ppo_training_vec_env(task: dict[str, Any], num_envs: int, normalize_ac
     seed_vec_env = getattr(vec_env, "seed", None)
     if callable(seed_vec_env):
         seed_vec_env(seed)
-    return vec_env
+    return _monitor_ppo_training_vec_env(vec_env)
 
 
 def _positive_int_setting(value: Any, name: str) -> int:
@@ -594,6 +608,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "total_timesteps": active_settings.total_timesteps,
         "num_envs": active_settings.num_envs,
         "vec_env_type": vec_env_type,
+        "vec_monitor_enabled": VEC_MONITOR_ENABLED,
         "effective_rollout_steps": effective_rollout_steps,
         "ppo_config": active_settings.ppo_config.to_dict(),
         "timesteps_label": timesteps_label,
@@ -1050,6 +1065,7 @@ def _build_manifest(
         "total_timesteps": settings.total_timesteps,
         "num_envs": metrics.get("num_envs", settings.num_envs),
         "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
+        "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
         "effective_rollout_steps": metrics.get(
             "effective_rollout_steps",
             settings.ppo_config.effective_rollout_steps(settings.num_envs),
@@ -1121,6 +1137,7 @@ def _build_run_manifest(
             "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
             "num_envs": metrics.get("num_envs", settings.num_envs),
             "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
+            "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
             "effective_rollout_steps": metrics.get(
                 "effective_rollout_steps",
                 settings.ppo_config.effective_rollout_steps(settings.num_envs),
@@ -1129,6 +1146,7 @@ def _build_run_manifest(
         "total_timesteps": settings.total_timesteps,
         "num_envs": metrics.get("num_envs", settings.num_envs),
         "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
+        "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
         "effective_rollout_steps": metrics.get(
             "effective_rollout_steps",
             settings.ppo_config.effective_rollout_steps(settings.num_envs),
@@ -1322,6 +1340,7 @@ def _wandb_config(
         "total_timesteps": settings.total_timesteps,
         "num_envs": settings.num_envs,
         "vec_env_type": _vec_env_type(settings.num_envs),
+        "vec_monitor_enabled": VEC_MONITOR_ENABLED,
         "effective_rollout_steps": settings.ppo_config.effective_rollout_steps(settings.num_envs),
         "ppo": settings.ppo_config.to_dict(),
         "eval_steps": settings.eval_steps,

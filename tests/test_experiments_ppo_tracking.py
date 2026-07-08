@@ -405,6 +405,14 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
     class FakeSubprocVecEnv:
         """Unused stand-in for the subprocess vector env."""
 
+    class FakeVecMonitor:
+        """Record VecMonitor wrapping without depending on SB3 internals."""
+
+        def __init__(self, venv: object, filename: str | None = None) -> None:
+            """Store the wrapped VecEnv and optional monitor filename."""
+            self.venv = venv
+            self.filename = filename
+
     factory_seeds: list[int] = []
     constructed_seeds: list[int] = []
 
@@ -421,6 +429,7 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
         return make_env
 
     monkeypatch.setattr(ppo_tracking, "_vec_env_classes", lambda: (FakeDummyVecEnv, FakeSubprocVecEnv))
+    monkeypatch.setattr(ppo_tracking, "_vec_monitor_class", lambda: FakeVecMonitor)
     monkeypatch.setattr(ppo_tracking, "_make_ppo_training_env_factory", fake_factory)
 
     vec_env = ppo_tracking._make_ppo_training_vec_env(  # noqa: SLF001
@@ -430,12 +439,15 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
         seed=7,
     )
 
-    assert isinstance(vec_env, FakeDummyVecEnv)
+    assert isinstance(vec_env, FakeVecMonitor)
+    assert vec_env.filename is None
+    assert isinstance(vec_env.venv, FakeDummyVecEnv)
+    base_vec_env = vec_env.venv
     assert ppo_tracking._vec_env_type(1) == "DummyVecEnv"  # noqa: SLF001
     assert factory_seeds == [7]
     assert constructed_seeds == []
-    assert len(vec_env.env_fns) == 1
-    assert vec_env.seed_calls == [7]
+    assert len(base_vec_env.env_fns) == 1
+    assert base_vec_env.seed_calls == [7]
 
 
 def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -457,6 +469,14 @@ def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.Mo
             """Record the base vector seed."""
             self.seed_calls.append(seed)
 
+    class FakeVecMonitor:
+        """Record VecMonitor wrapping without depending on SB3 internals."""
+
+        def __init__(self, venv: object, filename: str | None = None) -> None:
+            """Store the wrapped VecEnv and optional monitor filename."""
+            self.venv = venv
+            self.filename = filename
+
     factory_seeds: list[int] = []
     constructed_seeds: list[int] = []
 
@@ -473,6 +493,7 @@ def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.Mo
         return make_env
 
     monkeypatch.setattr(ppo_tracking, "_vec_env_classes", lambda: (FakeDummyVecEnv, FakeSubprocVecEnv))
+    monkeypatch.setattr(ppo_tracking, "_vec_monitor_class", lambda: FakeVecMonitor)
     monkeypatch.setattr(ppo_tracking, "_make_ppo_training_env_factory", fake_factory)
 
     vec_env = ppo_tracking._make_ppo_training_vec_env(  # noqa: SLF001
@@ -482,13 +503,16 @@ def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.Mo
         seed=SUBPROC_TEST_SEED,
     )
 
-    assert isinstance(vec_env, FakeSubprocVecEnv)
+    assert isinstance(vec_env, FakeVecMonitor)
+    assert vec_env.filename is None
+    assert isinstance(vec_env.venv, FakeSubprocVecEnv)
+    base_vec_env = vec_env.venv
     assert ppo_tracking._vec_env_type(3) == "SubprocVecEnv"  # noqa: SLF001
-    assert vec_env.start_method == "spawn"
+    assert base_vec_env.start_method == "spawn"
     assert factory_seeds == [11, 12, 13]
     assert constructed_seeds == []
-    assert len(vec_env.env_fns) == SUBPROC_TEST_NUM_ENVS
-    assert vec_env.seed_calls == [11]
+    assert len(base_vec_env.env_fns) == SUBPROC_TEST_NUM_ENVS
+    assert base_vec_env.seed_calls == [11]
 
 
 def test_task_with_minimum_reference_samples_extends_hold_move_task_without_raising() -> None:
@@ -755,6 +779,7 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert result.metrics["ppo_config"] == configured_ppo.to_dict()
     assert result.metrics["num_envs"] == CONFIGURED_TEST_NUM_ENVS
     assert result.metrics["vec_env_type"] == "SubprocVecEnv"
+    assert result.metrics["vec_monitor_enabled"] is True
     assert result.metrics["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert captured_eval["tracking_env"] is fake_eval_env
     assert captured_eval["tracking_env"] is not fake_training_vec_env
@@ -770,12 +795,14 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert captured_wandb_config["ppo"] == configured_ppo.to_dict()
     assert captured_wandb_config["num_envs"] == CONFIGURED_TEST_NUM_ENVS
     assert captured_wandb_config["vec_env_type"] == "SubprocVecEnv"
+    assert captured_wandb_config["vec_monitor_enabled"] is True
     assert captured_wandb_config["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert "artifact_layout" not in captured_wandb_config
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert manifest["ppo_config"] == configured_ppo.to_dict()
     assert manifest["num_envs"] == CONFIGURED_TEST_NUM_ENVS
     assert manifest["vec_env_type"] == "SubprocVecEnv"
+    assert manifest["vec_monitor_enabled"] is True
     assert manifest["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert manifest["run_kind"] == "direct_ppo"
     assert manifest["curriculum_kind"] is None
@@ -802,9 +829,11 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert run_manifest["curriculum_kind"] is None
     assert run_manifest["num_envs"] == CONFIGURED_TEST_NUM_ENVS
     assert run_manifest["vec_env_type"] == "SubprocVecEnv"
+    assert run_manifest["vec_monitor_enabled"] is True
     assert run_manifest["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert run_manifest["config"]["num_envs"] == CONFIGURED_TEST_NUM_ENVS
     assert run_manifest["config"]["vec_env_type"] == "SubprocVecEnv"
+    assert run_manifest["config"]["vec_monitor_enabled"] is True
     assert run_manifest["config"]["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert "artifact_layout" not in run_manifest
     assert run_manifest["training"]["manifest_path"] == result.manifest_path
