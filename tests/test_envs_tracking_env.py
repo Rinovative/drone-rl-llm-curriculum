@@ -198,6 +198,36 @@ def test_normalized_action_wrapper_previous_action_uses_ppo_facing_action() -> N
         tracking_env.close()
 
 
+def test_pid_position_default_ppo_action_space_and_hover_mapping() -> None:
+    """Verify default PID PPO actions are normalized and map once into hover bounds."""
+    real_env = envs.tracking_env.make_trajectory_tracking_env(_hover_task(), gui=False, record=False)
+    tracking_env = envs.tracking_env.make_normalized_action_env(real_env)
+    try:
+        tracking_env.reset(seed=0)
+        hover_target = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
+        expected_low = np.array([[-0.2, -0.2, 0.5]], dtype=np.float32)
+        expected_high = np.array([[0.2, 0.2, 1.0]], dtype=np.float32)
+        normalized_hover = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
+
+        assert tracking_env.action_interface == "pid_position"
+        assert tracking_env.action_space.shape == (1, PID_ACTION_DIM)
+        assert np.allclose(tracking_env.action_space.low, -1.0)
+        assert np.allclose(tracking_env.action_space.high, 1.0)
+        assert np.allclose(tracking_env.real_action_space.low, expected_low)
+        assert np.allclose(tracking_env.real_action_space.high, expected_high)
+        assert np.allclose(tracking_env.real_to_normalized_action(hover_target), normalized_hover)
+        assert np.allclose(tracking_env.normalized_to_real_action(normalized_hover), hover_target)
+
+        _, _, _, _, info = tracking_env.step(normalized_hover)
+
+        assert np.allclose(info["normalized_action"], normalized_hover)
+        assert np.allclose(info["requested_action"], hover_target)
+        assert np.allclose(info["applied_action"], hover_target)
+        assert np.allclose(info["real_action"], hover_target)
+    finally:
+        tracking_env.close()
+
+
 def test_direct_rpm_env_exposes_normalized_four_motor_action_space() -> None:
     """Verify direct RPM uses normalized per-motor actions and dynamics observations."""
     tracking_env = envs.tracking_env.make_trajectory_tracking_env(
@@ -252,6 +282,7 @@ def test_direct_rpm_dynamics_previous_action_observation_shape() -> None:
 
         assert np.allclose(next_observation[-DIRECT_RPM_ACTION_DIM:], action.reshape(-1))
         assert np.allclose(step_info["previous_action"], action)
+        assert not np.allclose(step_info["previous_action"], step_info["real_motor_rpms"])
     finally:
         tracking_env.close()
 
@@ -291,6 +322,66 @@ def test_direct_rpm_step_maps_normalized_actions_to_motor_rpms() -> None:
         assert np.asarray(info["real_action_space_low"]).shape == (1, 4)
         assert np.asarray(info["real_action_space_high"]).shape == (1, 4)
         assert info["rpm_delta_scale"] == rpm_delta_scale
+        assert info["rpm_clipped"] is False
+    finally:
+        tracking_env.close()
+
+
+def test_direct_rpm_zero_and_monotonic_actions_map_around_hover_rpm() -> None:
+    """Verify direct RPM maps normalized motor commands once around hover RPM."""
+    rpm_delta_scale = 0.05
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        _hover_task(),
+        gui=False,
+        record=False,
+        action_interface="direct_rpm",
+        rpm_delta_scale=rpm_delta_scale,
+        include_dynamics_observation=True,
+    )
+    try:
+        tracking_env.reset(seed=0)
+        zero_action = np.zeros((1, DIRECT_RPM_ACTION_DIM), dtype=np.float32)
+        _, _, _, _, info = tracking_env.step(zero_action)
+
+        hover_rpm = float(info["hover_rpm"])
+        rpm_min = float(info["rpm_min"])
+        rpm_max = float(info["rpm_max"])
+        negative_rpms = envs.tracking_env.normalized_direct_rpm_to_motor_rpms(
+            -np.ones((1, DIRECT_RPM_ACTION_DIM), dtype=np.float32),
+            hover_rpm=hover_rpm,
+            rpm_delta_scale=rpm_delta_scale,
+            rpm_min=rpm_min,
+            rpm_max=rpm_max,
+        )
+        zero_rpms = envs.tracking_env.normalized_direct_rpm_to_motor_rpms(
+            zero_action,
+            hover_rpm=hover_rpm,
+            rpm_delta_scale=rpm_delta_scale,
+            rpm_min=rpm_min,
+            rpm_max=rpm_max,
+        )
+        positive_rpms = envs.tracking_env.normalized_direct_rpm_to_motor_rpms(
+            np.ones((1, DIRECT_RPM_ACTION_DIM), dtype=np.float32),
+            hover_rpm=hover_rpm,
+            rpm_delta_scale=rpm_delta_scale,
+            rpm_min=rpm_min,
+            rpm_max=rpm_max,
+        )
+
+        assert tracking_env.action_space.shape == (1, DIRECT_RPM_ACTION_DIM)
+        assert np.allclose(tracking_env.action_space.low, -1.0)
+        assert np.allclose(tracking_env.action_space.high, 1.0)
+        assert info["action_interface"] == "direct_rpm"
+        assert info["real_action_type"] == "motor_rpm"
+        assert info["action_normalized"] is True
+        assert np.allclose(info["normalized_action"], zero_action)
+        assert np.allclose(info["applied_action"], zero_action)
+        assert np.allclose(info["real_motor_rpms"], hover_rpm)
+        assert np.allclose(info["real_action"], zero_rpms)
+        assert np.all(negative_rpms < zero_rpms)
+        assert np.all(zero_rpms < positive_rpms)
+        assert np.allclose(info["rpm_command_space_low"], negative_rpms)
+        assert np.allclose(info["rpm_command_space_high"], positive_rpms)
         assert info["rpm_clipped"] is False
     finally:
         tracking_env.close()

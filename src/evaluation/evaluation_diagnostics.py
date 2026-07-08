@@ -45,6 +45,7 @@ POSITION_DIMENSIONS = 3
 ROLL_PITCH_DIMENSIONS = 2
 ARRAY_BOUNDS_MAX_NDIM = 2
 ACTION_SATURATION_TOLERANCE = 1.0e-6
+TARGET_BOUNDARY_ACTION_TOLERANCE_M = 1.0e-6
 XY_TRACKING_RATIO_MIN_REFERENCE_SPAN_M = 1.0e-9
 REFERENCE_XY_SPAN_MOVING_TASK_MIN_M = 0.2
 HOVER_LOCK_ACTUAL_XY_SPAN_MAX_M = 0.05
@@ -68,6 +69,8 @@ FAILURE_EARLY_TERMINATION = "early_termination"
 FAILURE_REPEATED_TRUNCATION = "repeated_truncation"
 FAILURE_REFERENCE_TOO_HARD = "reference_too_fast_or_too_hard"
 FAILURE_NONE = "no_failure_detected"
+DIAGNOSTIC_EXPECTED_TARGET_BOUNDARY_ACTION = "expected_target_boundary_action"
+ACTION_AXIS_NAMES = ("x", "y", "z")
 
 
 @dataclass(frozen=True)
@@ -339,12 +342,13 @@ def build_failure_report(
     moving_reference = reference_xy_span_m > REFERENCE_XY_SPAN_MOVING_TASK_MIN_M
     mean_position_error_m = _float(metrics.get("mean_position_error_tracking_m", mean_position_error_m))
     high_error = mean_position_error_m >= HIGH_MEAN_POSITION_ERROR_M
+    tracking_acceptable = _tracking_acceptable(metrics)
 
     if moving_reference and actual_xy_span_m < HOVER_LOCK_ACTUAL_XY_SPAN_MAX_M:
         failure_modes.append(FAILURE_HOVER_LOCK)
     if moving_reference and actual_xy_span_m < INSUFFICIENT_XY_MOTION_RATIO * reference_xy_span_m:
         failure_modes.append(FAILURE_INSUFFICIENT_XY_MOTION)
-    if max_action_saturation >= ACTION_SATURATION_FRACTION_MIN:
+    if max_action_saturation >= ACTION_SATURATION_FRACTION_MIN and _action_saturation_is_failure(metrics, tracking_acceptable):
         failure_modes.append(FAILURE_ACTION_SATURATION)
     if moving_reference and actual_xy_span_m > OVERSHOOT_XY_SPAN_RATIO * reference_xy_span_m and high_error:
         failure_modes.append(FAILURE_OVERSHOOT)
@@ -365,7 +369,6 @@ def build_failure_report(
         failure_modes.append(FAILURE_REFERENCE_TOO_HARD)
 
     failure_modes = _dedupe(failure_modes)
-    tracking_acceptable = _tracking_acceptable(metrics)
     if not failure_modes and tracking_acceptable:
         failure_modes = [FAILURE_NONE]
     primary_failure_mode = failure_modes[0] if failure_modes else FAILURE_NONE
@@ -613,6 +616,18 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
     reference_bounds = _position_bounds(references)
     actual_xy_span_m = _xy_span(position_bounds)
     reference_xy_span_m = _xy_span(reference_bounds)
+    real_action_space = _real_action_space_from_records(records, fallback_action_space=action_space)
+    action_metrics = _action_distribution_metrics(_array_field(records, "action"), action_space)
+    real_action_metrics = _prefixed_action_distribution_metrics(
+        _array_field(records, "real_action"),
+        real_action_space,
+        prefix="real_action",
+    )
+    action_boundary_metrics = _action_saturation_diagnostics(
+        records=records,
+        action_space=action_space,
+        real_action_space=real_action_space,
+    )
     return {
         "mean_eval_reward": float(np.mean(rewards)),
         "final_eval_reward": float(rewards[-1]),
@@ -639,12 +654,9 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         "final_abs_z_error": float(axis_errors[-1, 2]),
         "episode_count": len(episode_summaries),
         **_trace_action_metadata(records),
-        **_action_distribution_metrics(_array_field(records, "action"), action_space),
-        **_prefixed_action_distribution_metrics(
-            _array_field(records, "real_action"),
-            _real_action_space_from_records(records, fallback_action_space=action_space),
-            prefix="real_action",
-        ),
+        **action_metrics,
+        **real_action_metrics,
+        **action_boundary_metrics,
     }
 
 
@@ -677,6 +689,164 @@ def _trace_action_metadata(records: Sequence[Mapping[str, Any]]) -> dict[str, An
         saturation_array = np.vstack(saturation_rows)
         metadata["direct_rpm_saturation_fraction"] = [float(value) for value in np.mean(saturation_array, axis=0)]
     return metadata
+
+
+def _action_saturation_diagnostics(records: Sequence[Mapping[str, Any]], action_space: Any, real_action_space: Any) -> dict[str, Any]:
+    """Return structured action-saturation metadata for failure classification."""
+    action_values = _array_field(records, "action")
+    real_action_values = _array_field(records, "real_action")
+    action_saturation_fraction = _saturation_fraction(action_values, action_space)
+    real_action_saturation_fraction = _saturation_fraction(real_action_values, real_action_space)
+    action_dimensions = _dimension_indices_at_threshold(action_saturation_fraction)
+    real_action_dimensions = _dimension_indices_at_threshold(real_action_saturation_fraction)
+    expected_details = _expected_target_boundary_action_dimensions(
+        records=records,
+        real_action_values=real_action_values,
+        real_action_space=real_action_space,
+        action_dimensions=action_dimensions,
+        action_saturation_fraction=action_saturation_fraction,
+        real_action_saturation_fraction=real_action_saturation_fraction,
+    )
+    expected_dimensions = {int(detail["dimension"]) for detail in expected_details}
+    problematic_dimensions = [dimension for dimension in action_dimensions if dimension not in expected_dimensions]
+    diagnostic = {
+        "saturated_dimensions": action_dimensions,
+        "real_saturated_dimensions": real_action_dimensions,
+        "expected_target_boundary_action": bool(expected_details),
+        "expected_target_boundary_dimensions": expected_details,
+        "problematic_action_saturation_dimensions": problematic_dimensions,
+    }
+    return {
+        "action_saturation_diagnostic": diagnostic,
+        "action_saturation_dimensions": action_dimensions,
+        "real_action_saturation_dimensions": real_action_dimensions,
+        "expected_target_boundary_action": bool(expected_details),
+        "expected_target_boundary_action_dimensions": expected_details,
+        "problematic_action_saturation_dimensions": problematic_dimensions,
+    }
+
+
+def _expected_target_boundary_action_dimensions(
+    records: Sequence[Mapping[str, Any]],
+    real_action_values: np.ndarray,
+    real_action_space: Any,
+    action_dimensions: Sequence[int],
+    action_saturation_fraction: np.ndarray,
+    real_action_saturation_fraction: np.ndarray,
+) -> list[dict[str, Any]]:
+    """Return PID target-position dimensions whose saturated bound equals the reference target."""
+    if not records:
+        return []
+    first = records[0]
+    if str(first.get("action_interface", "")) != "pid_position" or str(first.get("real_action_type", "")) != "pid_target_position":
+        return []
+    low = np.asarray(getattr(real_action_space, "low", []), dtype=float).reshape(-1)
+    high = np.asarray(getattr(real_action_space, "high", []), dtype=float).reshape(-1)
+    if low.size < POSITION_DIMENSIONS or high.size < POSITION_DIMENSIONS:
+        return []
+    real_actions = np.asarray(real_action_values, dtype=float).reshape(len(records), -1)
+    references = _array_field(records, "reference_position")[:, :POSITION_DIMENSIONS]
+    details: list[dict[str, Any]] = []
+    for dimension in action_dimensions:
+        if dimension >= POSITION_DIMENSIONS or dimension >= real_actions.shape[1]:
+            continue
+        low_fraction = _values_at_bound_fraction(real_actions[:, dimension], low[dimension])
+        high_fraction = _values_at_bound_fraction(real_actions[:, dimension], high[dimension])
+        if low_fraction >= ACTION_SATURATION_FRACTION_MIN and _reference_matches_bound(references[:, dimension], low[dimension]):
+            details.append(
+                _target_boundary_detail(
+                    dimension=dimension,
+                    bound_name="low",
+                    bound_value=low[dimension],
+                    reference_values=references[:, dimension],
+                    action_saturation_fraction=action_saturation_fraction,
+                    real_action_saturation_fraction=real_action_saturation_fraction,
+                    real_action_bound_fraction=low_fraction,
+                )
+            )
+        if high_fraction >= ACTION_SATURATION_FRACTION_MIN and _reference_matches_bound(references[:, dimension], high[dimension]):
+            details.append(
+                _target_boundary_detail(
+                    dimension=dimension,
+                    bound_name="high",
+                    bound_value=high[dimension],
+                    reference_values=references[:, dimension],
+                    action_saturation_fraction=action_saturation_fraction,
+                    real_action_saturation_fraction=real_action_saturation_fraction,
+                    real_action_bound_fraction=high_fraction,
+                )
+            )
+    return details
+
+
+def _target_boundary_detail(
+    dimension: int,
+    bound_name: str,
+    bound_value: float,
+    reference_values: np.ndarray,
+    action_saturation_fraction: np.ndarray,
+    real_action_saturation_fraction: np.ndarray,
+    real_action_bound_fraction: float,
+) -> dict[str, Any]:
+    """Return JSON-ready metadata for one expected target-boundary action dimension."""
+    return {
+        "mode": DIAGNOSTIC_EXPECTED_TARGET_BOUNDARY_ACTION,
+        "dimension": int(dimension),
+        "axis": _action_axis_name(dimension),
+        "bound": bound_name,
+        "bound_value": float(bound_value),
+        "reference_min": float(np.min(reference_values)),
+        "reference_max": float(np.max(reference_values)),
+        "action_saturation_fraction": _fraction_at(action_saturation_fraction, dimension),
+        "real_action_saturation_fraction": _fraction_at(real_action_saturation_fraction, dimension),
+        "real_action_bound_fraction": float(real_action_bound_fraction),
+    }
+
+
+def _values_at_bound_fraction(values: np.ndarray, bound: float) -> float:
+    """Return the fraction of values that sit on one numeric bound."""
+    if values.size == 0:
+        return 0.0
+    return float(np.mean(np.isclose(values, bound, atol=TARGET_BOUNDARY_ACTION_TOLERANCE_M, rtol=0.0)))
+
+
+def _reference_matches_bound(values: np.ndarray, bound: float) -> bool:
+    """Return whether all reference values in one dimension equal a real-action bound."""
+    return bool(values.size) and bool(np.all(np.isclose(values, bound, atol=TARGET_BOUNDARY_ACTION_TOLERANCE_M, rtol=0.0)))
+
+
+def _action_axis_name(dimension: int) -> str:
+    """Return a human-readable PID target-position axis name."""
+    if 0 <= dimension < len(ACTION_AXIS_NAMES):
+        return ACTION_AXIS_NAMES[dimension]
+    return f"dim_{dimension}"
+
+
+def _saturation_fraction(actions: np.ndarray, action_space: Any) -> np.ndarray:
+    """Return per-dimension fraction of actions that sit on their action-space bounds."""
+    if actions.size == 0:
+        return np.zeros(0, dtype=float)
+    action_array = np.asarray(actions, dtype=float).reshape(actions.shape[0], -1)
+    low = np.asarray(getattr(action_space, "low", []), dtype=float).reshape(-1)
+    high = np.asarray(getattr(action_space, "high", []), dtype=float).reshape(-1)
+    if low.size != action_array.shape[1] or high.size != action_array.shape[1]:
+        return np.zeros(action_array.shape[1], dtype=float)
+    near_low = np.isclose(action_array, low, atol=ACTION_SATURATION_TOLERANCE, rtol=0.0)
+    near_high = np.isclose(action_array, high, atol=ACTION_SATURATION_TOLERANCE, rtol=0.0)
+    return np.mean(np.logical_or(near_low, near_high), axis=0)
+
+
+def _dimension_indices_at_threshold(fractions: np.ndarray) -> list[int]:
+    """Return dimensions whose saturation fraction reaches the failure threshold."""
+    return [int(index) for index, value in enumerate(np.asarray(fractions, dtype=float).reshape(-1)) if value >= ACTION_SATURATION_FRACTION_MIN]
+
+
+def _fraction_at(fractions: np.ndarray, dimension: int) -> float:
+    """Return one saturation fraction or zero when the dimension is unavailable."""
+    values = np.asarray(fractions, dtype=float).reshape(-1)
+    if dimension >= values.size:
+        return 0.0
+    return float(values[dimension])
 
 
 def _validate_trace_consistency(records: Sequence[Mapping[str, Any]]) -> None:
@@ -795,14 +965,7 @@ def _action_distribution_metrics(actions: np.ndarray, action_space: Any) -> dict
             "action_saturation_fraction": [],
         }
     action_array = np.asarray(actions, dtype=float).reshape(actions.shape[0], -1)
-    low = np.asarray(getattr(action_space, "low", []), dtype=float).reshape(-1)
-    high = np.asarray(getattr(action_space, "high", []), dtype=float).reshape(-1)
-    if low.size != action_array.shape[1] or high.size != action_array.shape[1]:
-        saturation_fraction = np.zeros(action_array.shape[1], dtype=float)
-    else:
-        near_low = np.isclose(action_array, low, atol=ACTION_SATURATION_TOLERANCE, rtol=0.0)
-        near_high = np.isclose(action_array, high, atol=ACTION_SATURATION_TOLERANCE, rtol=0.0)
-        saturation_fraction = np.mean(np.logical_or(near_low, near_high), axis=0)
+    saturation_fraction = _saturation_fraction(action_array, action_space)
     return {
         "action_mean": [float(value) for value in np.mean(action_array, axis=0)],
         "action_std": [float(value) for value in np.std(action_array, axis=0)],
@@ -810,6 +973,25 @@ def _action_distribution_metrics(actions: np.ndarray, action_space: Any) -> dict
         "action_max": [float(value) for value in np.max(action_array, axis=0)],
         "action_saturation_fraction": [float(value) for value in saturation_fraction],
     }
+
+
+def _action_saturation_is_failure(metrics: Mapping[str, Any], tracking_acceptable: bool) -> bool:
+    """Return whether saturated PPO actions should count as a failure mode."""
+    saturated_dimensions = _dimension_indices_at_threshold(np.asarray(_float_list(metrics.get("action_saturation_fraction")), dtype=float))
+    if not saturated_dimensions:
+        return False
+    if not tracking_acceptable:
+        return True
+    diagnostic = metrics.get("action_saturation_diagnostic")
+    if not isinstance(diagnostic, dict):
+        return True
+    raw_problematic_dimensions = diagnostic.get("problematic_action_saturation_dimensions")
+    if isinstance(raw_problematic_dimensions, list):
+        return bool(raw_problematic_dimensions)
+    expected_dimensions = {
+        _int(detail.get("dimension")) for detail in diagnostic.get("expected_target_boundary_dimensions", []) if isinstance(detail, dict)
+    }
+    return any(dimension not in expected_dimensions for dimension in saturated_dimensions)
 
 
 def _tracking_acceptable(metrics: Mapping[str, Any]) -> bool:
@@ -840,8 +1022,14 @@ def _failure_evidence(metrics: Mapping[str, Any], episode_summaries: Sequence[Ma
         "actual_xy_span_m": _float(metrics.get("actual_xy_span_m")),
         "xy_tracking_ratio": metrics.get("xy_tracking_ratio"),
         "action_saturation_fraction": _float_list(metrics.get("action_saturation_fraction")),
+        "action_saturation_diagnostic": _json_ready(metrics.get("action_saturation_diagnostic", {})),
+        "action_saturation_dimensions": _json_ready(metrics.get("action_saturation_dimensions", [])),
         "actions_normalized": bool(metrics.get("actions_normalized", False)),
         "real_action_saturation_fraction": _float_list(metrics.get("real_action_saturation_fraction")),
+        "real_action_saturation_dimensions": _json_ready(metrics.get("real_action_saturation_dimensions", [])),
+        "expected_target_boundary_action": bool(metrics.get("expected_target_boundary_action", False)),
+        "expected_target_boundary_action_dimensions": _json_ready(metrics.get("expected_target_boundary_action_dimensions", [])),
+        "problematic_action_saturation_dimensions": _json_ready(metrics.get("problematic_action_saturation_dimensions", [])),
         "eval_terminated_count": _int(metrics.get("eval_terminated_count")),
         "eval_truncated_count": _int(metrics.get("eval_truncated_count")),
         "actual_z_span_m": _float(metrics.get("actual_z_span_m")),

@@ -22,6 +22,13 @@ class _ActionSpace:
     high = np.array([[1.0, 1.0, 1.0]], dtype=float)
 
 
+class _DirectRPMActionSpace:
+    """Tiny direct-RPM action-space stand-in exposing normalized motor bounds."""
+
+    low = np.array([[-1.0, -1.0, -1.0, -1.0]], dtype=float)
+    high = np.array([[1.0, 1.0, 1.0, 1.0]], dtype=float)
+
+
 def _record(
     step_index: int,
     current_x: float,
@@ -130,6 +137,77 @@ def test_diagnostics_keep_normalized_and_real_action_metrics_separate() -> None:
     assert diagnostics.metrics["real_action_mean"] == [1.0, 0.0, 0.5]
     assert diagnostics.metrics["real_action_saturation_fraction"] == [1.0, 0.0, 1.0]
     assert diagnostics.episode_summaries[0]["real_action_max"] == [1.0, 0.0, 0.5]
+
+
+def test_diagnostics_treat_pid_hover_z_bound_as_expected_boundary_action() -> None:
+    """Verify accurate hover at the PID z upper bound is not failed only for saturation."""
+    records = [_record(index, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 1.0], task_shape="hover") for index in range(3)]
+    for record in records:
+        record["normalized_action"] = [[0.0, 0.0, 1.0]]
+        record["real_action"] = [[0.0, 0.0, 1.0]]
+        record["actions_normalized"] = True
+        record["action_interface"] = "pid_position"
+        record["real_action_type"] = "pid_target_position"
+        record["real_action_space_low"] = [[-0.2, -0.2, 0.5]]
+        record["real_action_space_high"] = [[0.2, 0.2, 1.0]]
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="ppo_hover_upper_z_bound",
+        task_shape="hover",
+        total_timesteps=64,
+        eval_steps=3,
+        seed=0,
+    )
+
+    saturation_diagnostic = diagnostics.metrics["action_saturation_diagnostic"]
+    expected_dimensions = diagnostics.metrics["expected_target_boundary_action_dimensions"]
+
+    assert diagnostics.metrics["action_saturation_fraction"] == [0.0, 0.0, 1.0]
+    assert diagnostics.metrics["real_action_saturation_fraction"] == [0.0, 0.0, 1.0]
+    assert diagnostics.metrics["expected_target_boundary_action"] is True
+    assert diagnostics.metrics["problematic_action_saturation_dimensions"] == []
+    assert saturation_diagnostic["expected_target_boundary_action"] is True
+    assert saturation_diagnostic["problematic_action_saturation_dimensions"] == []
+    assert expected_dimensions[0]["axis"] == "z"
+    assert expected_dimensions[0]["bound"] == "high"
+    assert expected_dimensions[0]["bound_value"] == pytest.approx(1.0)
+    assert diagnostics.failure_report["overall_status"] == "successful"
+    assert diagnostics.failure_report["failure_modes"] == ["no_failure_detected"]
+    assert diagnostics.failure_report["evidence"]["expected_target_boundary_action"] is True
+
+
+def test_diagnostics_keep_direct_rpm_saturation_as_failure() -> None:
+    """Verify direct-RPM action saturation remains a failure even when tracking is close."""
+    rpm_high = 12000.0
+    records = [_record(index, current_x=0.0, reference_x=0.0, action=[1.0, 1.0, 1.0, 1.0], task_shape="hover") for index in range(3)]
+    for record in records:
+        record["normalized_action"] = [[1.0, 1.0, 1.0, 1.0]]
+        record["real_action"] = [[rpm_high, rpm_high, rpm_high, rpm_high]]
+        record["actions_normalized"] = True
+        record["action_interface"] = "direct_rpm"
+        record["real_action_type"] = "motor_rpm"
+        record["ppo_action_dim"] = 4
+        record["real_action_space_low"] = [[0.0, 0.0, 0.0, 0.0]]
+        record["real_action_space_high"] = [[rpm_high, rpm_high, rpm_high, rpm_high]]
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_DirectRPMActionSpace(),
+        training_run_name="ppo_hover_direct_rpm_saturated",
+        task_shape="hover",
+        total_timesteps=64,
+        eval_steps=3,
+        seed=0,
+    )
+
+    assert diagnostics.metrics["action_saturation_fraction"] == [1.0, 1.0, 1.0, 1.0]
+    assert diagnostics.metrics["real_action_saturation_fraction"] == [1.0, 1.0, 1.0, 1.0]
+    assert diagnostics.metrics["expected_target_boundary_action"] is False
+    assert diagnostics.metrics["problematic_action_saturation_dimensions"] == [0, 1, 2, 3]
+    assert diagnostics.failure_report["primary_failure_mode"] == "action_saturation"
+    assert diagnostics.failure_report["overall_status"] == "failed"
 
 
 def test_diagnostics_reject_task_shape_mismatch() -> None:
