@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+import types
 from pathlib import Path
+from typing import Any, ClassVar
 
 import numpy as np
 import pytest
@@ -20,6 +23,24 @@ EXPECTED_SMOKE_TIMESTEPS = 4096
 EXPECTED_SMOKE_EVAL_STEPS = 120
 DIAGNOSTIC_STEPS = 6
 CURRICULUM_DIAGNOSTIC_STEPS = 120
+CONFIGURED_TEST_PPO_N_STEPS = 12
+CONFIGURED_TEST_PPO_BATCH_SIZE = 6
+
+EXPECTED_PPO_CONFIG = {
+    "policy": "MlpPolicy",
+    "device": "cpu",
+    "learning_rate": 0.0003,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "n_steps": 256,
+    "batch_size": 64,
+    "n_epochs": 5,
+    "clip_range": 0.2,
+    "ent_coef": 0.001,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "target_kl": 0.03,
+}
 
 
 def _manual_curriculum_task(stage_name: str) -> dict[str, object]:
@@ -49,6 +70,7 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.task_shape == "hover"
     assert settings.run_name is None
     assert settings.total_timesteps == EXPECTED_SMOKE_TIMESTEPS
+    assert settings.ppo_config.to_dict() == EXPECTED_PPO_CONFIG
     assert settings.eval_steps == EXPECTED_SMOKE_EVAL_STEPS
     assert settings.seed == 0
     assert settings.output_dir is None
@@ -180,6 +202,7 @@ def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path
     assert manifest["evaluation_trace_path"].endswith("evaluation_trace.jsonl")
     assert manifest["failure_primary_mode"] == "hover_lock"
     assert manifest["curriculum_readiness_level"] == "line_not_ready"
+    assert manifest["ppo_config"] == settings.ppo_config.to_dict()
 
 
 def test_ppo_tracking_diagnostic_artifact_paths_include_feedback_files(tmp_path: Path) -> None:
@@ -405,6 +428,130 @@ def test_evaluate_model_metrics_include_movement_bounds() -> None:
     assert metrics["real_action_saturation_fraction"] == [1.0, 1.0, 1.0]
     assert "mean_abs_x_error" in metrics
     assert "final_abs_z_error" in metrics
+
+
+def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify PPO, metrics, manifests, and W&B all receive resolved PPO config."""
+
+    class FakeTrainingEnv:
+        """Minimal environment stand-in for the PPO training path."""
+
+        def close(self) -> None:
+            """Close the fake environment."""
+
+    class FakePPO:
+        """Tiny SB3 PPO stand-in that records constructor kwargs."""
+
+        init_calls: ClassVar[list[dict[str, Any]]] = []
+
+        def __init__(self, policy: str, env: FakeTrainingEnv, **kwargs: Any) -> None:
+            """Record PPO constructor inputs."""
+            self.policy = policy
+            self.env = env
+            self.kwargs = dict(kwargs)
+            self.device = kwargs["device"]
+            FakePPO.init_calls.append({"policy": policy, "env": env, "kwargs": dict(kwargs)})
+
+        def learn(self, **kwargs: Any) -> None:
+            """Record learn kwargs without training."""
+            self.learn_kwargs = dict(kwargs)
+
+        def save(self, path: str) -> None:
+            """Write a tiny model marker file."""
+            Path(path).write_text("fake model", encoding="utf-8")
+
+    configured_ppo = experiments.ppo_config.PPOConfig(
+        policy="MlpPolicy",
+        device="cpu",
+        learning_rate=0.0007,
+        gamma=0.91,
+        gae_lambda=0.82,
+        n_steps=CONFIGURED_TEST_PPO_N_STEPS,
+        batch_size=CONFIGURED_TEST_PPO_BATCH_SIZE,
+        n_epochs=3,
+        clip_range=0.17,
+        ent_coef=0.004,
+        vf_coef=0.42,
+        max_grad_norm=0.9,
+        target_kl=0.07,
+    )
+    captured_wandb_config: dict[str, Any] = {}
+    fake_sb3 = types.ModuleType("stable_baselines3")
+    fake_sb3.PPO = FakePPO
+    monkeypatch.setitem(sys.modules, "stable_baselines3", fake_sb3)
+    monkeypatch.setattr(
+        experiments.ppo_tracking,
+        "detect_ppo_tracking_dependencies",
+        lambda: {"stable_baselines3": True, "gymnasium": True, "gym_pybullet_drones": True, "torch": True},
+    )
+    monkeypatch.setattr(experiments.ppo_tracking, "detect_ppo_runtime_info", lambda: {"torch_available": True})
+    monkeypatch.setattr(
+        experiments.ppo_tracking,
+        "_select_task",
+        lambda **_kwargs: ({"shape": "line"}, "config", 0, ()),
+    )
+    monkeypatch.setattr(
+        experiments.ppo_tracking,
+        "run_liftoff_diagnostics",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        experiments.ppo_tracking.envs.tracking_env,
+        "make_trajectory_tracking_env",
+        lambda *_args, **_kwargs: FakeTrainingEnv(),
+    )
+    monkeypatch.setattr(
+        experiments.ppo_tracking,
+        "_tracking_env_action_metadata",
+        lambda _env: {"actions_normalized": False},
+    )
+    monkeypatch.setattr(experiments.ppo_tracking, "_movement_warnings", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        experiments.ppo_tracking.evaluation.diagnostics,
+        "collect_policy_evaluation_diagnostics",
+        lambda **_kwargs: types.SimpleNamespace(metrics={"mean_position_error_m": 0.1}),
+    )
+    monkeypatch.setattr(
+        experiments.ppo_tracking.evaluation.diagnostics,
+        "write_policy_evaluation_diagnostics",
+        lambda *_args, **_kwargs: {},
+    )
+
+    def fake_start_wandb_run(*, settings: Any, config: dict[str, Any]) -> None:
+        """Capture W&B config without creating a run."""
+        _ = settings
+        captured_wandb_config.update(config)
+
+    monkeypatch.setattr(experiments.ppo_tracking.utils.wandb, "start_wandb_run", fake_start_wandb_run)
+    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(
+        run_name="configured_ppo",
+        total_timesteps=20,
+        ppo_config=configured_ppo,
+        eval_steps=4,
+        artifact_root=tmp_path / "run",
+        check_env=False,
+        normalize_actions=False,
+        wandb_mode=utils.wandb.WANDB_MODE_DISABLED,
+    )
+
+    result = experiments.ppo_tracking.run_ppo_tracking_smoke(settings)
+
+    assert len(FakePPO.init_calls) == 1
+    constructor_call = FakePPO.init_calls[0]
+    constructor_kwargs = constructor_call["kwargs"]
+    assert constructor_call["policy"] == configured_ppo.policy
+    for key, value in configured_ppo.to_dict().items():
+        if key != "policy":
+            assert constructor_kwargs[key] == value
+    assert constructor_kwargs["n_steps"] == CONFIGURED_TEST_PPO_N_STEPS
+    assert constructor_kwargs["batch_size"] == CONFIGURED_TEST_PPO_BATCH_SIZE
+    assert result.metrics["ppo_config"] == configured_ppo.to_dict()
+    assert captured_wandb_config["ppo"] == configured_ppo.to_dict()
+    manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["ppo_config"] == configured_ppo.to_dict()
 
 
 def test_cli_train_tracking_parser_accepts_task_shape_and_run_name() -> None:

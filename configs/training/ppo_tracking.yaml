@@ -5,6 +5,20 @@ eval_steps: 120
 seed: 0
 check_env: true
 normalize_actions: true
+ppo:
+  policy: MlpPolicy
+  device: cpu
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+  n_steps: 256
+  batch_size: 64
+  n_epochs: 5
+  clip_range: 0.2
+  ent_coef: 0.001
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.03
 wandb_mode: auto
 wandb_project: drone-rl-llm-curriculum
 wandb_entity: null

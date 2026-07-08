@@ -1023,35 +1023,50 @@ Avoid creating many separate docs before the final artifact contract is stable. 
 
 ## 17. Implementation phases
 
-### Phase 0: Current runtime bugfixes only
+### Phase 0: Completed - current runtime stabilization
 
-- goal: fix the current manual-curriculum runtime blocker before PPO config extraction or any architecture refactor. Manual curriculum training currently crashes before the summary/manifest is written in `src/experiments/experiments_ppo_tracking.py`, inside `run_liftoff_diagnostics` -> `_task_with_minimum_reference_samples`, with `ValueError: invalid trajectory task: trajectory exceeds the maximum acceleration`.
-- required fix: `_task_with_minimum_reference_samples` should prefer extending `duration_sec` over unsafe `sample_rate_hz` changes when it needs more reference samples. Liftoff diagnostics must not crash an otherwise valid training run; if diagnostic task extension fails, use the original valid task/reference and record a warning.
-- files likely changed: `src/experiments/experiments_ppo_tracking.py`, `src/evaluation/evaluation_diagnostics.py`, `src/validation/validation_tasks.py`, `tests/test_experiments_ppo_tracking.py`, `tests/test_envs_task_adapter.py`, `tests/test_envs_tracking_env.py`, `tests/test_evaluation_diagnostics.py`.
-- files likely moved/renamed: none.
-- files likely merged/deleted: none.
-- tests to run: `pytest tests/test_experiments_ppo_tracking.py tests/test_evaluation_diagnostics.py tests/test_validation_tasks.py tests/test_envs_task_adapter.py tests/test_envs_tracking_env.py -q`.
-- runtime validation commands:
-
-```bash
-rm -rf /workspace/storage/training_runs/curricula/manual_line_v1/seed0
-rm -rf /workspace/storage/evaluation_runs/curricula/manual_line_v1/seed0
-
-python -m src.experiments.cli_train_curriculum \
-  --config configs/curricula/manual_line_curriculum.yaml \
-  --seed 0 \
-  --wandb-mode offline
-
-python -m src.experiments.cli_evaluate_curriculum \
-  --summary /workspace/storage/training_runs/curricula/manual_line_v1/seed0/metrics/manual_line_v1_seed0_summary.json \
-  --mode benchmark \
-  --benchmark line_basic \
-  --model-scope final-stage \
-  --wandb-mode offline
-```
-
-- risks: mixing behavior fixes with refactor will make regressions hard to identify. Running the cleanup commands removes generated manual-curriculum artifacts under `/workspace/storage`; do this only when intentionally validating a fresh curriculum run.
-- expected commit message: `Fix liftoff diagnostics for manual curriculum training`.
+- status: completed and validated locally.
+- goal: stabilize the current manual curriculum and evaluation pipeline before PPO config extraction or architecture refactoring.
+- completed fixes:
+  - fixed the manual-curriculum liftoff diagnostic crash in `src/experiments/experiments_ppo_tracking.py`.
+  - updated `_task_with_minimum_reference_samples` so diagnostic sample extension prefers extending `duration_sec` or `move_duration_sec` at the existing `sample_rate_hz` instead of increasing `sample_rate_hz`.
+  - preserved start-hold metadata during diagnostic task preparation.
+  - added fallback-with-warning behavior so liftoff diagnostics do not crash an otherwise valid training run if diagnostic task extension fails.
+  - fixed misleading multi-episode evaluation plots by making reset behavior explicit.
+  - aligned main report plots with the same single render rollout used for `scenario_rollout.gif` while keeping full multi-episode diagnostics and metrics unchanged.
+- files changed during Phase 0:
+  - `src/experiments/experiments_ppo_tracking.py`
+  - `src/experiments/experiments_policy_evaluation.py`
+  - `src/experiments/experiments_curriculum_evaluation.py`
+  - `src/evaluation/evaluation_plots.py`
+  - `src/evaluation/evaluation_diagnostics.py`
+  - `src/validation/validation_tasks.py`
+  - `tests/test_experiments_ppo_tracking.py`
+  - `tests/test_experiments_policy_evaluation.py`
+  - `tests/test_experiments_curriculum_evaluation.py`
+  - `tests/test_evaluation_plots.py`
+  - `tests/test_envs_task_adapter.py`
+  - `tests/test_envs_tracking_env.py`
+  - `tests/test_evaluation_diagnostics.py`
+- validation completed:
+  - `ruff format .`
+  - `ruff check .`
+  - `mypy src`
+  - full `pytest -q`
+  - manual curriculum training
+  - final-stage `line_basic` benchmark evaluation
+- runtime validation result:
+  - manual curriculum training finishes without the maximum-acceleration crash.
+  - curriculum summary and manifest are written.
+  - final-stage benchmark evaluation finishes.
+  - full metrics still report repeated truncations where the model fails.
+  - main plots and GIF now describe the same render rollout.
+- files moved/renamed: none.
+- files merged/deleted: none.
+- risks closed:
+  - liftoff diagnostics no longer invalidate valid acceleration-constrained tasks by changing sample rate.
+  - main plots no longer look like multiple stages are overlaid when only multiple reset episodes were present.
+- expected commit message: `Stabilize curriculum diagnostics and report plots`.
 
 ### Phase 1: PPO config extraction
 
@@ -1145,7 +1160,8 @@ python -m src.experiments.cli_evaluate_curriculum \
 
 ## 18. Do-not-do-now list
 
-- Do not migrate all storage while current liftoff/start-hold diagnostics are still being fixed.
+- Do not migrate all storage during PPO config extraction; storage layout changes are Phase 3.
+- Do not reopen Phase 0 fixes unless a regression appears in curriculum training, evaluation diagnostics, or report plots.
 - Do not implement LLM curriculum before manual curriculum and evaluation suites are stable.
 - Do not rewrite the notebook until artifact contracts are stable.
 - Do not split `src/experiments` before deciding which smoke/prototype files are obsolete or mergeable.
@@ -1158,26 +1174,28 @@ python -m src.experiments.cli_evaluate_curriculum \
 
 ## 19. Immediate next actions
 
-1. Fix the current liftoff diagnostic task-extension crash in `src/experiments/experiments_ppo_tracking.py` before PPO config extraction or any architecture refactor. Update `_task_with_minimum_reference_samples` so it prefers extending `duration_sec` over unsafe `sample_rate_hz` changes, and make `run_liftoff_diagnostics` fall back to the original valid task/reference with a warning if diagnostic extension fails.
-2. Add or update focused tests in `tests/test_experiments_ppo_tracking.py` for the manual-curriculum crash path, including the fallback-warning behavior when a diagnostic extension would violate acceleration limits.
-3. Run `pytest tests/test_experiments_ppo_tracking.py tests/test_evaluation_diagnostics.py tests/test_validation_tasks.py tests/test_envs_task_adapter.py tests/test_envs_tracking_env.py -q` and fix only local runtime/test failures.
-4. Validate the manual curriculum path with a fresh generated-artifact run:
+1. Commit the completed Phase 0 stabilization checkpoint if it has not been committed yet. Do not include generated `storage/` artifacts.
+
+2. Start Phase 1 by adding explicit PPO configuration tests. The first tests should require a nested `ppo:` block with values for `policy`, `device`, `learning_rate`, `gamma`, `gae_lambda`, `n_steps`, `batch_size`, `n_epochs`, `clip_range`, `ent_coef`, `vf_coef`, `max_grad_norm`, and `target_kl`.
+
+3. Implement a focused PPO config loader/validator before restructuring packages. Prefer a small current-location module such as `src/experiments/experiments_ppo_config.py` for now. Do not move it into `src/experiments/training/` until Phase 2.
+
+4. Update `src/experiments/experiments_ppo_tracking.py` so `PPO(...)` receives its hyperparameters from the resolved config instead of hardcoded constructor values or hidden rollout-step caps.
+
+5. Validate Phase 1 with:
 
 ```bash
-rm -rf /workspace/storage/training_runs/curricula/manual_line_v1/seed0
-rm -rf /workspace/storage/evaluation_runs/curricula/manual_line_v1/seed0
+ruff format .
+ruff check .
+mypy src
+pytest -q tests/test_experiments_ppo_config.py tests/test_experiments_ppo_tracking.py tests/test_utils_wandb.py
+pytest -q
 
-python -m src.experiments.cli_train_curriculum \
-  --config configs/curricula/manual_line_curriculum.yaml \
+python -m src.experiments.cli_train_tracking \
+  --config configs/training/ppo_tracking.yaml \
+  --task-shape line \
+  --run-name local_line_ppo_config_smoke \
+  --total-timesteps 512 \
+  --eval-steps 40 \
   --seed 0 \
-  --wandb-mode offline
-
-python -m src.experiments.cli_evaluate_curriculum \
-  --summary /workspace/storage/training_runs/curricula/manual_line_v1/seed0/metrics/manual_line_v1_seed0_summary.json \
-  --mode benchmark \
-  --benchmark line_basic \
-  --model-scope final-stage \
-  --wandb-mode offline
-```
-
-5. Only after the curriculum training/evaluation smoke succeeds, add tests in `tests/test_experiments_ppo_tracking.py` for an explicit `ppo:` config block, then extract PPO hyperparameter loading in `src/experiments/experiments_ppo_tracking.py` before moving files.
+  --wandb-mode disabled

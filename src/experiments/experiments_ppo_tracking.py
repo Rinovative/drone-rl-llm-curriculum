@@ -27,7 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import warnings as py_warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -35,14 +35,14 @@ import numpy as np
 
 from src import envs, evaluation, experiments, utils
 
+from . import experiments_ppo_config as ppo_config
+
 DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking.yaml")
 DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
 DEFAULT_TASK_INDEX = 0
 DEFAULT_TOTAL_TIMESTEPS = 4096
 DEFAULT_EVAL_STEPS = 120
 DEFAULT_SEED = 0
-_MIN_PPO_ROLLOUT_STEPS = 2
-_MAX_PPO_ROLLOUT_STEPS = 64
 DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS = 120
 DEFAULT_NORMALIZE_ACTIONS = True
 _MOVEMENT_WARNING_SPAN_THRESHOLD_M = 0.05
@@ -73,6 +73,8 @@ class PPOTrackingSmokeSettings:
         Optional explicit output directory for model, metrics, and W&B artifacts.
     total_timesteps
         Tiny upper-level PPO learning budget passed to Stable-Baselines3.
+    ppo_config
+        Resolved PPO hyperparameters passed to Stable-Baselines3.
     eval_steps
         Number of deterministic evaluation steps to run after training.
     seed
@@ -118,6 +120,7 @@ class PPOTrackingSmokeSettings:
     task_shape: str | None = None
     run_name: str | None = None
     total_timesteps: int = DEFAULT_TOTAL_TIMESTEPS
+    ppo_config: ppo_config.PPOConfig = field(default_factory=ppo_config.PPOConfig)
     eval_steps: int = DEFAULT_EVAL_STEPS
     seed: int = DEFAULT_SEED
     output_dir: Path | None = None
@@ -150,6 +153,10 @@ class PPOTrackingSmokeSettings:
         if self.total_timesteps <= 0:
             message = "total_timesteps must be positive"
             raise ValueError(message)
+        if not isinstance(self.ppo_config, ppo_config.PPOConfig):
+            message = "ppo_config must be a PPOConfig"
+            raise TypeError(message)
+        self.ppo_config.validate_total_timesteps(self.total_timesteps)
         if self.eval_steps <= 0:
             message = "eval_steps must be positive"
             raise ValueError(message)
@@ -370,20 +377,16 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     training_env = _ppo_training_env(real_training_env, normalize_actions=active_settings.normalize_actions)
     try:
         action_metadata = _tracking_env_action_metadata(training_env)
-        rollout_steps = _ppo_rollout_steps(active_settings.total_timesteps)
         if active_settings.initial_model_path is None:
+            sb3_ppo_kwargs = active_settings.ppo_config.to_sb3_kwargs()
+            policy = str(sb3_ppo_kwargs.pop("policy"))
             model = PPO(
-                "MlpPolicy",
+                policy,
                 training_env,
-                batch_size=rollout_steps,
-                device="cpu",
-                gamma=0.95,
-                learning_rate=1.0e-3,
-                n_epochs=4,
-                n_steps=rollout_steps,
                 seed=active_settings.seed,
                 tensorboard_log=str(logs_dir),
                 verbose=0,
+                **sb3_ppo_kwargs,
             )
         else:
             if not active_settings.initial_model_path.exists():
@@ -392,7 +395,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             model = PPO.load(
                 str(active_settings.initial_model_path),
                 env=training_env,
-                device="cpu",
+                device=active_settings.ppo_config.device,
                 tensorboard_log=str(logs_dir),
             )
         wandb_run = utils.wandb.start_wandb_run(
@@ -461,6 +464,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "task_source": task_source,
         "task_shape_requested": active_settings.task_shape,
         "total_timesteps": active_settings.total_timesteps,
+        "ppo_config": active_settings.ppo_config.to_dict(),
         "timesteps_label": timesteps_label,
         "eval_steps": active_settings.eval_steps,
         "seed": active_settings.seed,
@@ -588,6 +592,7 @@ def run_ppo_tracking_smoke_from_config(
         task_shape=settings.task_shape if task_shape is None else task_shape,
         run_name=settings.run_name if run_name is None else run_name,
         total_timesteps=settings.total_timesteps if total_timesteps is None else total_timesteps,
+        ppo_config=settings.ppo_config,
         eval_steps=settings.eval_steps if eval_steps is None else eval_steps,
         seed=settings.seed if seed is None else seed,
         output_dir=settings.output_dir if output_dir is None else Path(output_dir),
@@ -625,6 +630,7 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
         "task_shape": config.get("task_shape") or None,
         "run_name": config.get("run_name") or None,
         "total_timesteps": int(config.get("total_timesteps", DEFAULT_TOTAL_TIMESTEPS)),
+        "ppo_config": ppo_config.load_ppo_config_from_mapping(config),
         "eval_steps": int(config.get("eval_steps", DEFAULT_EVAL_STEPS)),
         "seed": int(config.get("seed", DEFAULT_SEED)),
         "output_dir": Path(output_dir_value) if output_dir_value is not None else None,
@@ -881,6 +887,7 @@ def _build_manifest(
         "training_task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": settings.task_shape,
         "total_timesteps": settings.total_timesteps,
+        "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
@@ -977,6 +984,7 @@ def _wandb_config(
         "task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": settings.task_shape,
         "total_timesteps": settings.total_timesteps,
+        "ppo": settings.ppo_config.to_dict(),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
@@ -1019,11 +1027,6 @@ def _check_tracking_env(task: dict[str, Any], normalize_actions: bool = DEFAULT_
         raise RuntimeError(message) from exc
     finally:
         checker_env.close()
-
-
-def _ppo_rollout_steps(total_timesteps: int) -> int:
-    """Choose a tiny PPO rollout length compatible with PPO batch sizing."""
-    return max(_MIN_PPO_ROLLOUT_STEPS, min(_MAX_PPO_ROLLOUT_STEPS, total_timesteps))
 
 
 def _evaluate_model(model: Any, tracking_env: Any, settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
