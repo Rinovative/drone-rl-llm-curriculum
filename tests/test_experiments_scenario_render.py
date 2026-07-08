@@ -61,7 +61,7 @@ def test_load_showcase_scenario_settings_requires_ppo_model_run() -> None:
 
     assert settings.scenario_name == "showcase_hover_line_polyline"
     assert settings.controller == policy_render.PPO_CONTROLLER
-    assert settings.model_run_name == "ppo_line_100k_seed0"
+    assert settings.model_run_name == "direct_ppo_line_final_seed0"
     assert settings.phases[0].phase_type == "hover"
     assert settings.phases[0].geometry["hold_current_position"] is True
 
@@ -281,7 +281,7 @@ def test_scenario_run_name_derivation_matches_contract() -> None:
     ppo = scenario_render.load_scenario_render_settings(SHOWCASE_CONFIG)
 
     assert scenario_render._evaluation_run_name(scripted) == "eval_scripted_reference_on_line_polyline"
-    assert scenario_render._evaluation_run_name(ppo) == "eval_ppo_line_100k_seed0_on_showcase_hover_line_polyline"
+    assert scenario_render._evaluation_run_name(ppo) == "eval_direct_ppo_line_final_seed0_on_showcase_hover_line_polyline"
     circle = scenario_render.load_scenario_render_settings(CIRCLE_CONFIG)
     assert scenario_render._evaluation_run_name(circle) == "eval_scripted_reference_on_circle_polyline"
 
@@ -298,7 +298,7 @@ def test_cli_parser_accepts_scenario_overrides() -> None:
             "--controller",
             "scripted_reference",
             "--model-run-name",
-            "ppo_line_100k_seed0",
+            "direct_ppo_line_final_seed0",
             "--max-steps",
             str(CLI_MAX_STEPS),
             "--seed",
@@ -317,7 +317,7 @@ def test_cli_parser_accepts_scenario_overrides() -> None:
     assert args.config == SCRIPTED_CONFIG
     assert args.run_name == "custom_scenario_eval"
     assert args.controller == "scripted_reference"
-    assert args.model_run_name == "ppo_line_100k_seed0"
+    assert args.model_run_name == "direct_ppo_line_final_seed0"
     assert args.max_steps == CLI_MAX_STEPS
     assert args.seed == CLI_SEED
     assert args.camera_mode == "fixed_external"

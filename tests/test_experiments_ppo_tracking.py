@@ -21,7 +21,7 @@ from src.experiments.training import experiments_training_ppo_config as ppo_conf
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 EXPECTED_SMOKE_TASK_INDEX = 0
-LINE_TASK_INDEX = 2
+LINE_TASK_INDEX = 0
 EXPECTED_SMOKE_TIMESTEPS = 4096
 EXPECTED_SMOKE_EVAL_STEPS = 120
 DIAGNOSTIC_STEPS = 6
@@ -48,7 +48,7 @@ EXPECTED_PPO_CONFIG = {
 
 def _manual_curriculum_task(stage_name: str) -> dict[str, object]:
     """Return a copied task from the manual line curriculum fixture."""
-    config = experiments_config.load_experiment_config("configs/curricula/manual_line_curriculum.yaml")
+    config = experiments_config.load_experiment_config("configs/curricula/curriculum_manual_line_smoke.yaml")
     for stage in config["stages"]:
         if stage["stage_name"] == stage_name:
             return dict(stage["task"])
@@ -65,13 +65,13 @@ def test_ppo_tracking_canonical_module_imports() -> None:
 def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify the smoke YAML file loads into validated settings."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking.yaml")
+    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_smoke.yaml")
 
-    assert settings.training_config_path == Path("configs/training/ppo_tracking.yaml")
-    assert settings.task_config_path == Path("configs/smoke/trajectory_validation.yaml")
+    assert settings.training_config_path == Path("configs/training/ppo_tracking_smoke.yaml")
+    assert settings.task_config_path == Path("configs/training/ppo_tracking_tasks.yaml")
     assert settings.task_index == EXPECTED_SMOKE_TASK_INDEX
-    assert settings.task_shape == "hover"
-    assert settings.run_name is None
+    assert settings.task_shape is None
+    assert settings.run_name == "direct_ppo_line_smoke_seed0"
     assert settings.total_timesteps == EXPECTED_SMOKE_TIMESTEPS
     assert settings.ppo_config.to_dict() == EXPECTED_PPO_CONFIG
     assert settings.eval_steps == EXPECTED_SMOKE_EVAL_STEPS
@@ -79,16 +79,16 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.output_dir is None
     assert settings.model_dir is None
     assert settings.normalize_actions is True
-    assert settings.wandb_mode == "auto"
+    assert settings.wandb_mode == "disabled"
     assert settings.wandb_project == utils.wandb.DEFAULT_WANDB_PROJECT
     assert settings.wandb_entity is None
-    assert settings.wandb_group is None
-    assert settings.wandb_name is None
-    assert settings.wandb_tags == ()
+    assert settings.wandb_group == "direct_ppo/line_smoke"
+    assert settings.wandb_name == "direct_ppo_line_smoke_seed0"
+    assert settings.wandb_tags == ("smoke", "direct_ppo", "line")
     assert settings.wandb_dir is None
-    assert ppo_tracking.default_output_dir() == tmp_path / "runs" / "direct_ppo_hover_seed0"
-    assert ppo_tracking.default_model_dir() == tmp_path / "runs" / "direct_ppo_hover_seed0" / "training" / "models"
-    assert utils.wandb.default_wandb_dir("direct_ppo_hover_seed0") == tmp_path / "runs" / "direct_ppo_hover_seed0" / "training" / "wandb"
+    assert ppo_tracking.default_output_dir() == tmp_path / "runs" / "direct_ppo_line_smoke_seed0"
+    assert ppo_tracking.default_model_dir() == tmp_path / "runs" / "direct_ppo_line_smoke_seed0" / "training" / "models"
+    assert utils.wandb.default_wandb_dir("direct_ppo_line_smoke_seed0") == tmp_path / "runs" / "direct_ppo_line_smoke_seed0" / "training" / "wandb"
 
 
 @pytest.mark.parametrize(
@@ -142,7 +142,7 @@ def test_ppo_tracking_settings_reject_invalid_run_name() -> None:
 def test_ppo_tracking_select_task_by_shape_uses_configured_task() -> None:
     """Verify task-shape selection reuses the configured task list."""
     task, task_source, task_index, warnings = ppo_tracking._select_task(  # noqa: SLF001
-        task_config_path=Path("configs/smoke/trajectory_validation.yaml"),
+        task_config_path=Path("configs/training/ppo_tracking_tasks.yaml"),
         default_task_index=0,
         task_shape="line",
     )

@@ -2,7 +2,7 @@ scenario_name: showcase_hover_line_polyline
 task_config_path: configs/smoke/trajectory_validation.yaml
 
 controller: ppo
-model_run_name: ppo_line_100k_seed0
+model_run_name: direct_ppo_line_final_seed0
 
 max_steps: 300
 seed: 0

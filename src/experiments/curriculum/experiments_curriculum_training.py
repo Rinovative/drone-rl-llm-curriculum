@@ -36,7 +36,7 @@ from src import utils, validation
 from src.experiments import experiments_config as config_loader
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
-DEFAULT_CURRICULUM_CONFIG_PATH = Path("configs/curricula/manual_line_curriculum.yaml")
+DEFAULT_CURRICULUM_CONFIG_PATH = Path("configs/curricula/curriculum_manual_line_smoke.yaml")
 MANUAL_CURRICULUM_KIND = "manual"
 SUMMARY_METRIC_KEYS = (
     "start_hold_enabled",
@@ -516,10 +516,13 @@ def _curriculum_artifact_run_name(curriculum_name: str, seed: int, curriculum_ki
 
 
 def _curriculum_run_topic(curriculum_name: str, curriculum_kind: str) -> str:
-    """Return the curriculum topic without a duplicated kind prefix."""
-    prefix = f"{curriculum_kind}_"
-    if curriculum_name.startswith(prefix):
-        return curriculum_name[len(prefix) :]
+    """Return the curriculum topic without a duplicated curriculum/kind prefix."""
+    canonical_prefix = f"curriculum_{curriculum_kind}_"
+    if curriculum_name.startswith(canonical_prefix):
+        return curriculum_name[len(canonical_prefix) :]
+    kind_prefix = f"{curriculum_kind}_"
+    if curriculum_name.startswith(kind_prefix):
+        return curriculum_name[len(kind_prefix) :]
     return curriculum_name
 
 

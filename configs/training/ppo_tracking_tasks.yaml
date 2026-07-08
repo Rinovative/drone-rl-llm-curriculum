@@ -1,0 +1,41 @@
+name: ppo_tracking_production_tasks
+seed: 0
+validation_limits:
+  arena_xy_limit: 2.0
+  min_height: 0.2
+  max_height: 2.0
+  max_speed_m_s: 2.0
+  max_acceleration_m_s2: 5.0
+  min_duration_sec: 1.0
+  max_step_distance_m: 0.5
+tasks:
+  - task_name: line_basic
+    task_type: trajectory
+    shape: line
+    duration_sec: 3.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [1.0, 0.0, 1.0]
+  - task_name: line_long_final
+    task_type: trajectory
+    shape: line
+    duration_sec: 5.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [1.5, 0.0, 1.0]
+  - task_name: line_diagonal_validation
+    task_type: trajectory
+    shape: line
+    duration_sec: 4.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [0.8, 0.6, 1.0]

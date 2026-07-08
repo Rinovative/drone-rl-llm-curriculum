@@ -75,8 +75,8 @@ tasks:
     _write_json(
         summary_path,
         {
-            "curriculum_name": "manual_line_v1",
-            "run_name": "curriculum_manual_line_v1_seed0",
+            "curriculum_name": "curriculum_manual_line_smoke",
+            "run_name": "curriculum_manual_line_smoke_seed0",
             "run_kind": "curriculum",
             "curriculum_kind": "manual",
             "seed": 0,
@@ -86,7 +86,7 @@ tasks:
                     "stage_index": 1,
                     "stage_name": "hover_stabilization",
                     "task_shape": "hover_stabilization",
-                    "run_name": "manual_line_v1_stage01_hover_stabilization_seed0",
+                    "run_name": "curriculum_manual_line_smoke_stage01_hover_stabilization_seed0",
                     "model_path": str(stage_root / "stage01_model.zip"),
                     "manifest_path": str(stage_one_manifest),
                     "eval_steps": 120,
@@ -98,7 +98,7 @@ tasks:
                     "stage_index": 2,
                     "stage_name": "line",
                     "task_shape": "line",
-                    "run_name": "manual_line_v1_stage02_line_seed0",
+                    "run_name": "curriculum_manual_line_smoke_stage02_line_seed0",
                     "model_path": str(stage_root / "stage02_model.zip"),
                     "manifest_path": str(stage_two_manifest),
                     "eval_steps": 120,
@@ -344,14 +344,14 @@ def test_curriculum_evaluation_own_stage_creates_stage_indexed_dirs_and_summary_
     assert payload["evaluation_mode"] == "own-stage"
     assert payload["run_kind"] == "curriculum"
     assert payload["curriculum_kind"] == "manual"
-    assert payload["curriculum_run_name"] == "curriculum_manual_line_v1_seed0"
+    assert payload["curriculum_run_name"] == "curriculum_manual_line_smoke_seed0"
     assert payload["evaluation_suite_name"] is None
     assert payload["suite_task_count"] == 0
     assert payload["model_scope"] == "all-stages"
     assert len(payload["evaluated_models"]) == 2
     directories = [entry["evaluation_dir"].replace("\\", "/") for entry in payload["evaluated_models"]]
-    assert directories[0].endswith("runs/curriculum_manual_line_v1_seed0/stages/stage01_hover_stabilization/evaluations/own_stage")
-    assert directories[1].endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/own_stage")
+    assert directories[0].endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage01_hover_stabilization/evaluations/own_stage")
+    assert directories[1].endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/own_stage")
     assert payload["evaluated_models"][0]["is_final_stage"] is False
     assert payload["evaluated_models"][1]["is_final_stage"] is True
     assert payload["evaluated_models"][0]["suite_task_name"] is None
@@ -384,8 +384,8 @@ def test_curriculum_evaluation_suite_final_stage_writes_run_level_and_uses_suite
     assert payload["entry_count"] == 2
     assert all(entry["stage_index"] == 2 for entry in payload["evaluated_models"])
     assert all(entry["is_final_stage"] is True for entry in payload["evaluated_models"])
-    assert directories[0].endswith("runs/curriculum_manual_line_v1_seed0/evaluations/final_suite/line_basic")
-    assert directories[1].endswith("runs/curriculum_manual_line_v1_seed0/evaluations/final_suite/hover_basic")
+    assert directories[0].endswith("runs/curriculum_manual_line_smoke_seed0/evaluations/final_suite/line_basic")
+    assert directories[1].endswith("runs/curriculum_manual_line_smoke_seed0/evaluations/final_suite/hover_basic")
     assert not any("/stages/" in path for path in directories)
     assert {entry["suite_task_name"] for entry in payload["evaluated_models"]} == {"line_basic", "hover_basic"}
     assert all(entry["eval_steps"] == 88 for entry in payload["evaluated_models"])
@@ -425,12 +425,15 @@ def test_curriculum_evaluation_stage_suite_scope_uses_stage_dirs_and_baseline(
     assert payload["model_scope"] == "all-stages"
     assert payload["entry_count"] == 6
     assert any(
-        path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage01_hover_stabilization/evaluations/final_suite/line_basic")
+        path.endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage01_hover_stabilization/evaluations/final_suite/line_basic")
         for path in directories
     )
-    assert any(path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/final_suite/hover_basic") for path in directories)
     assert any(
-        path.endswith("runs/curriculum_manual_line_v1_seed0/evaluations/final_suite/baselines/baseline_ppo_line/line_basic") for path in directories
+        path.endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/final_suite/hover_basic") for path in directories
+    )
+    assert any(
+        path.endswith("runs/curriculum_manual_line_smoke_seed0/evaluations/final_suite/baselines/baseline_ppo_line/line_basic")
+        for path in directories
     )
     assert all(entry["render_enabled"] is True for entry in payload["evaluated_models"])
     assert all(entry["plots_enabled"] is True for entry in payload["evaluated_models"])
@@ -461,11 +464,16 @@ def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
     assert payload["evaluated_models"][0]["suite_task_name"] == "line_basic"
 
 
-def test_old_curriculum_benchmarks_config_is_not_required() -> None:
-    """Verify the old benchmark config path is absent from active curriculum evaluation."""
+def test_removed_benchmark_config_is_not_required() -> None:
+    """Verify the removed benchmark config path is absent from active curriculum evaluation."""
+    benchmark_kind = "benchmarks"
+    removed_loader_name = "load_" + f"curriculum_{benchmark_kind}"
+    removed_benchmark_name = f"curriculum_{benchmark_kind}.yaml"
+
     assert not hasattr(curriculum_evaluation, "DEFAULT_BENCHMARK_CONFIG_PATH")
-    assert not hasattr(curriculum_evaluation, "load_curriculum_benchmarks")
-    assert not Path("configs/evaluation/curriculum_benchmarks.yaml").exists()
+    assert not hasattr(curriculum_evaluation, removed_loader_name)
+    removed_benchmark_path = Path("configs") / "evaluation" / removed_benchmark_name
+    assert not removed_benchmark_path.exists()
 
 
 def test_curriculum_evaluation_supported_modes_do_not_expose_progression() -> None:

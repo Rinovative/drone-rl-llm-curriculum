@@ -1,4 +1,4 @@
-evaluation_name: final_benchmark
+evaluation_name: generalization
 seed: 0
 eval_steps: 360
 
@@ -14,51 +14,58 @@ traces:
   enabled: true
 
 tasks:
-  - task_name: line_basic
-    task_shape: line
+  - task_name: polyline_basic
+    task_shape: polyline
     task:
       task_type: trajectory
-      shape: line
+      shape: polyline
+      duration_sec: 6.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      points:
+        - [0.0, 0.0, 1.0]
+        - [0.4, 0.0, 1.0]
+        - [0.4, 0.35, 1.0]
+  - task_name: circle_basic
+    task_shape: circle
+    task:
+      task_type: trajectory
+      shape: circle
+      duration_sec: 8.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      radius: 0.5
+      height: 1.0
+      center: [0.0, 0.0]
+      clockwise: false
+  - task_name: vertical_basic
+    task_shape: vertical
+    task:
+      task_type: trajectory
+      shape: vertical
       duration_sec: 3.0
       sample_rate_hz: 10.0
       start_hold_enabled: true
       start_hold_sec: 1.0
       exclude_start_hold_from_tracking_metrics: true
-      start: [0.0, 0.0, 1.0]
-      end: [1.0, 0.0, 1.0]
-  - task_name: line_long_final
-    task_shape: line
+      xy: [0.25, -0.25]
+      start_height: 0.8
+      end_height: 1.4
+  - task_name: polyline_offset
+    task_shape: polyline
     task:
       task_type: trajectory
-      shape: line
-      duration_sec: 5.0
+      shape: polyline
+      duration_sec: 7.0
       sample_rate_hz: 10.0
       start_hold_enabled: true
       start_hold_sec: 1.0
       exclude_start_hold_from_tracking_metrics: true
-      start: [0.0, 0.0, 1.0]
-      end: [1.5, 0.0, 1.0]
-  - task_name: line_diagonal
-    task_shape: line
-    task:
-      task_type: trajectory
-      shape: line
-      duration_sec: 4.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 1.0
-      exclude_start_hold_from_tracking_metrics: true
-      start: [0.0, 0.0, 1.0]
-      end: [0.8, 0.6, 1.0]
-  - task_name: line_reverse
-    task_shape: line
-    task:
-      task_type: trajectory
-      shape: line
-      duration_sec: 4.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 1.0
-      exclude_start_hold_from_tracking_metrics: true
-      start: [0.0, 0.0, 1.0]
-      end: [-1.0, 0.0, 1.0]
+      points:
+        - [0.0, 0.0, 1.0]
+        - [0.35, -0.2, 1.0]
+        - [0.7, 0.2, 1.1]

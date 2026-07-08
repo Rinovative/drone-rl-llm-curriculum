@@ -1,6 +1,6 @@
 evaluation_name: line_eval
 seed: 0
-eval_steps: 120
+eval_steps: 240
 
 render:
   enabled: true

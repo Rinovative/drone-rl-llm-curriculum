@@ -40,8 +40,8 @@ def test_policy_render_settings_defaults_are_expected() -> None:
     """Verify policy-render defaults stay aligned with reviewer-facing CLI expectations."""
     settings = policy_render.PolicyRenderSettings()
 
-    assert settings.model_path.as_posix().endswith("storage/runs/direct_ppo_hover_seed0/training/models/direct_ppo_hover_seed0.zip")
-    assert settings.config_path == Path("configs/training/ppo_tracking.yaml")
+    assert settings.model_path.as_posix().endswith("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip")
+    assert settings.config_path == Path("configs/training/ppo_tracking_smoke.yaml")
     assert settings.output_dir is None
     assert settings.max_steps == policy_render.DEFAULT_MAX_STEPS
     assert settings.seed == 0
@@ -120,7 +120,7 @@ def test_cli_parser_accepts_camera_and_render_task_options() -> None:
     assert args.camera_yaw == PARSER_CAMERA_YAW
     assert args.camera_pitch == PARSER_CAMERA_PITCH
     assert args.output_dir is None
-    assert args.model_path.as_posix().endswith("storage/runs/direct_ppo_hover_seed0/training/models/direct_ppo_hover_seed0.zip")
+    assert args.model_path.as_posix().endswith("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip")
 
 
 def test_prepare_task_for_rollout_length_extends_short_reference() -> None:
@@ -163,7 +163,7 @@ def test_policy_render_missing_model_path_raises_clear_error(tmp_path: Path) -> 
     with pytest.raises(FileNotFoundError, match="cli_train_tracking"):
         policy_render.run_trained_policy_render_from_paths(
             model_path=missing_model,
-            config_path=Path("configs/training/ppo_tracking.yaml"),
+            config_path=Path("configs/training/ppo_tracking_smoke.yaml"),
             output_dir=tmp_path,
             max_steps=4,
             seed=0,
@@ -177,15 +177,15 @@ def test_policy_render_manifest_includes_rollout_summary_fields() -> None:
         settings=settings,
         evaluation_run_name=policy_render.DEFAULT_EVALUATION_RUN_NAME,
         mode=policy_render.TRAINED_POLICY_MODE,
-        model_path=Path("storage/runs/direct_ppo_hover_seed0/training/models/direct_ppo_hover_seed0.zip"),
-        configured_model_path=Path("storage/runs/direct_ppo_hover_seed0/training/models/direct_ppo_hover_seed0.zip"),
+        model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
+        configured_model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
         training_task_shape="line",
         evaluation_task_shape="line",
-        gif_path=Path("storage/runs/eval_direct_ppo_hover_seed0_on_hover/evaluations/policy_render/renders/trained_policy_rollout.gif"),
-        trace_path=Path("storage/runs/eval_direct_ppo_hover_seed0_on_hover/evaluations/policy_render/traces/trained_policy_rollout_trace.jsonl"),
+        gif_path=Path("storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/renders/trained_policy_rollout.gif"),
+        trace_path=Path("storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/traces/trained_policy_rollout_trace.jsonl"),
         plot_paths={
-            "trajectory_xy": "storage/runs/eval_direct_ppo_hover_seed0_on_hover/evaluations/policy_render/plots/trajectory_xy.png",
-            "position_error": "storage/runs/eval_direct_ppo_hover_seed0_on_hover/evaluations/policy_render/plots/position_error.png",
+            "trajectory_xy": "storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/plots/trajectory_xy.png",
+            "position_error": "storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/plots/position_error.png",
         },
         task_shape="line",
         task_source="config",
@@ -316,12 +316,12 @@ def test_policy_render_manifest_marks_render_task_override() -> None:
         settings=settings,
         evaluation_run_name=policy_render.DEFAULT_EVALUATION_RUN_NAME,
         mode=policy_render.TRAINED_POLICY_MODE,
-        model_path=Path("storage/runs/direct_ppo_hover_seed0/training/models/direct_ppo_hover_seed0.zip"),
-        configured_model_path=Path("storage/runs/direct_ppo_hover_seed0/training/models/direct_ppo_hover_seed0.zip"),
+        model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
+        configured_model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
         training_task_shape=None,
         evaluation_task_shape="line",
-        gif_path=Path("storage/runs/eval_direct_ppo_hover_seed0_on_hover/evaluations/policy_render/renders/trained_policy_rollout.gif"),
-        trace_path=Path("storage/runs/eval_direct_ppo_hover_seed0_on_hover/evaluations/policy_render/traces/trained_policy_rollout_trace.jsonl"),
+        gif_path=Path("storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/renders/trained_policy_rollout.gif"),
+        trace_path=Path("storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/traces/trained_policy_rollout_trace.jsonl"),
         plot_paths={},
         task_shape="line",
         task_source="render_override",
@@ -357,7 +357,7 @@ def test_policy_render_manifest_marks_scripted_reference_baseline() -> None:
         evaluation_run_name="eval_scripted_reference_on_line",
         mode=policy_render.SCRIPTED_REFERENCE_MODE,
         model_path=None,
-        configured_model_path=Path("storage/runs/direct_ppo_hover_seed0/training/models/direct_ppo_hover_seed0.zip"),
+        configured_model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
         training_task_shape=None,
         evaluation_task_shape="line",
         gif_path=Path("storage/runs/eval_scripted_reference_on_line/evaluations/policy_render/renders/trained_policy_rollout.gif"),

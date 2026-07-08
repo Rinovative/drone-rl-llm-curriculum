@@ -181,6 +181,35 @@ Drone_RL_LLM_Curriculum.ipynb
 
 </details>
 
+### Real Training Commands
+
+The report-ready training configs are split into smoke, medium, and final tiers. Smoke commands are for correctness only; medium and final commands start meaningful training and should be run intentionally.
+
+```bash
+python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking_smoke.yaml --run-name direct_ppo_line_smoke_seed0 --seed 0 --wandb-mode disabled
+python -m src.experiments.cli.experiments_cli_train_curriculum --config configs/curricula/curriculum_manual_line_smoke.yaml --seed 0 --wandb-mode disabled
+
+python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking_medium.yaml --run-name direct_ppo_line_medium_seed0 --seed 0 --wandb-mode offline
+python -m src.experiments.cli.experiments_cli_train_curriculum --config configs/curricula/curriculum_manual_line_medium.yaml --seed 0 --wandb-mode offline
+
+python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking_final.yaml --run-name direct_ppo_line_final_seed0 --seed 0 --wandb-mode auto
+python -m src.experiments.cli.experiments_cli_train_curriculum --config configs/curricula/curriculum_manual_line_final.yaml --seed 0 --wandb-mode auto
+```
+
+Evaluate the final manual-curriculum checkpoint and direct PPO baseline on the same line-focused benchmark suite:
+
+```bash
+python -m src.experiments.cli.experiments_cli_evaluate_curriculum \
+  --summary storage/runs/curriculum_manual_line_final_seed0/run_manifest.json \
+  --suite configs/evaluation/final_benchmark_eval_suite.yaml \
+  --mode suite \
+  --model-scope final-stage \
+  --include-baseline-model storage/runs/direct_ppo_line_final_seed0/training/models/direct_ppo_line_final_seed0.zip \
+  --baseline-label direct_ppo_line_final_seed0
+```
+
+All generated artifacts stay under `storage/runs/<self_describing_run_id>/`. The direct PPO task source for real training is `configs/training/ppo_tracking_tasks.yaml`; `configs/smoke/*` remains correctness-only.
+
 ---
 
 ## 📂 Project Structure

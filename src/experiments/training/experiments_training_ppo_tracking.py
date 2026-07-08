@@ -38,8 +38,8 @@ from src.experiments import experiments_config as config_loader
 
 from . import experiments_training_ppo_config as ppo_config
 
-DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking.yaml")
-DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
+DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking_smoke.yaml")
+DEFAULT_TASK_CONFIG_PATH = Path("configs/training/ppo_tracking_tasks.yaml")
 DEFAULT_TASK_INDEX = 0
 DEFAULT_TOTAL_TIMESTEPS = 4096
 DEFAULT_EVAL_STEPS = 120

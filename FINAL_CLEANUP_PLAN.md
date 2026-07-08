@@ -10,9 +10,10 @@ The repository now has the intended source-package split, canonical run layout, 
 - Experiment orchestration lives under `src/experiments` with focused subpackages for CLI entry points, training, evaluation, curriculum, and rendering.
 - Generated run artifacts use the canonical `storage/runs/<self_describing_run_id>` layout through `src/utils/utils_artifacts.py`.
 - The old root-level experiment modules and CLI wrappers are intentionally removed. Tests keep negative coverage so those import paths stay removed.
-- PPO hyperparameters are configured through the nested `ppo:` block in `configs/training/ppo_tracking.yaml`.
+- PPO hyperparameters are configured through nested `ppo:` blocks in the tiered `configs/training/ppo_tracking_{smoke,medium,final}.yaml` configs.
 - The post-audit legacy cleanup is complete: flat PPO keys, mixed flat+nested PPO configs, old root experiment imports, and stale Docker job references to removed CLI paths are rejected or absent from active code.
 - Evaluation suites under `configs/evaluation/*_eval_suite.yaml` are now the canonical source for benchmark tasks used by policy and curriculum evaluation.
+- The real-training config cleanup is complete: direct PPO uses `configs/training/ppo_tracking_tasks.yaml`, manual curriculum configs are split into smoke/medium/final tiers, and optional OOD checks live in `configs/evaluation/generalization_eval_suite.yaml`.
 
 Phase 4 is completed. The next real implementation phase is Phase 5: comparison pipeline.
 
@@ -92,7 +93,7 @@ Phase 0 stabilized the existing manual curriculum and evaluation flow before arc
 
 ### Phase 1: Completed - PPO config extraction
 
-Phase 1 moved PPO hyperparameters out of hardcoded constructor arguments and into explicit config handling. Current `configs/training/ppo_tracking.yaml` includes a nested `ppo:` block with the resolved Stable-Baselines3 PPO settings. The training path passes those values into `PPO(...)`, records the resolved PPO config in metrics/manifests/W&B config, and validates tiny smoke budgets against explicit `ppo.n_steps`.
+Phase 1 moved PPO hyperparameters out of hardcoded constructor arguments and into explicit config handling. The tiered direct PPO configs in `configs/training/ppo_tracking_{smoke,medium,final}.yaml` include nested `ppo:` blocks with the resolved Stable-Baselines3 PPO settings. The training path passes those values into `PPO(...)`, records the resolved PPO config in metrics/manifests/W&B config, and validates budgets against explicit `ppo.n_steps`.
 
 The post-audit cleanup tightened the Phase 1 contract: missing `ppo:`, legacy flat/top-level PPO keys, and mixed flat+nested PPO configs are no longer accepted by the training settings loader.
 
@@ -207,4 +208,4 @@ pytest tests/test_experiments_ppo_config.py tests/test_experiments_package_struc
 pytest -q
 ```
 
-Phase 4 validation passed with `ruff format .`, `ruff format --check .`, `ruff check .`, `mypy src`, focused suite/policy/curriculum evaluation tests, `pytest -q`, and the manual-curriculum final-stage runtime evaluation through `configs/evaluation/final_benchmark_eval_suite.yaml`.
+Phase 4 validation passed with `ruff format .`, `ruff format --check .`, `ruff check .`, `mypy src`, focused suite/policy/curriculum evaluation tests, `pytest -q`, and the manual-curriculum final-stage runtime evaluation through `configs/evaluation/final_benchmark_eval_suite.yaml`. The post-audit config cleanup now separates smoke, medium, final, and optional generalization configs before starting meaningful real training.

@@ -148,3 +148,47 @@ def test_suite_to_dict_output_is_stable(tmp_path: Path) -> None:
             },
         ],
     }
+
+
+def test_real_evaluation_suites_load_through_suite_loader() -> None:
+    """Verify every report-facing evaluation suite loads through the canonical loader."""
+    expected = {
+        "configs/evaluation/line_eval_suite.yaml": ["line_basic"],
+        "configs/evaluation/final_benchmark_eval_suite.yaml": [
+            "line_basic",
+            "line_long_final",
+            "line_diagonal",
+            "line_reverse",
+        ],
+        "configs/evaluation/generalization_eval_suite.yaml": [
+            "polyline_basic",
+            "circle_basic",
+            "vertical_basic",
+            "polyline_offset",
+        ],
+    }
+
+    for suite_path, task_names in expected.items():
+        suite = evaluation_suites.load_evaluation_suite(suite_path)
+        assert suite.task_names == task_names
+
+
+def test_final_benchmark_suite_is_line_focused() -> None:
+    """Verify the primary final benchmark is fair for line-trained policies."""
+    suite = evaluation_suites.load_evaluation_suite("configs/evaluation/final_benchmark_eval_suite.yaml")
+
+    assert suite.evaluation_name == "final_benchmark"
+    assert suite.eval_steps == 360
+    assert len(suite.tasks) >= 3
+    assert {task.task_shape for task in suite.tasks} == {"line"}
+    assert "line_long_final" in suite.task_names
+
+
+def test_generalization_suite_contains_optional_non_line_tasks() -> None:
+    """Verify optional OOD/generalization tasks are separated from the primary benchmark."""
+    suite = evaluation_suites.load_evaluation_suite("configs/evaluation/generalization_eval_suite.yaml")
+
+    assert suite.evaluation_name == "generalization"
+    assert suite.eval_steps == 360
+    assert {task.task_shape for task in suite.tasks} >= {"polyline", "circle", "vertical"}
+    assert any(task.task_shape != "line" for task in suite.tasks)

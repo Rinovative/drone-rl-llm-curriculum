@@ -37,11 +37,11 @@ from src import envs, evaluation, utils
 from src.experiments import experiments_config as config_loader
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
-DEFAULT_PPO_CONFIG_PATH = Path("configs/training/ppo_tracking.yaml")
-DEFAULT_MODEL_RUN_NAME = "direct_ppo_hover_seed0"
+DEFAULT_PPO_CONFIG_PATH = Path("configs/training/ppo_tracking_smoke.yaml")
+DEFAULT_MODEL_RUN_NAME = "direct_ppo_line_smoke_seed0"
 DEFAULT_MODEL_FILENAME = f"{DEFAULT_MODEL_RUN_NAME}.zip"
 DEFAULT_METRICS_FILENAME = f"{DEFAULT_MODEL_RUN_NAME}_metrics.json"
-DEFAULT_EVALUATION_RUN_NAME = "eval_direct_ppo_hover_seed0_on_hover"
+DEFAULT_EVALUATION_RUN_NAME = "eval_direct_ppo_line_smoke_seed0_on_line"
 DEFAULT_MODEL_PATH = Path(f"storage/runs/{DEFAULT_MODEL_RUN_NAME}/training/models/{DEFAULT_MODEL_FILENAME}")
 DEFAULT_OUTPUT_DIR = Path(f"storage/runs/{DEFAULT_EVALUATION_RUN_NAME}/evaluations/policy_render")
 DEFAULT_MAX_STEPS = 60
@@ -261,7 +261,7 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         message = (
             "trained PPO model was not found at "
             f"{model_path}. Create it with: "
-            "python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking.yaml"
+            "python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking_smoke.yaml"
         )
         raise FileNotFoundError(message)
 

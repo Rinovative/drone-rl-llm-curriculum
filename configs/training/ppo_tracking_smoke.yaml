@@ -1,5 +1,6 @@
-task_config_path: configs/smoke/trajectory_validation.yaml
-task_shape: hover
+task_config_path: configs/training/ppo_tracking_tasks.yaml
+task_index: 0
+run_name: direct_ppo_line_smoke_seed0
 total_timesteps: 4096
 eval_steps: 120
 seed: 0
@@ -19,9 +20,12 @@ ppo:
   vf_coef: 0.5
   max_grad_norm: 0.5
   target_kl: 0.03
-wandb_mode: auto
+wandb_mode: disabled
 wandb_project: drone-rl-llm-curriculum
 wandb_entity: null
-wandb_group: null
-wandb_name: null
-wandb_tags: []
+wandb_group: direct_ppo/line_smoke
+wandb_name: direct_ppo_line_smoke_seed0
+wandb_tags:
+  - smoke
+  - direct_ppo
+  - line

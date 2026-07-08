@@ -1,0 +1,31 @@
+task_config_path: configs/training/ppo_tracking_tasks.yaml
+task_index: 1
+run_name: direct_ppo_line_final_seed0
+total_timesteps: 1000000
+eval_steps: 360
+seed: 0
+check_env: true
+normalize_actions: true
+ppo:
+  policy: MlpPolicy
+  device: cpu
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+  n_steps: 1024
+  batch_size: 256
+  n_epochs: 10
+  clip_range: 0.2
+  ent_coef: 0.001
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.03
+wandb_mode: auto
+wandb_project: drone-rl-llm-curriculum
+wandb_entity: null
+wandb_group: direct_ppo/line_final
+wandb_name: direct_ppo_line_final_seed0
+wandb_tags:
+  - final
+  - direct_ppo
+  - line

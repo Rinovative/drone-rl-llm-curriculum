@@ -1,13 +1,12 @@
-curriculum_name: manual_line_v1_100k
-base_training_config: configs/training/ppo_tracking.yaml
+curriculum_name: curriculum_manual_line_medium
+base_training_config: configs/training/ppo_tracking_medium.yaml
 seed: 0
-wandb_mode: auto
+wandb_mode: offline
 normalize_actions: true
-
 stages:
   - stage_name: hover_stabilization
     task_shape: hover_stabilization
-    total_timesteps: 100000
+    total_timesteps: 25000
     eval_steps: 240
     notes: Stabilize altitude at the nominal tracking height before asking for XY motion.
     task:
@@ -16,10 +15,9 @@ stages:
       duration_sec: 2.0
       sample_rate_hz: 10.0
       position: [0.0, 0.0, 1.0]
-
   - stage_name: nearby_target_hover
     task_shape: nearby_target_hover
-    total_timesteps: 100000
+    total_timesteps: 25000
     eval_steps: 240
     notes: Hold a nearby offset target to encourage small XY correction without path following.
     task:
@@ -28,10 +26,9 @@ stages:
       duration_sec: 2.5
       sample_rate_hz: 10.0
       position: [0.15, 0.0, 1.0]
-
   - stage_name: start_hold_then_short_line
     task_shape: start_hold_then_short_line
-    total_timesteps: 100000
+    total_timesteps: 50000
     eval_steps: 240
     notes: Hold the start briefly, then move along a very short horizontal segment.
     task:
@@ -45,10 +42,9 @@ stages:
       exclude_start_hold_from_tracking_metrics: true
       start: [0.0, 0.0, 1.0]
       end: [0.25, 0.0, 1.0]
-
   - stage_name: short_slow_line
     task_shape: short_slow_line
-    total_timesteps: 100000
+    total_timesteps: 50000
     eval_steps: 240
     notes: Track a short slow line before the normal line task.
     task:
@@ -61,12 +57,11 @@ stages:
       exclude_start_hold_from_tracking_metrics: true
       start: [0.0, 0.0, 1.0]
       end: [0.5, 0.0, 1.0]
-
   - stage_name: line
     task_shape: line
     total_timesteps: 100000
     eval_steps: 240
-    notes: Finish on the existing normal line tracking task.
+    notes: Track the primary one-meter line task used for focused evaluation.
     task:
       task_type: trajectory
       shape: line

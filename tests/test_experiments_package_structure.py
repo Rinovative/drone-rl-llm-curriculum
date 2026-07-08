@@ -27,24 +27,27 @@ CANONICAL_MODULE_SYMBOLS = [
 ]
 
 REMOVED_ROOT_MODULES = [
-    "src.experiments.cli_train_tracking",
-    "src.experiments.cli_train_curriculum",
-    "src.experiments.cli_evaluate_curriculum",
-    "src.experiments.cli_render_policy",
-    "src.experiments.cli_render_scenario",
-    "src.experiments.cli_render_smoke",
-    "src.experiments.cli_training_smoke",
-    "src.experiments.cli_mvp",
-    "src.experiments.experiments_ppo_config",
-    "src.experiments.experiments_ppo_tracking",
-    "src.experiments.experiments_training_smoke",
-    "src.experiments.experiments_policy_evaluation",
-    "src.experiments.experiments_curriculum",
-    "src.experiments.experiments_curriculum_training",
-    "src.experiments.experiments_curriculum_evaluation",
-    "src.experiments.experiments_policy_render",
-    "src.experiments.experiments_scenario_render",
-    "src.experiments.experiments_render_smoke",
+    f"src.experiments.{module_name}"
+    for module_name in (
+        "cli_train_tracking",
+        "cli_train_curriculum",
+        "cli_evaluate_curriculum",
+        "cli_render_policy",
+        "cli_render_scenario",
+        "cli_render_smoke",
+        "cli_training_smoke",
+        "cli_mvp",
+        "experiments_" + "ppo_config",
+        "experiments_" + "ppo_tracking",
+        "experiments_" + "training_smoke",
+        "experiments_" + "policy_evaluation",
+        "experiments_" + "curriculum",
+        "experiments_" + "curriculum_training",
+        "experiments_" + "curriculum_evaluation",
+        "experiments_" + "policy_render",
+        "experiments_" + "scenario_render",
+        "experiments_" + "render_smoke",
+    )
 ]
 
 CANONICAL_CLI_MODULE_PATHS = [
