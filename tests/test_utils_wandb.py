@@ -29,7 +29,7 @@ def test_wandb_defaults_are_auto_and_training_scoped(tmp_path: Path, monkeypatch
 
     assert settings.mode == "auto"
     assert settings.project == "drone-rl-llm-curriculum"
-    assert utils.wandb.default_wandb_dir("ppo_hover_4096_seed0") == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "wandb"
+    assert utils.wandb.default_wandb_dir("direct_ppo_hover_seed0") == tmp_path / "runs" / "direct_ppo_hover_seed0" / "training" / "wandb"
 
 
 def test_disabled_wandb_does_not_import_wandb(monkeypatch: pytest.MonkeyPatch) -> None:

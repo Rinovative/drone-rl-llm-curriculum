@@ -32,14 +32,14 @@ from src.experiments.rendering import experiments_rendering_policy as policy_ren
 def build_parser() -> argparse.ArgumentParser:
     """Build the trained-policy render CLI parser."""
     parser = argparse.ArgumentParser(
-        description="Render a PPO or scripted-reference evaluation run and write artifacts under storage/evaluation_runs/<run_name>.",
+        description="Render a PPO or scripted-reference evaluation run and write artifacts under storage/runs/<run_name>/evaluations/policy_render.",
     )
     parser.add_argument("--model-path", type=Path, default=policy_render.default_model_path())
     parser.add_argument(
         "--model-run-name",
         type=str,
         default=None,
-        help="Training run name used to load a model from storage/training_runs/<model_run_name>/models.",
+        help="Training run name used to load a model from storage/runs/<model_run_name>/training/models.",
     )
     parser.add_argument("--config", type=Path, default=policy_render.DEFAULT_PPO_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Render a task with this shape from the configured task list; hover remains the default when omitted.",
     )
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--run-name", type=str, default=None, help="Evaluation run name under storage/evaluation_runs.")
+    parser.add_argument("--run-name", type=str, default=None, help="Run name under storage/runs; artifacts go in evaluations/policy_render.")
     parser.add_argument(
         "--controller",
         choices=policy_render.SUPPORTED_CONTROLLERS,

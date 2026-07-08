@@ -86,8 +86,8 @@ class WandbTrackingSettings:
 
 
 def default_wandb_dir(training_run_name: str) -> Path:
-    """Return the W&B directory for an explicit training run name."""
-    return artifacts.get_training_wandb_dir(training_run_name)
+    """Return the W&B directory for an explicit canonical training run name."""
+    return artifacts.get_run_training_wandb_dir(training_run_name)
 
 
 def resolve_wandb_mode(mode: str) -> str:

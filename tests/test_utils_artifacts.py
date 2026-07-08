@@ -1,4 +1,4 @@
-"""Tests for category-scoped artifact path helpers."""
+"""Tests for canonical storage/runs artifact path helpers."""
 
 # ruff: noqa: S101
 
@@ -19,44 +19,113 @@ def test_storage_root_defaults_to_storage(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_storage_root_respects_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify STORAGE_ROOT controls all category-scoped artifact helpers."""
+    """Verify STORAGE_ROOT controls the canonical storage/runs helpers."""
     storage_root = tmp_path / "external_storage"
     monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
 
-    assert utils.artifacts.get_training_run_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke"
-    assert utils.artifacts.get_evaluation_run_dir("eval_example_on_hover") == storage_root / "evaluation_runs" / "eval_example_on_hover"
-    assert utils.artifacts.get_training_metrics_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "metrics"
+    assert utils.artifacts.get_run_dir("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0"
+    assert utils.artifacts.get_run_manifest_path("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0" / "run_manifest.json"
+    assert utils.artifacts.get_run_config_dir("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0" / "config"
     assert (
-        utils.artifacts.get_evaluation_renders_dir("eval_example_on_hover") == storage_root / "evaluation_runs" / "eval_example_on_hover" / "renders"
+        utils.artifacts.get_run_config_evaluation_suites_dir("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "config" / "evaluation_suites"
     )
-    assert utils.artifacts.get_evaluation_traces_dir("eval_example_on_hover") == storage_root / "evaluation_runs" / "eval_example_on_hover" / "traces"
-    assert utils.artifacts.get_training_models_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "models"
-    assert utils.artifacts.get_evaluation_plots_dir("eval_example_on_hover") == storage_root / "evaluation_runs" / "eval_example_on_hover" / "plots"
-    assert utils.artifacts.get_training_logs_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "logs"
-    assert utils.artifacts.get_training_diagnostics_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "diagnostics"
-    assert utils.artifacts.get_training_wandb_dir("ppo_tracking_smoke") == storage_root / "training_runs" / "ppo_tracking_smoke" / "wandb"
+    assert utils.artifacts.get_run_training_dir("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0" / "training"
+    assert (
+        utils.artifacts.get_run_training_manifest_path("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "training" / "manifest.json"
+    )
+    assert (
+        utils.artifacts.get_run_training_models_dir("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "training" / "models"
+    )
+    assert (
+        utils.artifacts.get_run_training_metrics_dir("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "training" / "metrics"
+    )
+    assert (
+        utils.artifacts.get_run_training_diagnostics_dir("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "training" / "diagnostics"
+    )
+    assert utils.artifacts.get_run_training_logs_dir("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0" / "training" / "logs"
+    assert (
+        utils.artifacts.get_run_training_wandb_dir("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0" / "training" / "wandb"
+    )
+    assert (
+        utils.artifacts.get_run_evaluation_dir("direct_ppo_line_seed0", "line_basic")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "evaluations" / "line_basic"
+    )
+    assert (
+        utils.artifacts.get_run_evaluation_metrics_dir("direct_ppo_line_seed0", "line_basic")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "evaluations" / "line_basic" / "metrics"
+    )
 
 
-def test_ensure_category_run_dirs_create_new_layouts(tmp_path: Path) -> None:
-    """Verify new training, evaluation, and comparison report trees are created explicitly."""
-    training_paths = utils.artifacts.ensure_training_run_dirs("example_training_run", storage_root=tmp_path)
-    evaluation_paths = utils.artifacts.ensure_evaluation_run_dirs("eval_example_on_hover", storage_root=tmp_path)
-    comparison_paths = utils.artifacts.ensure_comparison_report_dirs("comparison_smoke", storage_root=tmp_path)
+def test_run_helpers_sanitize_single_path_segments(tmp_path: Path) -> None:
+    """Verify run and evaluation labels are sanitized without allowing nested paths."""
+    assert utils.artifacts.get_run_dir(" Direct PPO: Seed 0! ", storage_root=tmp_path) == tmp_path / "runs" / "Direct_PPO_Seed_0"
+    assert (
+        utils.artifacts.get_run_evaluation_dir("direct_ppo", " Line basic eval! ", storage_root=tmp_path)
+        == tmp_path / "runs" / "direct_ppo" / "evaluations" / "Line_basic_eval"
+    )
 
-    assert training_paths["run"] == tmp_path / "training_runs" / "example_training_run"
-    assert evaluation_paths["run"] == tmp_path / "evaluation_runs" / "eval_example_on_hover"
-    assert comparison_paths["run"] == tmp_path / "comparison_reports" / "comparison_smoke"
-    for name in ("models", "metrics", "manifests", "logs", "wandb", "diagnostics"):
+
+def test_ensure_run_dirs_create_canonical_layouts(tmp_path: Path) -> None:
+    """Verify direct-run training and evaluation trees are created explicitly."""
+    training_paths = utils.artifacts.ensure_run_training_dirs("direct_ppo_line_seed0", storage_root=tmp_path)
+    evaluation_paths = utils.artifacts.ensure_run_evaluation_dirs("direct_ppo_line_seed0", "line_basic", storage_root=tmp_path)
+
+    assert training_paths["run"] == tmp_path / "runs" / "direct_ppo_line_seed0"
+    assert training_paths["config"] == tmp_path / "runs" / "direct_ppo_line_seed0" / "config"
+    assert training_paths["evaluation_suites"] == tmp_path / "runs" / "direct_ppo_line_seed0" / "config" / "evaluation_suites"
+    assert training_paths["training"] == tmp_path / "runs" / "direct_ppo_line_seed0" / "training"
+    for name in ("models", "metrics", "diagnostics", "logs", "wandb"):
         assert training_paths[name].is_dir()
-    for name in ("renders", "traces", "plots", "manifests"):
+    assert utils.artifacts.get_run_manifest_path("direct_ppo_line_seed0", storage_root=tmp_path).parent.is_dir()
+    assert utils.artifacts.get_run_training_manifest_path("direct_ppo_line_seed0", storage_root=tmp_path).parent.is_dir()
+
+    assert evaluation_paths["evaluation"] == tmp_path / "runs" / "direct_ppo_line_seed0" / "evaluations" / "line_basic"
+    for name in ("diagnostics", "traces", "plots", "renders", "metrics", "manifests"):
         assert evaluation_paths[name].is_dir()
-    for name in ("metrics", "plots", "manifests"):
-        assert comparison_paths[name].is_dir()
 
 
-def test_run_name_rejects_absolute_or_traversal_paths(tmp_path: Path) -> None:
-    """Verify run names cannot escape the category-specific layout."""
+def test_ensure_curriculum_stage_dirs_create_canonical_layouts(tmp_path: Path) -> None:
+    """Verify curriculum stages use the storage/runs stage contract."""
+    training_paths = utils.artifacts.ensure_curriculum_stage_training_dirs(
+        "manual_line_seed0",
+        stage_index=1,
+        stage_name="short slow line",
+        storage_root=tmp_path,
+    )
+    evaluation_paths = utils.artifacts.ensure_curriculum_stage_evaluation_dirs(
+        "manual_line_seed0",
+        stage_index=1,
+        stage_name="short slow line",
+        evaluation_name="final benchmark",
+        storage_root=tmp_path,
+    )
+
+    stage_dir = tmp_path / "runs" / "manual_line_seed0" / "stages" / "stage01_short_slow_line"
+    assert training_paths["stage"] == stage_dir
+    assert training_paths["training"] == stage_dir / "training"
+    assert (
+        utils.artifacts.get_curriculum_stage_training_manifest_path("manual_line_seed0", 1, "short slow line", storage_root=tmp_path)
+        == stage_dir / "training" / "manifest.json"
+    )
+    for name in ("models", "metrics", "diagnostics", "logs", "wandb"):
+        assert training_paths[name].is_dir()
+    assert evaluation_paths["evaluation"] == stage_dir / "evaluations" / "final_benchmark"
+    for name in ("diagnostics", "traces", "plots", "renders", "metrics", "manifests"):
+        assert evaluation_paths[name].is_dir()
+
+
+def test_names_reject_absolute_nested_or_traversal_paths(tmp_path: Path) -> None:
+    """Verify canonical helper identifiers stay inside one safe path segment."""
     with pytest.raises(ValueError, match="run_name"):
-        utils.artifacts.get_training_run_dir("../escape", storage_root=tmp_path)
+        utils.artifacts.get_run_dir("../escape", storage_root=tmp_path)
     with pytest.raises(ValueError, match="run_name"):
-        utils.artifacts.get_evaluation_run_dir(str(tmp_path / "absolute"), storage_root=tmp_path)
+        utils.artifacts.get_run_dir("nested/run", storage_root=tmp_path)
+    with pytest.raises(ValueError, match="evaluation_name"):
+        utils.artifacts.get_run_evaluation_dir("direct_ppo", "../escape", storage_root=tmp_path)
+    with pytest.raises(ValueError, match="stage_index"):
+        utils.artifacts.get_curriculum_stage_dir("manual_line", 0, "line", storage_root=tmp_path)

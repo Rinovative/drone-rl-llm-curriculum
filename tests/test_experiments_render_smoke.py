@@ -54,7 +54,7 @@ def test_cli_parser_exposes_camera_and_task_options() -> None:
     assert defaults.duration_sec == render_smoke.DEFAULT_DURATION_SEC
     assert defaults.max_steps == render_smoke.DEFAULT_MAX_STEPS
     assert defaults.output_dir == render_smoke.default_output_dir()
-    assert defaults.output_dir.as_posix().endswith("storage/evaluation_runs/render_smoke")
+    assert defaults.output_dir.as_posix().endswith("storage/runs/render_smoke/evaluations/render_smoke")
     assert defaults.camera_mode == "follow_external"
     assert defaults.task_shape == "circle"
     assert overrides.duration_sec == PARSER_DURATION_SEC

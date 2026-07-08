@@ -190,6 +190,8 @@ def run_curriculum_evaluation(
     benchmarks = load_curriculum_benchmarks(benchmark_config_path)
 
     benchmark_name, benchmark_task_shape = _benchmark_metadata(mode=mode, benchmark_name=benchmark, benchmarks=benchmarks)
+    curriculum_run_name = _curriculum_run_name(summary)
+    evaluation_name = _evaluation_name(mode=mode, benchmark_name=benchmark_name)
     output_root = _mode_output_root(summary=summary, mode=mode, benchmark_name=benchmark_name)
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -207,6 +209,8 @@ def run_curriculum_evaluation(
         stages=stages,
         mode=mode,
         output_root=output_root,
+        curriculum_run_name=curriculum_run_name,
+        evaluation_name=evaluation_name,
         benchmark_name=benchmark_name,
         benchmarks=benchmarks,
         model_scope=model_scope,
@@ -240,10 +244,14 @@ def run_curriculum_evaluation(
 
     aggregate_metrics = {
         "run_type": "evaluation",
+        "run_kind": "curriculum",
+        "curriculum_kind": summary.get("curriculum_kind"),
         "mode": "curriculum_evaluation",
         "curriculum_name": str(summary["curriculum_name"]),
         "seed": int(summary.get("seed", 0)),
         "evaluation_mode": mode,
+        "evaluation_name": evaluation_name,
+        "curriculum_run_name": curriculum_run_name,
         "benchmark_name": benchmark_name,
         "benchmark_task_shape": benchmark_task_shape,
         "model_scope": model_scope,
@@ -254,10 +262,14 @@ def run_curriculum_evaluation(
     }
     aggregate_manifest = {
         "run_type": "evaluation",
+        "run_kind": "curriculum",
+        "curriculum_kind": summary.get("curriculum_kind"),
         "mode": "curriculum_evaluation",
         "curriculum_name": str(summary["curriculum_name"]),
         "seed": int(summary.get("seed", 0)),
         "evaluation_mode": mode,
+        "evaluation_name": evaluation_name,
+        "curriculum_run_name": curriculum_run_name,
         "benchmark_name": benchmark_name,
         "benchmark_task_shape": benchmark_task_shape,
         "model_scope": model_scope,
@@ -312,6 +324,8 @@ def _evaluation_spec_payloads(
     stages: list[Mapping[str, Any]],
     mode: str,
     output_root: Path,
+    curriculum_run_name: str,
+    evaluation_name: str,
     benchmark_name: str | None,
     benchmarks: Mapping[str, CurriculumBenchmark],
     model_scope: str,
@@ -325,7 +339,8 @@ def _evaluation_spec_payloads(
         return _own_stage_payloads(
             stages=selected_stages,
             all_stages=stages,
-            output_root=output_root,
+            curriculum_run_name=curriculum_run_name,
+            evaluation_name=evaluation_name,
             eval_steps_override=eval_steps_override,
             default_seed=int(summary.get("seed", 0)),
         )
@@ -334,7 +349,7 @@ def _evaluation_spec_payloads(
         message = "benchmark_name must be provided for benchmark/generalization modes"
         raise ValueError(message)
     benchmark = _require_benchmark(benchmarks, benchmark_name)
-    benchmark_task_config = _write_benchmark_task_config(output_root=output_root, benchmark=benchmark)
+    benchmark_task_config = _write_benchmark_task_config(curriculum_run_name=curriculum_run_name, benchmark=benchmark)
 
     payloads: list[dict[str, Any]] = []
     final_stage_index = int(stages[-1]["stage_index"])
@@ -342,6 +357,12 @@ def _evaluation_spec_payloads(
         stage_index = int(stage["stage_index"])
         stage_name = str(stage["stage_name"])
         stage_dir_name = f"stage{stage_index:02d}_{stage_name}"
+        stage_output_dir = utils.artifacts.get_curriculum_stage_evaluation_dir(
+            curriculum_run_name,
+            stage_index,
+            stage_name,
+            evaluation_name,
+        )
         payloads.append(
             {
                 "spec": policy_evaluation.PolicyEvaluationSpec(
@@ -351,7 +372,7 @@ def _evaluation_spec_payloads(
                     task_config_path=benchmark_task_config,
                     task_index=0,
                     task_shape=benchmark.task_shape,
-                    output_dir=output_root / "models" / stage_dir_name,
+                    output_dir=stage_output_dir,
                     eval_steps=int(eval_steps_override or benchmark.eval_steps),
                     seed=int(summary.get("seed", stage.get("seed", 0))),
                     total_timesteps=int(stage.get("total_timesteps", 0)),
@@ -404,7 +425,8 @@ def _selected_stages(stages: list[Mapping[str, Any]], model_scope: str) -> list[
 def _own_stage_payloads(
     stages: list[Mapping[str, Any]],
     all_stages: list[Mapping[str, Any]],
-    output_root: Path,
+    curriculum_run_name: str,
+    evaluation_name: str,
     eval_steps_override: int | None,
     default_seed: int,
 ) -> list[dict[str, Any]]:
@@ -416,6 +438,12 @@ def _own_stage_payloads(
         stage_index = int(stage["stage_index"])
         stage_name = str(stage["stage_name"])
         stage_dir_name = f"stage{stage_index:02d}_{stage_name}"
+        stage_output_dir = utils.artifacts.get_curriculum_stage_evaluation_dir(
+            curriculum_run_name,
+            stage_index,
+            stage_name,
+            evaluation_name,
+        )
         payloads.append(
             {
                 "spec": policy_evaluation.PolicyEvaluationSpec(
@@ -425,7 +453,7 @@ def _own_stage_payloads(
                     task_config_path=Path(str(stage_manifest["task_config_path"])),
                     task_index=int(stage_manifest.get("task_index", 0)),
                     task_shape=str(stage["task_shape"]),
-                    output_dir=output_root / "models" / stage_dir_name,
+                    output_dir=stage_output_dir,
                     eval_steps=int(eval_steps_override or stage.get("eval_steps") or stage_manifest.get("eval_steps") or 120),
                     seed=int(stage.get("seed", default_seed)),
                     total_timesteps=int(stage.get("total_timesteps", stage_manifest.get("total_timesteps", 0))),
@@ -442,30 +470,41 @@ def _own_stage_payloads(
 
 def _mode_output_root(summary: Mapping[str, Any], mode: str, benchmark_name: str | None) -> Path:
     """Return mode-scoped curriculum evaluation output root."""
-    root = (
-        utils.artifacts.get_storage_root()
-        / utils.artifacts.EVALUATION_RUNS_DIRNAME
-        / "curricula"
-        / str(summary["curriculum_name"])
-        / f"seed{int(summary.get('seed', 0))}"
-        / mode.replace("-", "_")
+    return utils.artifacts.get_run_evaluation_dir(
+        _curriculum_run_name(summary),
+        _evaluation_name(mode=mode, benchmark_name=benchmark_name),
     )
-    if benchmark_name is not None:
-        return root / benchmark_name
-    return root
+
+
+def _curriculum_run_name(summary: Mapping[str, Any]) -> str:
+    """Return the canonical curriculum run name from a summary payload."""
+    run_name = summary.get("run_name")
+    if run_name is None or not str(run_name).strip():
+        message = "curriculum summary must include canonical run_name"
+        raise ValueError(message)
+    return str(run_name)
+
+
+def _evaluation_name(mode: str, benchmark_name: str | None) -> str:
+    """Return the canonical evaluation name for a curriculum evaluation mode."""
+    mode_slug = mode.replace("-", "_")
+    if benchmark_name is None:
+        return mode_slug
+    return f"{mode_slug}_{benchmark_name}"
 
 
 def _summary_filename_stem(summary: Mapping[str, Any], mode: str, benchmark_name: str | None) -> str:
     """Return summary filename stem for aggregate metrics/manifest outputs."""
+    run_name = _curriculum_run_name(summary)
     mode_slug = mode.replace("-", "_")
     if benchmark_name is None:
-        return f"{summary['curriculum_name']}_seed{int(summary.get('seed', 0))}_{mode_slug}"
-    return f"{summary['curriculum_name']}_seed{int(summary.get('seed', 0))}_{mode_slug}_{benchmark_name}"
+        return f"{run_name}_{mode_slug}"
+    return f"{run_name}_{mode_slug}_{benchmark_name}"
 
 
-def _write_benchmark_task_config(output_root: Path, benchmark: CurriculumBenchmark) -> Path:
+def _write_benchmark_task_config(curriculum_run_name: str, benchmark: CurriculumBenchmark) -> Path:
     """Write a one-task benchmark config used by the shared evaluator."""
-    config_dir = output_root / "configs"
+    config_dir = utils.artifacts.get_run_config_evaluation_suites_dir(curriculum_run_name)
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / f"{benchmark.benchmark_name}_task.yaml"
     payload = {

@@ -163,19 +163,33 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     result = curriculum_training.run_manual_curriculum_training(settings)
     summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
 
+    expected_root = tmp_path / "runs" / "curriculum_manual_line_v1_seed0"
+    assert Path(result.summary_path) == expected_root / "run_manifest.json"
+    assert Path(result.manifest_path) == expected_root / "run_manifest.json"
     assert Path(result.summary_path).exists()
     assert Path(result.manifest_path).exists()
+    assert summary["run_name"] == "curriculum_manual_line_v1_seed0"
+    assert summary["artifact_root"] == str(expected_root)
+    assert summary["summary_path"] == str(expected_root / "run_manifest.json")
+    assert summary["run_kind"] == "curriculum"
+    assert summary["curriculum_kind"] == "manual"
+    assert summary["curriculum_name"] == "manual_line_v1"
     assert summary["stage_count"] == EXPECTED_CURRICULUM_STAGE_COUNT
     assert summary["model_transfer_enabled"] is True
     assert summary["final_stage_run_name"] == "manual_line_v1_stage02_nearby_target_hover_seed0"
+    assert summary["stages"][0]["stage_dir"] == str(expected_root / "stages" / "stage01_hover_stabilization")
+    assert summary["stages"][0]["training_dir"] == str(expected_root / "stages" / "stage01_hover_stabilization" / "training")
     assert summary["stages"][0]["diagnostics_dir"].endswith("diagnostics")
     assert summary["stages"][0]["model_transfer_enabled"] is False
     assert summary["stages"][1]["model_transfer_enabled"] is True
     assert summary["stages"][1]["previous_model_path"] == summary["stages"][0]["model_path"]
     assert calls[0]["initial_model_path"] is None
     assert calls[1]["initial_model_path"] == summary["stages"][0]["model_path"]
+    assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
+    assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
     assert calls[0]["normalize_actions"] is True
     assert calls[0]["wandb_group"] == "curriculum/manual_line_v1"
+    assert Path(calls[0]["task_config_path"]).parent == expected_root / "config"
     assert Path(calls[0]["task_config_path"]).name == "stage01_hover_stabilization_task.yaml"
     assert Path(calls[1]["task_config_path"]).name == "stage02_nearby_target_hover_task.yaml"
 

@@ -50,7 +50,7 @@ Missing final configs include direct-vs-curriculum comparison config, final benc
 
 ### `scripts/`
 
-`scripts/docker_build.sh`, `scripts/docker_dev.sh`, `scripts/docker_job.sh`, and `scripts/_docker_run.sh` are Docker/HPC wrappers. They create storage directories, mount `/workspace/storage`, set environment variables, and run Python modules or scripts. They should remain infrastructure only. They currently know about `training_runs`, `evaluation_runs`, and `comparison_reports`.
+`scripts/docker_build.sh`, `scripts/docker_dev.sh`, `scripts/docker_job.sh`, and `scripts/_docker_run.sh` are Docker/HPC wrappers. They create storage directories, mount `/workspace/storage`, set environment variables, and run Python modules or scripts. They should remain infrastructure only. They now create and expose the canonical `storage/runs` artifact root.
 
 ### `src/envs/`
 
@@ -98,10 +98,10 @@ The package name `experiments` is still acceptable because this is a research pr
 `src/utils` contains:
 
 - `utils_paths.py`: legacy/category storage roots such as `results`, `models`, `gifs`, `llm_logs`, and `wandb`.
-- `utils_artifacts.py`: newer run-scoped helpers for `training_runs`, `evaluation_runs`, and `comparison_reports`.
+- `utils_artifacts.py`: canonical run-scoped helpers for `storage/runs/<run_name>` and curriculum stage subtrees.
 - `utils_wandb.py`: optional W&B initialization, grouped summary metrics, and artifact logging.
 
-The main issue is that `utils_paths.py` and `utils_artifacts.py` express different artifact layouts. The final plan should consolidate on one run container and keep compatibility wrappers only during migration.
+The main issue is that `utils_paths.py` still exposes older category roots for generated assets, while `utils_artifacts.py` is now the canonical run-container API. Do not add compatibility wrappers or old/new layout switches unless explicitly requested.
 
 ### `src/llm/`
 
@@ -172,7 +172,7 @@ Files that can be merged or retired:
 
 8. Curriculum-specific duplication is emerging. Manual curriculum training writes stage configs and summaries, while curriculum evaluation writes benchmark task configs and aggregate summaries with its own path logic. A shared stage/run manifest contract would reduce duplication.
 
-9. Path and artifact helpers are inconsistent. `utils_paths.py` exposes category roots like `storage/results` and `storage/models`, while `utils_artifacts.py` exposes `storage/training_runs`, `storage/evaluation_runs`, and `storage/comparison_reports`. Some modules also special-case paths containing `results`.
+9. Path and artifact helpers are converging on canonical run containers. `utils_artifacts.py` now owns `storage/runs/<run_name>` training, evaluation, and curriculum-stage helpers. Remaining older category roots in `utils_paths.py` should not be expanded into active artifact-layout APIs.
 
 10. W&B grouping and config are not final. Direct PPO uses groups like `ppo_tracking/<shape>`, manual curriculum uses `curriculum/<curriculum_name>`, and curriculum evaluation accepts W&B mode only for CLI symmetry. PPO hyperparameters are not stored as a complete config object in W&B.
 
@@ -330,15 +330,15 @@ Use Option B. Keep `src/experiments` as the orchestration namespace and add subp
 
 ### Current layout
 
-Current helpers and scripts write under:
+Active helpers and scripts now write run artifacts under:
 
 ```text
-storage/training_runs/<run_name>/
-storage/evaluation_runs/<run_name>/
-storage/comparison_reports/<run_name>/
+storage/runs/<run_name>/
 ```
 
-Older helpers also expose:
+Legacy generated directories from earlier runs may still exist on disk, but they are intentionally removed from active helper APIs and should not receive new artifacts.
+
+Older non-run helpers still expose:
 
 ```text
 storage/results/
@@ -381,12 +381,14 @@ storage/runs/<run_name>/
       manifests/
 ```
 
-Compatibility plan:
+Canonical migration decision:
 
-- Add new helpers in `utils_artifacts.py` for `storage/runs/<run_name>`.
-- Keep existing `get_training_run_dir()` and `get_evaluation_run_dir()` as transitional wrappers only until all current tests and scripts are migrated.
+- `utils_artifacts.py` exposes only canonical `storage/runs/<run_name>` helpers for run training, run evaluations, and curriculum stages.
+- `storage/runs` uses a flat run root with self-describing run IDs such as `direct_ppo_line_seed0`, `curriculum_manual_line_v1_seed0`, `curriculum_llm_line_v1_seed0`, and `comparison_final_direct_manual_llm_seed0`.
+- Extra type subdirectories such as `storage/runs/curriculum/...` or `storage/runs/direct_ppo/...` are intentionally not used unless a later explicit decision changes this.
+- Legacy artifact helper APIs and optional old/new layout switches are intentionally removed.
 - Do not bulk-move old generated artifacts unless the user explicitly requests storage migration.
-- Update the final notebook to load only from the new `storage/runs` contract.
+- Update the final notebook to load only from the new `storage/runs` contract when notebook work is explicitly requested.
 
 ### Curriculum layout options
 
@@ -798,7 +800,7 @@ The comparison pipeline should answer the final research question directly: dire
 A comparison config should point to run manifests, not raw model paths:
 
 ```yaml
-comparison_name: final_direct_manual_llm_seed0
+comparison_name: comparison_final_direct_manual_llm_seed0
 evaluation_suite: configs/evaluation/final_benchmark_eval_suite.yaml
 runs:
   - label: direct_ppo
@@ -806,10 +808,10 @@ runs:
     run_manifest: storage/runs/direct_ppo_line_seed0/run_manifest.json
   - label: manual_curriculum
     kind: manual_curriculum
-    run_manifest: storage/runs/manual_line_v1_seed0/run_manifest.json
+    run_manifest: storage/runs/curriculum_manual_line_v1_seed0/run_manifest.json
   - label: llm_curriculum
     kind: llm_curriculum
-    run_manifest: storage/runs/llm_curriculum_v1_seed0/run_manifest.json
+    run_manifest: storage/runs/curriculum_llm_line_v1_seed0/run_manifest.json
 ```
 
 ### Outputs
@@ -935,7 +937,7 @@ Main detailed documentation should live in the notebook. The README should be up
 - `storage/runs/<run_name>` helper tests
 - normal run directory creation tests
 - curriculum stage directory creation tests
-- compatibility tests for old `training_runs` and `evaluation_runs` only during migration
+- no compatibility tests for old artifact layouts; legacy helpers are intentionally removed
 - invalid run names and path traversal tests
 
 ### Training runner
@@ -1100,9 +1102,14 @@ Avoid creating many separate docs before the final artifact contract is stable. 
   - tiny tests must choose compatible `ppo.n_steps` and `ppo.batch_size` instead of relying on hidden caps.
 - expected commit message: `Extract PPO hyperparameters into training config`.
 
-### Phase 2: experiments/CLI package restructuring
+### Phase 2: Completed - experiments/CLI package restructuring
 
-- goal: split `src/experiments` into subpackages without changing runtime behavior. This is a clean breaking import-path restructure, not a compatibility-wrapper migration.
+- status: completed and validated locally.
+- goal: split `src/experiments` into subpackages without changing runtime behavior. This was a clean breaking import-path restructure, not a compatibility-wrapper migration.
+- completed changes:
+  - split `src/experiments` into clean static subpackages for `cli`, `training`, `evaluation`, `curriculum`, and `rendering`.
+  - moved the Phase 1 PPO config/training implementation into `src/experiments/training/`.
+  - removed old root-level CLI/library compatibility wrappers; canonical imports now use the new subpackages directly.
 - files likely changed: all `src/experiments/*.py` import paths, `src/experiments/__init__.py`, tests importing `src.experiments`, Docker/job docs or commands if module names change.
 - files likely moved/renamed: move CLIs to `src/experiments/cli/`, training to `src/experiments/training/`, evaluation to `src/experiments/evaluation/`, curriculum to `src/experiments/curriculum/`, rendering to `src/experiments/rendering/`.
 - files likely merged/deleted: remove old root-level CLI/library wrapper modules after moving implementation code into subpackages; keep smoke/MVP implementation modules only in their new canonical subpackage locations.
@@ -1112,12 +1119,12 @@ Avoid creating many separate docs before the final artifact contract is stable. 
 
 ### Phase 3: artifact/run structure
 
-- goal: introduce `storage/runs/<run_name>` as the final artifact contract.
+- goal: introduce `storage/runs/<self_describing_run_id>` as the final flat artifact contract.
 - files likely changed: `src/utils/utils_artifacts.py`, `src/utils/utils_paths.py`, training/evaluation/curriculum/rendering modules, scripts only if explicitly approved, tests for artifact paths.
 - files likely moved/renamed: generated artifacts should not be moved automatically.
-- files likely merged/deleted: deprecate old category helpers after migration; do not remove immediately.
+- files likely merged/deleted: remove legacy artifact helper APIs and optional old/new layout switches; do not preserve compatibility wrappers.
 - tests to run: `pytest tests/test_utils_artifacts.py tests/test_utils_paths.py tests/test_experiments_ppo_tracking.py tests/test_experiments_curriculum_training.py tests/test_experiments_curriculum_evaluation.py -q`.
-- risks: breaking existing local artifacts and notebook paths. Use compatibility wrappers during transition.
+- risks: existing local artifacts and notebook paths can reference legacy directories. Do not move generated artifacts; update active code to the canonical flat run IDs only.
 - expected commit message: `Add unified run artifact layout`.
 
 ### Phase 4: policy evaluation suites
@@ -1134,10 +1141,10 @@ Avoid creating many separate docs before the final artifact contract is stable. 
 
 - goal: store manual curriculum runs as one run with per-stage training and evaluation directories.
 - files likely changed: `src/experiments/curriculum/experiments_curriculum_manual.py`, curriculum config, artifact helpers, curriculum tests.
-- files likely moved/renamed: old curriculum artifacts under `training_runs/curricula` are not moved automatically.
+- files likely moved/renamed: old generated curriculum artifacts are not moved automatically.
 - files likely merged/deleted: merge duplicated stage/benchmark config writing into shared helpers.
 - tests to run: `pytest tests/test_experiments_curriculum_training.py tests/test_experiments_curriculum_evaluation.py -q`.
-- risks: existing tests expect `training_runs/curricula/...`; update in one controlled pass.
+- risks: existing saved artifacts may still live in legacy directories on disk, but active code should not write to them.
 - expected commit message: `Store curriculum stages in unified run containers`.
 
 ### Phase 6: comparison pipeline
@@ -1196,12 +1203,12 @@ Avoid creating many separate docs before the final artifact contract is stable. 
 
 ## 19. Immediate next actions
 
-1. Start Phase 2 by restructuring `src/experiments` into focused `cli`, `training`, `evaluation`, `curriculum`, and `rendering` subpackages. Keep `src/experiments/experiments_config.py` at the package root.
+1. Finish Phase 3 as a clean canonical `storage/runs/<run_name>` migration: no legacy artifact helpers, no compatibility wrappers, and no optional old/new layout switch.
 
-2. Move the existing implementation modules according to the Phase 2 mapping, including the Phase 1 PPO config module from `src/experiments/experiments_ppo_config.py` to `src/experiments/training/experiments_training_ppo_config.py`.
+2. Keep direct PPO, manual curriculum training, curriculum evaluation, rendering, W&B, Docker wrapper setup, and tests on the canonical run layout.
 
-3. Remove old root-level wrapper modules instead of preserving compatibility paths; static-analysis clarity is preferred during this cleanup.
+3. Do not bulk-move generated artifacts, implement evaluation suites, start comparison work, start LLM curriculum work, edit notebooks, or change PPO/reward/action/evaluation semantics during Phase 3.
 
-4. Keep `src/experiments/__init__.py` simple and static, exposing only the new subpackages and `experiments_config` alias. Do not expose old aliases such as `experiments.ppo_tracking`, `experiments.policy_render`, or `experiments.curriculum_training`.
+4. Validate Phase 3 with formatting, linting, type checking, focused artifact/path/PPO/curriculum/render tests, full `pytest -q`, and the canonical direct PPO smoke run through `src.experiments.cli.experiments_cli_train_tracking`.
 
-5. Validate Phase 2 with formatting, linting, type checking, focused experiments tests, new canonical CLI help commands, full `pytest -q`, and a short direct PPO smoke run through the new train-tracking module path.
+5. Do not start Phase 4 until Phase 3 validation is complete and the remaining issues are reported.

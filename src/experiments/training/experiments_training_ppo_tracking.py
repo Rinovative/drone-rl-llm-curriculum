@@ -71,7 +71,7 @@ class PPOTrackingSmokeSettings:
     task_shape
         Optional task-shape selector matched against the configured task list.
     run_name
-        Optional explicit output directory for model, metrics, and W&B artifacts.
+        Optional canonical storage/runs run name for model, metrics, and W&B artifacts.
     total_timesteps
         Tiny upper-level PPO learning budget passed to Stable-Baselines3.
     ppo_config
@@ -83,11 +83,11 @@ class PPOTrackingSmokeSettings:
     output_dir
         Directory where the metrics JSON artifact is written.
     artifact_root
-        Optional run-root override containing models, metrics, manifests, logs, wandb, and diagnostics.
+        Optional canonical training artifact root override used for curriculum stage training.
     model_dir
         Directory where the trained PPO model zip is written.
     manifest_filename
-        Optional explicit manifest JSON filename within the training run manifests directory.
+        Optional explicit manifest JSON filename within the canonical training directory.
     model_filename
         Optional explicit trained model filename within ``model_dir``.
     metrics_filename
@@ -150,7 +150,7 @@ class PPOTrackingSmokeSettings:
             message = "task_shape must be non-empty when provided"
             raise ValueError(message)
         if self.run_name is not None:
-            utils.artifacts.get_training_run_dir(self.run_name)
+            utils.artifacts.get_run_dir(self.run_name)
         if self.total_timesteps <= 0:
             message = "total_timesteps must be positive"
             raise ValueError(message)
@@ -232,23 +232,18 @@ def load_ppo_tracking_settings(path: str | Path) -> PPOTrackingSmokeSettings:
 
 
 def default_output_dir() -> Path:
-    """Return the derived default-config PPO training run directory."""
-    return utils.artifacts.get_training_run_dir(_default_training_run_name())
+    """Return the derived default-config canonical run directory."""
+    return utils.artifacts.get_run_dir(_default_training_run_name())
 
 
 def default_metrics_dir() -> Path:
     """Return the derived default-config PPO training metrics directory."""
-    return utils.artifacts.get_training_metrics_dir(_default_training_run_name())
+    return utils.artifacts.get_run_training_metrics_dir(_default_training_run_name())
 
 
 def default_model_dir() -> Path:
     """Return the derived default-config PPO training model directory."""
-    return utils.artifacts.get_training_models_dir(_default_training_run_name())
-
-
-def default_manifests_dir() -> Path:
-    """Return the derived default-config PPO training manifest directory."""
-    return utils.artifacts.get_training_manifests_dir(_default_training_run_name())
+    return utils.artifacts.get_run_training_models_dir(_default_training_run_name())
 
 
 def detect_ppo_tracking_dependencies() -> dict[str, bool]:
@@ -354,9 +349,12 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     model_path = _resolve_model_path(active_settings, resolved_task_shape)
     metrics_path = _resolve_metrics_path(active_settings, resolved_task_shape)
     manifest_path = _resolve_manifest_path(active_settings, resolved_task_shape)
+    run_manifest_path = _resolve_run_manifest_path(active_settings, training_run_name)
     logs_dir = _resolve_artifact_subdir(active_settings, training_run_name, utils.artifacts.LOGS_DIRNAME)
     diagnostics_dir = _resolve_artifact_subdir(active_settings, training_run_name, utils.artifacts.DIAGNOSTICS_DIRNAME)
     wandb_settings = _wandb_settings(active_settings, resolved_task_shape)
+    if active_settings.artifact_root is None:
+        utils.artifacts.ensure_run_training_dirs(training_run_name)
 
     warnings = [*selection_warnings, *(_check_tracking_env(task, active_settings.normalize_actions) if active_settings.check_env else ())]
     diagnostic_steps = min(active_settings.eval_steps, DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS)
@@ -368,6 +366,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    if run_manifest_path is not None:
+        run_manifest_path.parent.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
 
@@ -453,6 +453,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
 
     metrics: dict[str, Any] = {
         "run_type": "training",
+        "run_kind": "direct_ppo",
+        "curriculum_kind": None,
         "mode": "ppo_smoke",
         "training_run_name": training_run_name,
         "run_name": training_run_name,
@@ -472,6 +474,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "model_path": str(model_path),
         "metrics_path": str(metrics_path),
         "manifest_path": str(manifest_path),
+        "run_manifest_path": str(run_manifest_path) if run_manifest_path is not None else None,
         "logs_dir": str(logs_dir),
         "diagnostics_dir": str(diagnostics_dir),
         "dependency_available": dependencies,
@@ -493,12 +496,17 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest = _build_manifest(active_settings, metrics, task_source=task_source, selected_task_index=selected_task_index, task=task)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if run_manifest_path is not None:
+        run_manifest = _build_run_manifest(active_settings, metrics, manifest)
+        run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     utils.wandb.log_wandb_summary(wandb_run, metrics)
     artifact_paths = {
         f"{training_run_name}_model": model_path,
         f"{training_run_name}_metrics": metrics_path,
         f"{training_run_name}_manifest": manifest_path,
     }
+    if run_manifest_path is not None:
+        artifact_paths[f"{training_run_name}_run_manifest"] = run_manifest_path
     artifact_paths.update(_diagnostic_artifact_paths(training_run_name, metrics))
     utils.wandb.log_wandb_artifacts(wandb_run, artifact_paths)
     if wandb_run is not None:
@@ -548,7 +556,7 @@ def run_ppo_tracking_smoke_from_config(
     task_shape
         Optional configured task-shape override.
     run_name
-        Optional storage/training_runs/<run_name> root for generated artifacts.
+        Optional storage/runs/<run_name> root for generated artifacts.
     total_timesteps
         Optional PPO timestep-budget override.
     eval_steps
@@ -556,7 +564,7 @@ def run_ppo_tracking_smoke_from_config(
     output_dir
         Optional metrics output directory override.
     artifact_root
-        Optional full training artifact root override.
+        Optional canonical training artifact root override used for curriculum stage training.
     model_dir
         Optional model output directory override.
     seed
@@ -709,9 +717,9 @@ def _timesteps_label(total_timesteps: int) -> str:
     return str(total_timesteps)
 
 
-def _auto_run_name(task_shape: str, total_timesteps: int, seed: int) -> str:
-    """Build the default PPO training run name from resolved settings."""
-    return f"ppo_{task_shape}_{_timesteps_label(total_timesteps)}_seed{seed}"
+def _auto_run_name(task_shape: str, seed: int) -> str:
+    """Build the default direct-PPO run name from resolved settings."""
+    return f"direct_ppo_{task_shape}_seed{seed}"
 
 
 def _default_training_run_name() -> str:
@@ -733,7 +741,7 @@ def _run_name(settings: PPOTrackingSmokeSettings, task_shape: str | None = None)
     if resolved_shape is None:
         message = "task_shape is required to derive a training run name"
         raise ValueError(message)
-    return _auto_run_name(resolved_shape, settings.total_timesteps, settings.seed)
+    return _auto_run_name(resolved_shape, settings.seed)
 
 
 def _resolve_model_path(settings: PPOTrackingSmokeSettings, task_shape: str | None = None) -> Path:
@@ -757,15 +765,23 @@ def _resolve_metrics_path(settings: PPOTrackingSmokeSettings, task_shape: str | 
 
 
 def _resolve_manifest_path(settings: PPOTrackingSmokeSettings, task_shape: str | None = None) -> Path:
-    """Resolve the manifest output path."""
+    """Resolve the training manifest output path."""
     run_name = _run_name(settings, task_shape)
-    filename = settings.manifest_filename or f"{run_name}_manifest.json"
+    canonical_filename = settings.manifest_filename or utils.artifacts.MANIFEST_FILENAME
+    legacy_override_filename = settings.manifest_filename or f"{run_name}_manifest.json"
     if settings.output_dir is None:
-        return _default_artifact_subdir(settings, run_name, utils.artifacts.MANIFESTS_DIRNAME) / filename
+        return (_default_artifact_root(settings, run_name) / canonical_filename).expanduser().resolve(strict=False)
     output_dir = settings.output_dir.expanduser().resolve(strict=False)
     if "results" in output_dir.parts or output_dir.name == utils.artifacts.MANIFESTS_DIRNAME:
-        return output_dir / filename
-    return output_dir / utils.artifacts.MANIFESTS_DIRNAME / filename
+        return output_dir / legacy_override_filename
+    return output_dir / utils.artifacts.MANIFESTS_DIRNAME / legacy_override_filename
+
+
+def _resolve_run_manifest_path(settings: PPOTrackingSmokeSettings, run_name: str) -> Path | None:
+    """Resolve the root run manifest path for a direct canonical training run."""
+    if settings.artifact_root is not None:
+        return None
+    return utils.artifacts.get_run_manifest_path(run_name).expanduser().resolve(strict=False)
 
 
 def _resolve_artifact_subdir(settings: PPOTrackingSmokeSettings, run_name: str, subdir: str) -> Path:
@@ -774,10 +790,15 @@ def _resolve_artifact_subdir(settings: PPOTrackingSmokeSettings, run_name: str, 
 
 
 def _default_artifact_subdir(settings: PPOTrackingSmokeSettings, run_name: str, subdir: str) -> Path:
-    """Return an artifact-root subdirectory or the storage-backed default."""
+    """Return a canonical training artifact subdirectory."""
+    return _default_artifact_root(settings, run_name) / subdir
+
+
+def _default_artifact_root(settings: PPOTrackingSmokeSettings, run_name: str) -> Path:
+    """Return the canonical training artifact root for metrics, models, and logs."""
     if settings.artifact_root is not None:
-        return settings.artifact_root / subdir
-    return utils.artifacts.get_training_run_dir(run_name) / subdir
+        return settings.artifact_root
+    return utils.artifacts.get_run_training_dir(run_name)
 
 
 def _resolve_directory(path: Path | None, default: Path) -> Path:
@@ -877,6 +898,8 @@ def _build_manifest(
     diagnostics = _diagnostic_manifest_fields(metrics)
     return {
         "run_type": "training",
+        "run_kind": "direct_ppo",
+        "curriculum_kind": None,
         "mode": "ppo_smoke",
         "training_run_name": run_name,
         "run_name": run_name,
@@ -898,13 +921,57 @@ def _build_manifest(
         "model_path": metrics["model_path"],
         "metrics_path": metrics["metrics_path"],
         "manifest_path": metrics["manifest_path"],
-        "output_dir": str(settings.output_dir or settings.artifact_root or utils.artifacts.get_training_run_dir(run_name)),
+        "run_manifest_path": metrics.get("run_manifest_path"),
+        "output_dir": str(settings.output_dir or _default_artifact_root(settings, run_name)),
         "logs_dir": metrics["logs_dir"],
         "diagnostics_dir": metrics.get("diagnostics_dir"),
         "warnings": list(metrics.get("warnings", [])),
         "wandb": metrics.get("wandb", {}),
         "diagnostics": diagnostics,
         **diagnostics,
+    }
+
+
+def _build_run_manifest(
+    settings: PPOTrackingSmokeSettings,
+    metrics: dict[str, Any],
+    training_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the root manifest payload for a unified storage/runs training run."""
+    run_name = str(metrics["training_run_name"])
+    return {
+        "run_type": "training",
+        "run_kind": "direct_ppo",
+        "curriculum_kind": None,
+        "mode": "ppo_smoke",
+        "run_name": run_name,
+        "training_run_name": run_name,
+        "run_manifest_path": metrics.get("run_manifest_path"),
+        "training": {
+            "manifest_path": metrics["manifest_path"],
+            "model_path": metrics["model_path"],
+            "metrics_path": metrics["metrics_path"],
+            "logs_dir": metrics["logs_dir"],
+            "diagnostics_dir": metrics.get("diagnostics_dir"),
+        },
+        "config": {
+            "training_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
+            "task_config_path": str(settings.task_config_path),
+            "task_shape": training_manifest["task_shape"],
+            "task_shape_requested": settings.task_shape,
+            "task_index": training_manifest["task_index"],
+            "task_source": training_manifest["task_source"],
+            "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
+        },
+        "total_timesteps": settings.total_timesteps,
+        "eval_steps": settings.eval_steps,
+        "seed": settings.seed,
+        "normalize_actions": settings.normalize_actions,
+        "initial_model_path": metrics.get("initial_model_path"),
+        "model_transfer_enabled": metrics.get("model_transfer_enabled", False),
+        "model_transfer_source": metrics.get("model_transfer_source"),
+        "wandb": metrics.get("wandb", {}),
+        "warnings": list(metrics.get("warnings", [])),
     }
 
 

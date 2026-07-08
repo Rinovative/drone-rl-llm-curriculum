@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run PPO tracking training with derived run names, auto W&B logging, "
-            "and model/metrics/manifests under storage/training_runs/<training_run_name>."
+            "and artifacts under storage/runs/<training_run_name>/training by default."
         ),
     )
     parser.add_argument("--config", type=Path, default=ppo_tracking.DEFAULT_PPO_TRACKING_CONFIG_PATH)

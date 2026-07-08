@@ -31,7 +31,7 @@ from src import evaluation, utils
 from src.experiments import experiments_config as config_loader
 from src.experiments.training import experiments_training_smoke as training_smoke
 
-DEFAULT_OUTPUT_DIR = utils.artifacts.get_training_run_dir("mvp_smoke")
+DEFAULT_OUTPUT_DIR = utils.artifacts.get_run_dir("mvp_smoke")
 DEFAULT_MAX_STEPS = 16
 
 

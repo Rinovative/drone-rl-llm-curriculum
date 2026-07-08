@@ -13,9 +13,7 @@ STORAGE_DIR="$(cd "${STORAGE_DIR}" && pwd)"
 DOCKER_HOME="${STORAGE_DIR}/.docker_home"
 
 mkdir -p \
-  "${STORAGE_DIR}/training_runs" \
-  "${STORAGE_DIR}/evaluation_runs" \
-  "${STORAGE_DIR}/comparison_reports" \
+  "${STORAGE_DIR}/runs" \
   "${STORAGE_DIR}/docker_logs" \
   "${STORAGE_DIR}/tmp" \
   "${DOCKER_HOME}"
@@ -68,9 +66,7 @@ docker run -d --rm \
   -e HOME=/workspace/storage/.docker_home \
   -e PROJECT_ROOT=/workspace/repo \
   -e STORAGE_ROOT=/workspace/storage \
-  -e TRAINING_RUNS_DIR=/workspace/storage/training_runs \
-  -e EVALUATION_RUNS_DIR=/workspace/storage/evaluation_runs \
-  -e COMPARISON_REPORTS_DIR=/workspace/storage/comparison_reports \
+  -e RUNS_DIR=/workspace/storage/runs \
   -e DOCKER_LOGS_DIR=/workspace/storage/docker_logs \
   -e TMP_DIR=/workspace/storage/tmp \
   "${WANDB_ENV_ARGS[@]}" \

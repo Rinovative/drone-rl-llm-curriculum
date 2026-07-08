@@ -76,6 +76,9 @@ tasks:
         summary_path,
         {
             "curriculum_name": "manual_line_v1",
+            "run_name": "curriculum_manual_line_v1_seed0",
+            "run_kind": "curriculum",
+            "curriculum_kind": "manual",
             "seed": 0,
             "final_model_path": str(stage_root / "stage02_model.zip"),
             "stages": [
@@ -327,12 +330,15 @@ def test_curriculum_evaluation_own_stage_creates_stage_indexed_dirs_and_summary_
 
     payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
     assert payload["evaluation_mode"] == "own-stage"
+    assert payload["run_kind"] == "curriculum"
+    assert payload["curriculum_kind"] == "manual"
+    assert payload["curriculum_run_name"] == "curriculum_manual_line_v1_seed0"
     assert payload["benchmark_name"] is None
     assert payload["model_scope"] == "all-stages"
     assert len(payload["evaluated_models"]) == 2
     directories = [entry["evaluation_dir"].replace("\\", "/") for entry in payload["evaluated_models"]]
-    assert directories[0].endswith("own_stage/models/stage01_hover_stabilization")
-    assert directories[1].endswith("own_stage/models/stage02_line")
+    assert directories[0].endswith("runs/curriculum_manual_line_v1_seed0/stages/stage01_hover_stabilization/evaluations/own_stage")
+    assert directories[1].endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/own_stage")
     assert payload["evaluated_models"][0]["is_final_stage"] is False
     assert payload["evaluated_models"][1]["is_final_stage"] is True
     assert payload["evaluated_models"][0]["gif_path"].replace("\\", "/").endswith("renders/scenario_rollout.gif")
@@ -364,9 +370,18 @@ def test_curriculum_evaluation_benchmark_and_generalization_layouts_include_base
     benchmark_payload = json.loads(Path(benchmark_result.metrics_path).read_text(encoding="utf-8"))
     directories = [entry["evaluation_dir"].replace("\\", "/") for entry in benchmark_payload["evaluated_models"]]
     assert benchmark_payload["model_scope"] == "all-stages"
-    assert any(path.endswith("benchmark/line_basic/models/stage01_hover_stabilization") for path in directories)
-    assert any(path.endswith("benchmark/line_basic/models/stage02_line") for path in directories)
-    assert any(path.endswith("benchmark/line_basic/baselines/baseline_ppo_line") for path in directories)
+    assert benchmark_payload["run_kind"] == "curriculum"
+    assert benchmark_payload["curriculum_kind"] == "manual"
+    assert benchmark_payload["curriculum_run_name"] == "curriculum_manual_line_v1_seed0"
+    assert benchmark_payload["evaluation_name"] == "benchmark_line_basic"
+    assert any(
+        path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage01_hover_stabilization/evaluations/benchmark_line_basic")
+        for path in directories
+    )
+    assert any(path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/benchmark_line_basic") for path in directories)
+    assert any(
+        path.endswith("runs/curriculum_manual_line_v1_seed0/evaluations/benchmark_line_basic/baselines/baseline_ppo_line") for path in directories
+    )
     assert not any("final_curriculum" in path for path in directories)
     final_entries = [entry for entry in benchmark_payload["evaluated_models"] if entry["stage_index"] == 2]
     assert final_entries[0]["is_final_stage"] is True
@@ -379,8 +394,14 @@ def test_curriculum_evaluation_benchmark_and_generalization_layouts_include_base
     )
     generalization_payload = json.loads(Path(generalization_result.metrics_path).read_text(encoding="utf-8"))
     directories = [entry["evaluation_dir"].replace("\\", "/") for entry in generalization_payload["evaluated_models"]]
-    assert any(path.endswith("generalization/polyline_basic/models/stage01_hover_stabilization") for path in directories)
-    assert any(path.endswith("generalization/polyline_basic/models/stage02_line") for path in directories)
+    assert generalization_payload["evaluation_name"] == "generalization_polyline_basic"
+    assert any(
+        path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage01_hover_stabilization/evaluations/generalization_polyline_basic")
+        for path in directories
+    )
+    assert any(
+        path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/generalization_polyline_basic") for path in directories
+    )
     assert not any("final_curriculum" in path for path in directories)
 
 

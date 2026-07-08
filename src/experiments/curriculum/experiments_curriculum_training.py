@@ -37,6 +37,7 @@ from src.experiments import experiments_config as config_loader
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 DEFAULT_CURRICULUM_CONFIG_PATH = Path("configs/curricula/manual_line_curriculum.yaml")
+MANUAL_CURRICULUM_KIND = "manual"
 SUMMARY_METRIC_KEYS = (
     "start_hold_enabled",
     "start_hold_sec",
@@ -146,7 +147,7 @@ class ManualCurriculumSettings:
         if not self.curriculum_name.strip():
             message = "curriculum_name must be non-empty"
             raise ValueError(message)
-        utils.artifacts.get_training_run_dir(_curriculum_artifact_run_name(self.curriculum_name, self.seed))
+        utils.artifacts.get_run_dir(_curriculum_artifact_run_name(self.curriculum_name, self.seed))
         if self.wandb_mode not in utils.wandb.WANDB_MODES:
             message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
             raise ValueError(message)
@@ -278,7 +279,7 @@ def derive_stage_run_name(curriculum_name: str, stage_index: int, stage_name: st
     Returns
     -------
     str
-        Stage run name suitable for storage/training_runs.
+        Stage run name used in metadata and W&B tracking.
 
     """
     return f"{curriculum_name}_stage{stage_index:02d}_{stage_name}_seed{seed}"
@@ -306,12 +307,14 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
 
     for stage_index, stage in enumerate(settings.stages, start=1):
         run_name = derive_stage_run_name(settings.curriculum_name, stage_index, stage.stage_name, settings.seed)
-        stage_artifact_root = _curriculum_stage_artifact_root(settings, stage_index, stage.stage_name)
+        curriculum_run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
+        stage_dirs = utils.artifacts.ensure_curriculum_stage_training_dirs(curriculum_run_name, stage_index, stage.stage_name)
+        stage_training_dir = stage_dirs[utils.artifacts.TRAINING_DIRNAME]
         task_config_path = _write_stage_task_config(
             settings=settings,
             stage=stage,
             stage_index=stage_index,
-            stage_artifact_root=stage_artifact_root,
+            stage_training_dir=stage_training_dir,
         )
         initial_model_path = previous_model_path
         result = ppo_tracking.run_ppo_tracking_smoke_from_config(
@@ -321,7 +324,7 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
             task_shape=stage.task_shape,
             run_name=run_name,
             total_timesteps=stage.total_timesteps,
-            artifact_root=stage_artifact_root,
+            artifact_root=stage_training_dir,
             eval_steps=stage.eval_steps,
             seed=settings.seed,
             wandb_mode=settings.wandb_mode,
@@ -336,7 +339,7 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
             stage=stage,
             run_name=run_name,
             result=result,
-            artifact_root=stage_artifact_root,
+            training_dir=stage_training_dir,
             previous_model_path=previous_model_path,
             initial_model_path=initial_model_path,
             normalize_actions=settings.normalize_actions,
@@ -408,13 +411,13 @@ def _write_stage_task_config(
     settings: ManualCurriculumSettings,
     stage: ManualCurriculumStage,
     stage_index: int,
-    stage_artifact_root: Path,
+    stage_training_dir: Path,
 ) -> Path:
     """Write the one-task config consumed by the existing PPO helper."""
     config_dir = _curriculum_config_dir(settings)
     config_dir.mkdir(parents=True, exist_ok=True)
     task_config_path = config_dir / f"stage{stage_index:02d}_{stage.stage_name}_task.yaml"
-    stage_artifact_root.mkdir(parents=True, exist_ok=True)
+    stage_training_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "name": f"{settings.curriculum_name}_stage{stage_index:02d}",
         "seed": settings.seed,
@@ -429,7 +432,7 @@ def _stage_summary_entry(
     stage: ManualCurriculumStage,
     run_name: str,
     result: ppo_tracking.PPOTrackingSmokeResult,
-    artifact_root: Path,
+    training_dir: Path,
     previous_model_path: str | None,
     initial_model_path: str | None,
     normalize_actions: bool,
@@ -441,7 +444,8 @@ def _stage_summary_entry(
         "stage_name": stage.stage_name,
         "task_shape": stage.task_shape,
         "run_name": run_name,
-        "artifact_root": str(artifact_root),
+        "stage_dir": str(training_dir.parent),
+        "training_dir": str(training_dir),
         "model_path": result.model_path,
         "metrics_path": result.metrics_path,
         "manifest_path": result.manifest_path,
@@ -467,8 +471,16 @@ def _build_curriculum_summary(
 ) -> dict[str, Any]:
     """Build the curriculum-level JSON summary payload."""
     final_stage = stage_entries[-1]
+    run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
+    run_manifest_path = utils.artifacts.get_run_manifest_path(run_name)
     return {
+        "run_type": "training",
+        "run_kind": "curriculum",
+        "curriculum_kind": MANUAL_CURRICULUM_KIND,
+        "mode": "manual_curriculum",
         "curriculum_name": settings.curriculum_name,
+        "run_name": run_name,
+        "run_manifest_path": str(run_manifest_path),
         "config_path": str(settings.config_path) if settings.config_path is not None else None,
         "base_training_config": str(settings.base_training_config),
         "seed": settings.seed,
@@ -481,52 +493,53 @@ def _build_curriculum_summary(
 
 
 def _write_curriculum_artifacts(settings: ManualCurriculumSettings, summary: dict[str, Any]) -> tuple[Path, Path]:
-    """Write the curriculum summary JSON and manifest JSON."""
+    """Write the canonical curriculum run manifest JSON."""
     artifact_run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
     curriculum_root = _curriculum_artifact_root(settings)
-    metrics_dir = curriculum_root / utils.artifacts.METRICS_DIRNAME
-    manifests_dir = curriculum_root / utils.artifacts.MANIFESTS_DIRNAME
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    manifests_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = metrics_dir / f"{artifact_run_name}_summary.json"
-    manifest_path = manifests_dir / f"{artifact_run_name}_manifest.json"
+    manifest_path = utils.artifacts.get_run_manifest_path(artifact_run_name)
+    curriculum_root.mkdir(parents=True, exist_ok=True)
+    _curriculum_config_dir(settings).mkdir(parents=True, exist_ok=True)
     manifest = {
-        "run_type": "training",
-        "mode": "manual_curriculum",
-        "curriculum_name": settings.curriculum_name,
-        "seed": settings.seed,
+        **summary,
         "artifact_root": str(curriculum_root),
-        "summary_path": str(summary_path),
+        "summary_path": str(manifest_path),
         "manifest_path": str(manifest_path),
-        "stage_count": summary["stage_count"],
-        "final_stage_run_name": summary["final_stage_run_name"],
-        "final_model_path": summary["final_model_path"],
     }
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return summary_path, manifest_path
+    return manifest_path, manifest_path
 
 
-def _curriculum_artifact_run_name(curriculum_name: str, seed: int) -> str:
-    """Return the storage run name used for curriculum-level artifacts."""
-    return f"{curriculum_name}_seed{seed}"
+def _curriculum_artifact_run_name(curriculum_name: str, seed: int, curriculum_kind: str = MANUAL_CURRICULUM_KIND) -> str:
+    """Return the self-describing storage run name used for curriculum-level artifacts."""
+    topic = _curriculum_run_topic(curriculum_name, curriculum_kind)
+    return f"curriculum_{curriculum_kind}_{topic}_seed{seed}"
+
+
+def _curriculum_run_topic(curriculum_name: str, curriculum_kind: str) -> str:
+    """Return the curriculum topic without a duplicated kind prefix."""
+    prefix = f"{curriculum_kind}_"
+    if curriculum_name.startswith(prefix):
+        return curriculum_name[len(prefix) :]
+    return curriculum_name
 
 
 def _curriculum_artifact_root(settings: ManualCurriculumSettings) -> Path:
-    """Return the hierarchical curriculum artifact root."""
-    return (
-        utils.artifacts.get_storage_root() / utils.artifacts.TRAINING_RUNS_DIRNAME / "curricula" / settings.curriculum_name / f"seed{settings.seed}"
-    )
+    """Return the canonical curriculum run root."""
+    return utils.artifacts.get_run_dir(_curriculum_artifact_run_name(settings.curriculum_name, settings.seed))
 
 
 def _curriculum_stage_artifact_root(settings: ManualCurriculumSettings, stage_index: int, stage_name: str) -> Path:
-    """Return the artifact root for one curriculum stage."""
-    return _curriculum_artifact_root(settings) / "stages" / f"stage{stage_index:02d}_{stage_name}"
+    """Return the training artifact root for one curriculum stage."""
+    return utils.artifacts.get_curriculum_stage_training_dir(
+        _curriculum_artifact_run_name(settings.curriculum_name, settings.seed),
+        stage_index,
+        stage_name,
+    )
 
 
 def _curriculum_config_dir(settings: ManualCurriculumSettings) -> Path:
     """Return the curriculum-level generated config directory."""
-    return _curriculum_artifact_root(settings) / "configs"
+    return utils.artifacts.get_run_config_dir(_curriculum_artifact_run_name(settings.curriculum_name, settings.seed))
 
 
 def _curriculum_wandb_group(curriculum_name: str) -> str:

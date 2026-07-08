@@ -190,7 +190,7 @@ class ScenarioRenderSettings:
     controller
         ``ppo`` or ``scripted_reference`` controller for the rollout.
     model_run_name
-        Training run name used to load PPO models from storage/training_runs.
+        Training run name used to load PPO models from storage/runs/<run_name>/training/models.
     run_name
         Optional evaluation run name. Derived from controller and scenario when omitted.
     output_dir
@@ -255,9 +255,9 @@ class ScenarioRenderSettings:
             message = "PPO scenario rendering requires model_run_name"
             raise ValueError(message)
         if self.model_run_name is not None:
-            utils.artifacts.get_training_run_dir(self.model_run_name)
+            utils.artifacts.get_run_dir(self.model_run_name)
         if self.run_name is not None:
-            utils.artifacts.get_evaluation_run_dir(self.run_name)
+            utils.artifacts.get_run_evaluation_dir(self.run_name, "scenario")
         if self.max_steps is not None and self.max_steps <= 0:
             message = "max_steps must be positive when provided"
             raise ValueError(message)
@@ -449,7 +449,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         message = (
             "trained PPO model was not found at "
             f"{model_path}. Scenario PPO rendering only loads models from "
-            "storage/training_runs/<model_run_name>/models/."
+            "storage/runs/<model_run_name>/training/models/."
         )
         raise FileNotFoundError(message)
 
@@ -1453,13 +1453,13 @@ def _base_time_limit_sec(composition: ScenarioComposition) -> float:
 
 
 def _resolve_model_path(settings: ScenarioRenderSettings) -> Path | None:
-    """Resolve the PPO model path from storage/training_runs/<model_run_name>/models."""
+    """Resolve the PPO model path from storage/runs/<model_run_name>/training/models."""
     if settings.controller != policy_render.PPO_CONTROLLER:
         return None
     if settings.model_run_name is None:
         message = "PPO scenario rendering requires model_run_name"
         raise ValueError(message)
-    model_dir = utils.artifacts.get_training_models_dir(settings.model_run_name).expanduser().resolve(strict=False)
+    model_dir = utils.artifacts.get_run_training_models_dir(settings.model_run_name).expanduser().resolve(strict=False)
     preferred = model_dir / f"{settings.model_run_name}.zip"
     if preferred.exists():
         return preferred.resolve(strict=False)
@@ -1500,7 +1500,7 @@ def _resolve_output_dir(output_dir: Path | None, evaluation_run_name: str) -> Pa
     """Resolve an output directory for a scenario evaluation run."""
     if output_dir is not None:
         return output_dir.expanduser().resolve(strict=False)
-    return utils.artifacts.get_evaluation_run_dir(evaluation_run_name)
+    return utils.artifacts.get_run_evaluation_dir(evaluation_run_name, "scenario")
 
 
 def _scenario_name(settings: ScenarioRenderSettings) -> str:

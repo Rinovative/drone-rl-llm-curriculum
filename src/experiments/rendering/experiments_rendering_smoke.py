@@ -151,8 +151,8 @@ class _RolloutArtifacts:
 
 
 def default_output_dir() -> Path:
-    """Return the default render smoke run directory under the run layout."""
-    return utils.artifacts.get_evaluation_run_dir("render_smoke")
+    """Return the default render smoke directory under the canonical run layout."""
+    return utils.artifacts.get_run_evaluation_dir("render_smoke", "render_smoke")
 
 
 def run_render_smoke(settings: RenderSmokeSettings | None = None) -> RenderSmokeResult:

@@ -33,10 +33,10 @@ from src.experiments.rendering import experiments_rendering_scenario as scenario
 def build_parser() -> argparse.ArgumentParser:
     """Build the continuous scenario render CLI parser."""
     parser = argparse.ArgumentParser(
-        description="Render a multi-phase scenario as one continuous evaluation rollout under storage/evaluation_runs/<run_name>.",
+        description="Render a multi-phase scenario as one continuous evaluation rollout under storage/runs/<run_name>/evaluations/scenario.",
     )
     parser.add_argument("--config", type=Path, default=scenario_render.DEFAULT_SCENARIO_CONFIG_PATH)
-    parser.add_argument("--run-name", type=str, default=None, help="Evaluation run name under storage/evaluation_runs.")
+    parser.add_argument("--run-name", type=str, default=None, help="Run name under storage/runs; artifacts go in evaluations/scenario.")
     parser.add_argument(
         "--controller",
         choices=policy_render.SUPPORTED_CONTROLLERS,
@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-run-name",
         type=str,
         default=None,
-        help="Training run name used by PPO scenarios under storage/training_runs/<model_run_name>/models.",
+        help="Training run name used by PPO scenarios under storage/runs/<model_run_name>/training/models.",
     )
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
