@@ -27,6 +27,8 @@ EXPECTED_LLM_BUDGET_PROFILES = {"short": 20000, "normal": 30000, "recovery": 400
 BUDGET_TEST_STAGE_COUNT = 4
 BUDGET_TEST_CAP = 110
 BUDGET_TEST_STAGE_BUDGETS = [30, 20, 40, 20]
+TASKDIST_RESOLUTION_EFFECTIVE_SEED = 12
+FALLBACK_FAILED_PROPOSAL_COUNT = 2
 
 
 def test_llm_curriculum_config_loads_and_validates() -> None:
@@ -237,9 +239,134 @@ def test_llm_taskdist_curriculum_configs_load() -> None:
         assert settings.llm_stage_budget.enabled is True
         assert settings.llm_stage_budget.total_budget_cap_timesteps == EXPECTED_LLM_BUDGET_CAP
         assert settings.llm_stage_budget.profiles == EXPECTED_LLM_BUDGET_PROFILES
+        assert settings.proposal_fallback.enabled is True
+        assert settings.proposal_fallback.task_distribution_id == "tracking_medium"
+        assert settings.proposal_fallback.default_stage_budget_profile == "short"
+        assert settings.proposal_fallback.ready_stage_budget_profile == "normal"
         assert base_settings.task_distribution_settings is not None
         assert base_settings.include_dynamics_observation is True
         assert base_settings.include_previous_action is True
+
+
+def test_llm_taskdist_reference_resolves_to_concrete_stage_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify distribution proposals resolve to concrete validated stage tasks."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_taskdist_resolve_unit",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml",
+            "seed": 11,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "max_stages": 1,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "llm": {
+                "provider": "mock",
+                "model": "mock",
+                "max_repair_attempts": 0,
+                "mock_responses": [
+                    (
+                        '{"task_distribution_id":"tracking_medium","stage_budget_profile":"normal",'
+                        '"budget_rationale":"Use the bounded medium task distribution."}'
+                    )
+                ],
+            },
+        }
+    )
+
+    result = llm_curriculum_training.run_llm_curriculum_training(settings, dry_run_proposals=True)
+    summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
+    stage = summary["stages"][0]
+    proposal_events = [event for event in events if event["event_type"] == "llm_proposal_attempt"]
+    budget_events = [event for event in events if event["event_type"] == "llm_stage_budget_decision"]
+
+    assert stage["proposal_type"] == "task_distribution"
+    assert stage["original_proposal"]["task_distribution_id"] == "tracking_medium"
+    assert stage["task_distribution_reference"] == {
+        "task_distribution_id": "tracking_medium",
+        "task_distribution_config_path": "configs/tasks/task_distribution_tracking_medium.yaml",
+    }
+    assert stage["task_distribution_config_path"] == "configs/tasks/task_distribution_tracking_medium.yaml"
+    assert stage["task_distribution_id"] == "tracking_medium"
+    assert stage["task"]["task_type"] == "trajectory"
+    assert stage["task"].get("shape")
+    assert stage["resolved_task"] == stage["task"]
+    assert stage["resolved_task_shape"] == stage["task"]["shape"]
+    assert stage["resolved_task_sample_metadata"]["task_distribution_env_rank"] == 0
+    assert stage["resolved_task_sample_metadata"]["task_distribution_effective_seed"] == TASKDIST_RESOLUTION_EFFECTIVE_SEED
+    assert stage["proposal_fallback_used"] is False
+    assert proposal_events[0]["proposal_type"] == "task_distribution"
+    assert budget_events[0]["resolved_task_shape"] == stage["task"]["shape"]
+
+
+def test_llm_taskdist_fallback_logs_and_resolves_concrete_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify enabled fallback prevents overnight taskdist curricula from crashing on bad proposals."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_taskdist_fallback_unit",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml",
+            "seed": 0,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "max_stages": 1,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "llm_stage_budget": {
+                "enabled": True,
+                "total_budget_cap_timesteps": 10,
+                "default_profile": "normal",
+                "min_stage_timesteps": 4,
+                "max_stage_timesteps": 10,
+                "profiles": {
+                    "short": {"total_timesteps": 6},
+                    "normal": {"total_timesteps": 8},
+                    "recovery": {"total_timesteps": 9},
+                    "extend": {"total_timesteps": 10},
+                },
+            },
+            "proposal_fallback": {
+                "enabled": True,
+                "task_distribution_id": "tracking_medium",
+                "default_stage_budget_profile": "short",
+                "ready_stage_budget_profile": "normal",
+            },
+            "bootstrap": False,
+            "llm": {
+                "provider": "mock",
+                "model": "mock",
+                "max_repair_attempts": 1,
+                "skip_invalid_proposals": False,
+                "mock_responses": ["{}", "{}"],
+            },
+        }
+    )
+
+    result = llm_curriculum_training.run_llm_curriculum_training(settings, dry_run_proposals=True)
+    summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
+    stage = summary["stages"][0]
+    fallback_events = [event for event in events if event["event_type"] == "llm_proposal_fallback"]
+
+    assert summary["proposal_fallback"]["enabled"] is True
+    assert summary["proposal_fallback_used"] is True
+    assert summary["proposal_stats"]["total_proposals"] == FALLBACK_FAILED_PROPOSAL_COUNT
+    assert summary["proposal_stats"]["invalid_proposals"] == FALLBACK_FAILED_PROPOSAL_COUNT
+    assert summary["proposal_stats"]["fallback_proposals"] == 1
+    assert stage["proposal_fallback_used"] is True
+    assert stage["proposal_type"] == "task_distribution"
+    assert stage["selected_stage_budget_profile"] == "short"
+    assert stage["stage_budget_profile"] == "short"
+    assert stage["task_distribution_reference"]["task_distribution_id"] == "tracking_medium"
+    assert stage["task"]["task_type"] == "trajectory"
+    assert stage["task"].get("shape")
+    assert stage["resolved_task"] == stage["task"]
+    assert "missing required keys" in stage["proposal_failure_reason"]
+    assert stage["original_proposal"]["proposal_fallback_used"] is True
+    assert len(fallback_events) == 1
+    assert fallback_events[0]["proposal_fallback_used"] is True
+    assert "missing required keys" in fallback_events[0]["proposal_failure_reason"]
 
 
 def _budget_test_settings() -> llm_curriculum_training.LLMCurriculumSettings:
@@ -373,3 +500,5 @@ def test_old_local_llm_smoke_config_keeps_adaptive_budget_disabled() -> None:
 
     assert settings.llm_stage_budget.enabled is False
     assert settings.llm_stage_budget.profiles == {"normal": settings.stage_total_timesteps}
+    assert settings.proposal_fallback.enabled is False
+    llm_curriculum_training.validate_llm_curriculum(settings)

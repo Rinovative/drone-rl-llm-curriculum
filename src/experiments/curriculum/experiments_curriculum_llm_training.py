@@ -44,6 +44,9 @@ DEFAULT_RECENT_CONTEXT_LIMIT = 3
 DEFAULT_STAGE_TOTAL_TIMESTEPS = ppo_tracking.DEFAULT_TOTAL_TIMESTEPS
 DEFAULT_STAGE_EVAL_STEPS = ppo_tracking.DEFAULT_EVAL_STEPS
 DEFAULT_LLM_STAGE_BUDGET_PROFILE = "normal"
+DEFAULT_PROPOSAL_FALLBACK_DISTRIBUTION_ID = "tracking_medium"
+DEFAULT_PROPOSAL_FALLBACK_PROFILE = "short"
+DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE = "normal"
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,45 @@ class LLMStageBudgetSettings:
 
 
 @dataclass(frozen=True)
+class LLMProposalFallbackSettings:
+    """
+    Opt-in safe fallback settings for overnight task-distribution curricula.
+
+    Parameters
+    ----------
+    enabled
+        Whether exhausted LLM proposal failures should fall back to a known distribution.
+    task_distribution_id
+        Known task-distribution id used by the fallback proposal.
+    default_stage_budget_profile
+        Conservative budget profile used when the latest readiness is not ready.
+    ready_stage_budget_profile
+        Budget profile used when the latest stage is explicitly ready or passed.
+
+    """
+
+    enabled: bool = False
+    task_distribution_id: str = DEFAULT_PROPOSAL_FALLBACK_DISTRIBUTION_ID
+    default_stage_budget_profile: str = DEFAULT_PROPOSAL_FALLBACK_PROFILE
+    ready_stage_budget_profile: str = DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE
+
+    def __post_init__(self) -> None:
+        """Validate fallback distribution and budget profile choices."""
+        if self.task_distribution_id not in llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS:
+            available = ", ".join(sorted(llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS))
+            message = f"proposal_fallback.task_distribution_id must be one of: {available}"
+            raise ValueError(message)
+        for label, profile in (
+            ("default_stage_budget_profile", self.default_stage_budget_profile),
+            ("ready_stage_budget_profile", self.ready_stage_budget_profile),
+        ):
+            if profile not in llm.task_schema.DEFAULT_STAGE_BUDGET_PROFILES:
+                available = ", ".join(llm.task_schema.DEFAULT_STAGE_BUDGET_PROFILES)
+                message = f"proposal_fallback.{label} must be one of: {available}"
+                raise ValueError(message)
+
+
+@dataclass(frozen=True)
 class LLMCurriculumStage:
     """
     One stage in an LLM-guided PPO tracking curriculum.
@@ -158,6 +200,22 @@ class LLMCurriculumStage:
         Resolved budget profile after fallback or clipping.
     budget_rationale
         Optional LLM rationale for the budget profile.
+    proposal_type
+        Accepted proposal type, either a concrete task or task distribution.
+    original_proposal
+        Original parsed LLM proposal retained for audit metadata.
+    task_distribution_reference
+        Constrained distribution reference selected by the LLM, when present.
+    resolved_task
+        Concrete task resolved from the proposal and validated before PPO starts.
+    resolved_task_shape
+        Shape of ``resolved_task`` for compact logs.
+    resolved_task_sample_metadata
+        Deterministic sampler metadata for resolved distribution references.
+    proposal_fallback_used
+        Whether this stage came from the safe fallback after proposal failure.
+    proposal_failure_reason
+        Original exhausted proposal failure that triggered fallback, when present.
     budget_was_clipped
         Whether the resolver clipped or fell back to satisfy bounds.
     budget_fallback_reason
@@ -181,6 +239,14 @@ class LLMCurriculumStage:
     requested_stage_budget_profile: str | None = None
     selected_stage_budget_profile: str | None = None
     budget_rationale: str | None = None
+    proposal_type: str = llm.task_schema.PROPOSAL_KIND_TASK
+    original_proposal: dict[str, Any] | None = None
+    task_distribution_reference: dict[str, Any] | None = None
+    resolved_task: dict[str, Any] | None = None
+    resolved_task_shape: str | None = None
+    resolved_task_sample_metadata: dict[str, Any] | None = None
+    proposal_fallback_used: bool = False
+    proposal_failure_reason: str | None = None
     budget_was_clipped: bool = False
     budget_fallback_reason: str | None = None
     cumulative_llm_budget_timesteps: int = 0
@@ -211,6 +277,15 @@ class LLMCurriculumStage:
                 available = ", ".join(llm.task_schema.DEFAULT_STAGE_BUDGET_PROFILES)
                 message = f"{label} must be one of: {available}"
                 raise ValueError(message)
+        if self.proposal_type not in (llm.task_schema.PROPOSAL_KIND_TASK, llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION):
+            message = "proposal_type must be 'task' or 'task_distribution'"
+            raise ValueError(message)
+        if self.resolved_task is not None and self.resolved_task.get(validation.contracts.FIELD_SHAPE) != self.resolved_task_shape:
+            message = "resolved_task_shape must match resolved_task shape"
+            raise ValueError(message)
+        if self.proposal_fallback_used and not self.proposal_failure_reason:
+            message = "fallback stages must include proposal_failure_reason"
+            raise ValueError(message)
         if self.cumulative_llm_budget_timesteps < 0:
             message = "cumulative_llm_budget_timesteps must be nonnegative"
             raise ValueError(message)
@@ -247,6 +322,8 @@ class LLMCurriculumSettings:
         Strict JSON repair and prompt-context settings.
     llm_stage_budget
         Optional bounded adaptive stage budget profile settings.
+    proposal_fallback
+        Optional safe fallback used only by explicitly enabled overnight configs.
     config_path
         Optional source config path included in summary metadata.
 
@@ -264,6 +341,7 @@ class LLMCurriculumSettings:
     llm_config: dict[str, Any]
     proposal_settings: llm.curriculum.ProposalSettings
     llm_stage_budget: LLMStageBudgetSettings
+    proposal_fallback: LLMProposalFallbackSettings
     config_path: Path | None = None
 
     def __post_init__(self) -> None:
@@ -289,6 +367,9 @@ class LLMCurriculumSettings:
             raise TypeError(message)
         if not isinstance(self.llm_stage_budget, LLMStageBudgetSettings):
             message = "llm_stage_budget must be an LLMStageBudgetSettings instance"
+            raise TypeError(message)
+        if not isinstance(self.proposal_fallback, LLMProposalFallbackSettings):
+            message = "proposal_fallback must be an LLMProposalFallbackSettings instance"
             raise TypeError(message)
         cap = self.llm_stage_budget.total_budget_cap_timesteps
         if self.llm_stage_budget.enabled and cap is not None and cap < self.max_stages * self.llm_stage_budget.min_stage_timesteps:
@@ -383,6 +464,7 @@ def llm_curriculum_settings_from_mapping(
     stage_eval_steps = int(stage_defaults.get("eval_steps", DEFAULT_STAGE_EVAL_STEPS))
     max_stages = int(config.get("max_stages", 1))
     llm_stage_budget = _llm_stage_budget_settings_from_config(config.get("llm_stage_budget"), stage_total_timesteps)
+    proposal_fallback = _proposal_fallback_settings_from_config(config.get("proposal_fallback"))
     llm_config = _llm_config_from_mapping(config)
     proposal_settings = llm.curriculum.ProposalSettings(
         max_repair_attempts=int(llm_config.get("max_repair_attempts", 1)),
@@ -402,6 +484,7 @@ def llm_curriculum_settings_from_mapping(
         llm_config=llm_config,
         proposal_settings=proposal_settings,
         llm_stage_budget=llm_stage_budget,
+        proposal_fallback=proposal_fallback,
         config_path=config_path,
     )
 
@@ -515,18 +598,60 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
             metrics_summary=latest_metrics_summary,
             budget_context=_budget_prompt_context(settings, next_stage_index, cumulative_llm_budget_timesteps),
         )
-        proposal = llm.curriculum.propose_next_task(client=client, context=context, settings=settings.proposal_settings, logger=proposal_logger)
-        llm.curriculum.merge_proposal_stats(proposal_stats, proposal.stats)
-        recent_rejected_tasks.extend(proposal.rejected_proposals)
-        if proposal.task is None:
-            break
-        stage = _stage_from_proposal(
-            settings=settings,
-            task=proposal.task,
-            task_reason=proposal.task_reason,
-            stage_budget_profile=proposal.stage_budget_profile,
-            budget_rationale=proposal.budget_rationale,
-        )
+        try:
+            proposal = llm.curriculum.propose_next_task(
+                client=client,
+                context=context,
+                settings=settings.proposal_settings,
+                logger=proposal_logger,
+            )
+        except llm.curriculum.LLMCurriculumProposalError as exc:
+            if not settings.proposal_fallback.enabled:
+                raise
+            llm.curriculum.merge_proposal_stats(proposal_stats, exc.stats)
+            recent_rejected_tasks.extend(exc.rejected_proposals)
+            proposal_stats["fallback_proposals"] = int(proposal_stats.get("fallback_proposals", 0)) + 1
+            fallback_proposal = _fallback_proposal_from_failure(
+                settings=settings,
+                stage_index=next_stage_index,
+                metrics_summary=latest_metrics_summary,
+                failure_reason=str(exc),
+            )
+            _log_proposal_fallback(
+                logger=proposal_logger,
+                settings=settings,
+                stage_index=next_stage_index,
+                fallback_proposal=fallback_proposal,
+            )
+            stage = _stage_from_proposal(
+                settings=settings,
+                stage_index=next_stage_index,
+                task=fallback_proposal["task"],
+                task_reason=fallback_proposal["task_reason"],
+                stage_budget_profile=fallback_proposal["stage_budget_profile"],
+                budget_rationale=fallback_proposal["budget_rationale"],
+                proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+                original_proposal=fallback_proposal["original_proposal"],
+                proposal_fallback_used=True,
+                proposal_failure_reason=str(exc),
+            )
+        else:
+            llm.curriculum.merge_proposal_stats(proposal_stats, proposal.stats)
+            recent_rejected_tasks.extend(proposal.rejected_proposals)
+            if proposal.task is None:
+                break
+            stage = _stage_from_proposal(
+                settings=settings,
+                stage_index=next_stage_index,
+                task=proposal.task,
+                task_reason=proposal.task_reason,
+                stage_budget_profile=proposal.stage_budget_profile,
+                budget_rationale=proposal.budget_rationale,
+                proposal_type=proposal.proposal_type,
+                original_proposal=proposal.original_proposal,
+                proposal_fallback_used=False,
+                proposal_failure_reason=None,
+            )
         stage = _resolve_llm_stage_budget(
             settings=settings,
             stage=stage,
@@ -664,7 +789,7 @@ def _run_or_dry_stage(
         wandb_group=_curriculum_wandb_group(settings.curriculum_name),
         wandb_tags=_stage_wandb_tags(stage),
         initial_model_path=previous_model_path,
-        run_metadata=_stage_budget_metadata(stage),
+        run_metadata=_stage_run_metadata(stage),
     )
     entry = _stage_summary_entry(
         settings=settings,
@@ -720,7 +845,7 @@ def _stage_summary_entry(
         "diagnostics_dir": metrics.get("diagnostics_dir"),
         "diagnostics_dir_relative": utils.artifacts.path_relative_to(metrics.get("diagnostics_dir"), run_root),
         "total_timesteps": stage.total_timesteps,
-        **_stage_budget_metadata(stage),
+        **_stage_run_metadata(stage),
         "eval_steps": stage.eval_steps,
         "seed": metrics.get("seed"),
         "normalize_actions": settings.normalize_actions,
@@ -776,7 +901,7 @@ def _dry_stage_summary_entry(
         "diagnostics_dir": None,
         "diagnostics_dir_relative": None,
         "total_timesteps": stage.total_timesteps,
-        **_stage_budget_metadata(stage),
+        **_stage_run_metadata(stage),
         "eval_steps": stage.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
@@ -793,7 +918,16 @@ def _dry_stage_summary_entry(
     }
     for key in manual_curriculum.SUMMARY_METRIC_KEYS:
         entry[key] = None
+    entry.update(_dry_stage_task_distribution_metadata(stage))
     return entry
+
+
+def _dry_stage_task_distribution_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
+    """Return task-distribution metadata for dry-run stage summaries."""
+    if stage.task_distribution_config_path is None:
+        return {}
+    distribution_settings = envs.task_distribution.load_task_distribution_settings(stage.task_distribution_config_path)
+    return distribution_settings.to_metadata()
 
 
 def _build_curriculum_summary(
@@ -822,6 +956,8 @@ def _build_curriculum_summary(
         "stage_count": len(stage_entries),
         "max_stages": settings.max_stages,
         "llm_stage_budget": _llm_stage_budget_summary(settings.llm_stage_budget),
+        "proposal_fallback": _proposal_fallback_summary(settings.proposal_fallback),
+        "proposal_fallback_used": any(bool(stage.get("proposal_fallback_used")) for stage in stage_entries),
         "llm_budget_cap_timesteps": settings.llm_stage_budget.total_budget_cap_timesteps,
         "cumulative_llm_budget_timesteps": final_stage.get("cumulative_llm_budget_timesteps") if final_stage is not None else 0,
         "selected_stage_budget_profiles": [stage.get("selected_stage_budget_profile") for stage in stage_entries],
@@ -882,6 +1018,7 @@ def _write_curriculum_artifacts(settings: LLMCurriculumSettings, summary: dict[s
             "llm_provider": settings.llm_provider,
             "llm_model": settings.llm_model,
             "llm_stage_budget": _llm_stage_budget_summary(settings.llm_stage_budget),
+            "proposal_fallback": _proposal_fallback_summary(settings.proposal_fallback),
         },
         "evaluation_index": _evaluation_index_manifest(artifact_run_name),
     }
@@ -907,6 +1044,7 @@ def _write_curriculum_config_snapshot(settings: LLMCurriculumSettings) -> Path:
         },
         "bootstrap": _bootstrap_snapshot(settings.bootstrap_stage),
         "llm_stage_budget": _llm_stage_budget_summary(settings.llm_stage_budget),
+        "proposal_fallback": _proposal_fallback_summary(settings.proposal_fallback),
         "llm": _sanitized_llm_config(settings.llm_config),
     }
     snapshot_path.write_text(_to_yaml(payload), encoding="utf-8")
@@ -949,6 +1087,7 @@ def _settings_with_overrides(
         llm_config=llm_config,
         proposal_settings=proposal_settings,
         llm_stage_budget=settings.llm_stage_budget,
+        proposal_fallback=settings.proposal_fallback,
         config_path=settings.config_path,
     )
 
@@ -990,6 +1129,21 @@ def _llm_stage_budget_settings_from_config(raw_budget: Any, default_total_timest
         profiles=profiles,
         min_stage_timesteps=min_stage,
         max_stage_timesteps=max_stage,
+    )
+
+
+def _proposal_fallback_settings_from_config(raw_fallback: Any) -> LLMProposalFallbackSettings:
+    """Return opt-in safe proposal fallback settings from config."""
+    if raw_fallback is None:
+        return LLMProposalFallbackSettings()
+    if not isinstance(raw_fallback, Mapping):
+        message = "proposal_fallback must be a mapping"
+        raise TypeError(message)
+    return LLMProposalFallbackSettings(
+        enabled=bool(raw_fallback.get("enabled", False)),
+        task_distribution_id=str(raw_fallback.get("task_distribution_id") or DEFAULT_PROPOSAL_FALLBACK_DISTRIBUTION_ID),
+        default_stage_budget_profile=str(raw_fallback.get("default_stage_budget_profile") or DEFAULT_PROPOSAL_FALLBACK_PROFILE),
+        ready_stage_budget_profile=str(raw_fallback.get("ready_stage_budget_profile") or DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE),
     )
 
 
@@ -1054,41 +1208,109 @@ def _stage_from_mapping(raw_stage: Mapping[str, Any], default_total_timesteps: i
 
 def _stage_from_proposal(
     settings: LLMCurriculumSettings,
+    stage_index: int,
     task: dict[str, Any],
     task_reason: str | None,
     stage_budget_profile: str | None,
     budget_rationale: str | None,
+    proposal_type: str | None,
+    original_proposal: dict[str, Any] | None,
+    proposal_fallback_used: bool,
+    proposal_failure_reason: str | None,
 ) -> LLMCurriculumStage:
     """Return a stage from one accepted LLM proposal task or distribution reference."""
-    if task.get(llm.task_schema.PROPOSAL_KIND_FIELD) == llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION:
-        config_path = Path(str(task[llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD]))
-        distribution_settings = envs.task_distribution.load_task_distribution_settings(config_path)
-        base_task = dict(distribution_settings.base_task)
-        task_shape = str(base_task.get(validation.contracts.FIELD_SHAPE) or "")
-        distribution_id = str(task.get(llm.task_schema.TASK_DISTRIBUTION_ID_FIELD) or config_path.stem)
+    active_proposal_type = proposal_type or str(task.get(llm.task_schema.PROPOSAL_KIND_FIELD, llm.task_schema.PROPOSAL_KIND_TASK))
+    original = _json_mapping_copy(original_proposal) or dict(task)
+    if active_proposal_type == llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION:
+        resolved = _resolve_task_distribution_stage_task(settings=settings, task=task, stage_index=stage_index)
         return LLMCurriculumStage(
-            stage_name=distribution_id,
-            task_shape=task_shape,
-            task=base_task,
+            stage_name=resolved["task_distribution_id"],
+            task_shape=resolved["resolved_task_shape"],
+            task=resolved["resolved_task"],
             total_timesteps=settings.stage_total_timesteps,
             eval_steps=settings.stage_eval_steps,
             task_reason=task_reason,
-            task_distribution_config_path=config_path,
-            task_distribution_id=distribution_id,
+            task_distribution_config_path=resolved["task_distribution_config_path"],
+            task_distribution_id=resolved["task_distribution_id"],
             requested_stage_budget_profile=stage_budget_profile,
             budget_rationale=budget_rationale,
+            proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+            original_proposal=original,
+            task_distribution_reference=resolved["task_distribution_reference"],
+            resolved_task=resolved["resolved_task"],
+            resolved_task_shape=resolved["resolved_task_shape"],
+            resolved_task_sample_metadata=resolved["resolved_task_sample_metadata"],
+            proposal_fallback_used=proposal_fallback_used,
+            proposal_failure_reason=proposal_failure_reason,
         )
-    task_shape = str(task.get(validation.contracts.FIELD_SHAPE) or "")
+    task_payload = dict(task)
+    task_shape = str(task_payload.get(validation.contracts.FIELD_SHAPE) or "")
     return LLMCurriculumStage(
         stage_name=task_shape,
         task_shape=task_shape,
-        task=dict(task),
+        task=task_payload,
         total_timesteps=settings.stage_total_timesteps,
         eval_steps=settings.stage_eval_steps,
         task_reason=task_reason,
         requested_stage_budget_profile=stage_budget_profile,
         budget_rationale=budget_rationale,
+        proposal_type=llm.task_schema.PROPOSAL_KIND_TASK,
+        original_proposal=original,
+        resolved_task=dict(task_payload),
+        resolved_task_shape=task_shape,
+        proposal_fallback_used=proposal_fallback_used,
+        proposal_failure_reason=proposal_failure_reason,
     )
+
+
+def _resolve_task_distribution_stage_task(
+    *,
+    settings: LLMCurriculumSettings,
+    task: Mapping[str, Any],
+    stage_index: int,
+) -> dict[str, Any]:
+    """Resolve a constrained distribution reference into one concrete valid stage task."""
+    config_path = Path(str(task[llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD]))
+    distribution_id = str(task.get(llm.task_schema.TASK_DISTRIBUTION_ID_FIELD) or config_path.stem)
+    distribution_settings = envs.task_distribution.load_task_distribution_settings(config_path)
+    stage_seed = _stage_task_distribution_seed(settings=settings, distribution_settings=distribution_settings, stage_index=stage_index)
+    sampler_settings = replace(distribution_settings, seed=stage_seed)
+    sampler = envs.task_distribution.TaskDistributionSampler(sampler_settings, env_rank=0)
+    resolved_task = sampler.sample_task()
+    validation_result = validation.tasks.validate_task(resolved_task, limits=sampler_settings.validation_limits)
+    if not validation_result.is_valid:
+        details = "; ".join(validation_result.messages)
+        message = f"resolved task-distribution proposal {distribution_id!r} produced an invalid task: {details}"
+        raise ValueError(message)
+    resolved_task_shape = str(resolved_task.get(validation.contracts.FIELD_SHAPE) or "")
+    return {
+        "task_distribution_config_path": config_path,
+        "task_distribution_id": distribution_id,
+        "task_distribution_reference": {
+            llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
+            llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: str(config_path),
+        },
+        "resolved_task": dict(resolved_task),
+        "resolved_task_shape": resolved_task_shape,
+        "resolved_task_sample_metadata": sampler.sample_metadata(),
+    }
+
+
+def _stage_task_distribution_seed(
+    *,
+    settings: LLMCurriculumSettings,
+    distribution_settings: envs.task_distribution.TaskDistributionSettings,
+    stage_index: int,
+) -> int:
+    """Return the deterministic seed used to resolve a stage distribution reference."""
+    return int(distribution_settings.seed) + int(settings.seed) + int(stage_index)
+
+
+def _json_mapping_copy(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Return a plain dictionary copy for JSON-ready metadata fields."""
+    if value is None:
+        return None
+    return dict(value)
 
 
 def _resolve_llm_stage_budget(
@@ -1189,6 +1411,84 @@ def _write_stage_task_config(
     return task_config_path
 
 
+def _fallback_proposal_from_failure(
+    *,
+    settings: LLMCurriculumSettings,
+    stage_index: int,
+    metrics_summary: Mapping[str, Any],
+    failure_reason: str,
+) -> dict[str, Any]:
+    """Build a deterministic safe proposal after exhausted LLM repair attempts."""
+    distribution_id = settings.proposal_fallback.task_distribution_id
+    config_path = llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[distribution_id]
+    stage_budget_profile = _fallback_stage_budget_profile(settings=settings, metrics_summary=metrics_summary)
+    readiness = metrics_summary.get("curriculum_readiness_level")
+    status = metrics_summary.get("failure_overall_status") or metrics_summary.get("status")
+    task_reason = f"Safe fallback after exhausted LLM proposal repair at stage {stage_index}; using known distribution {distribution_id}."
+    budget_rationale = f"Fallback selected {stage_budget_profile!r} from latest readiness={readiness!r} and status={status!r}."
+    task = {
+        llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+        llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
+        llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: config_path,
+    }
+    original_proposal = {
+        **task,
+        llm.task_schema.REASON_FIELD: task_reason,
+        llm.task_schema.STAGE_BUDGET_PROFILE_FIELD: stage_budget_profile,
+        llm.task_schema.BUDGET_RATIONALE_FIELD: budget_rationale,
+        "proposal_fallback_used": True,
+        "proposal_failure_reason": failure_reason,
+    }
+    return {
+        "task": task,
+        "task_reason": task_reason,
+        "stage_budget_profile": stage_budget_profile,
+        "budget_rationale": budget_rationale,
+        "original_proposal": original_proposal,
+        "proposal_failure_reason": failure_reason,
+    }
+
+
+def _fallback_stage_budget_profile(*, settings: LLMCurriculumSettings, metrics_summary: Mapping[str, Any]) -> str:
+    """Return a conservative fallback budget profile from latest readiness feedback."""
+    readiness = str(metrics_summary.get("curriculum_readiness_level") or "")
+    status = str(metrics_summary.get("failure_overall_status") or metrics_summary.get("status") or "")
+    if readiness == "ready" or status == "passed":
+        return settings.proposal_fallback.ready_stage_budget_profile
+    return settings.proposal_fallback.default_stage_budget_profile
+
+
+def _log_proposal_fallback(
+    *,
+    logger: llm.logging.ProposalEventLogger,
+    settings: LLMCurriculumSettings,
+    stage_index: int,
+    fallback_proposal: Mapping[str, Any],
+) -> None:
+    """Append one explicit safe-fallback event to the proposal log."""
+    task = dict(fallback_proposal["task"])
+    logger.append(
+        {
+            "event_type": "llm_proposal_fallback",
+            "curriculum_name": settings.curriculum_name,
+            "stage_index": stage_index,
+            "status": "accepted",
+            "proposal_type": llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+            "task_distribution_reference": {
+                llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: task.get(llm.task_schema.TASK_DISTRIBUTION_ID_FIELD),
+                llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: task.get(llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD),
+            },
+            "original_proposal": fallback_proposal.get("original_proposal"),
+            "accepted_task": task,
+            "task_reason": fallback_proposal.get("task_reason"),
+            "stage_budget_profile": fallback_proposal.get("stage_budget_profile"),
+            "budget_rationale": fallback_proposal.get("budget_rationale"),
+            "proposal_fallback_used": True,
+            "proposal_failure_reason": fallback_proposal.get("proposal_failure_reason"),
+        }
+    )
+
+
 def _budget_prompt_context(settings: LLMCurriculumSettings, stage_index: int, cumulative_timesteps: int) -> dict[str, Any]:
     """Return bounded budget context embedded in LLM proposal prompts."""
     budget_settings = settings.llm_stage_budget
@@ -1225,14 +1525,23 @@ def _log_stage_budget_decision(
             "curriculum_name": settings.curriculum_name,
             "stage_index": stage_index,
             "stage_name": stage.stage_name,
-            **_stage_budget_metadata(stage),
+            **_stage_run_metadata(stage),
         }
     )
+
+
+def _stage_run_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
+    """Return JSON-ready LLM proposal and budget metadata for a stage."""
+    return {
+        **_stage_budget_metadata(stage),
+        **_stage_proposal_metadata(stage),
+    }
 
 
 def _stage_budget_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
     """Return JSON-ready budget metadata for a resolved LLM curriculum stage."""
     return {
+        "stage_budget_profile": stage.selected_stage_budget_profile,
         "requested_stage_budget_profile": stage.requested_stage_budget_profile,
         "selected_stage_budget_profile": stage.selected_stage_budget_profile,
         "stage_total_timesteps": stage.total_timesteps,
@@ -1244,12 +1553,37 @@ def _stage_budget_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
     }
 
 
+def _stage_proposal_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
+    """Return JSON-ready proposal audit metadata for a resolved stage."""
+    return {
+        "proposal_type": stage.proposal_type,
+        "original_proposal": stage.original_proposal,
+        "task_distribution_reference": stage.task_distribution_reference,
+        "resolved_task": stage.resolved_task or dict(stage.task),
+        "resolved_task_shape": stage.resolved_task_shape or stage.task_shape,
+        "resolved_task_sample_metadata": stage.resolved_task_sample_metadata,
+        "proposal_fallback_used": stage.proposal_fallback_used,
+        "proposal_failure_reason": stage.proposal_failure_reason,
+    }
+
+
 def _stage_wandb_tags(stage: LLMCurriculumStage) -> tuple[str, ...]:
     """Return W&B tags for one LLM curriculum stage."""
     tags = ("curriculum", LLM_CURRICULUM_KIND, f"stage:{stage.stage_name}", f"task:{stage.task_shape}")
     if stage.selected_stage_budget_profile is None:
         return tags
     return (*tags, f"budget:{stage.selected_stage_budget_profile}")
+
+
+def _proposal_fallback_summary(settings: LLMProposalFallbackSettings) -> dict[str, Any]:
+    """Return sanitized fallback settings for summaries and manifests."""
+    return {
+        "enabled": settings.enabled,
+        "task_distribution_id": settings.task_distribution_id,
+        "task_distribution_config_path": llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[settings.task_distribution_id],
+        "default_stage_budget_profile": settings.default_stage_budget_profile,
+        "ready_stage_budget_profile": settings.ready_stage_budget_profile,
+    }
 
 
 def _llm_stage_budget_summary(settings: LLMStageBudgetSettings) -> dict[str, Any]:
@@ -1274,6 +1608,10 @@ def _accepted_task_context(entry: Mapping[str, Any]) -> dict[str, Any]:
         "task_reason": entry.get("task_reason"),
         "task_distribution_config_path": entry.get("task_distribution_config_path"),
         "task_distribution_id": entry.get("task_distribution_id"),
+        "proposal_type": entry.get("proposal_type"),
+        "task_distribution_reference": entry.get("task_distribution_reference"),
+        "resolved_task_shape": entry.get("resolved_task_shape"),
+        "proposal_fallback_used": entry.get("proposal_fallback_used"),
         "selected_stage_budget_profile": entry.get("selected_stage_budget_profile"),
         "stage_total_timesteps": entry.get("stage_total_timesteps"),
         "cumulative_llm_budget_timesteps": entry.get("cumulative_llm_budget_timesteps"),
@@ -1290,6 +1628,11 @@ def _metrics_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "task_shape",
         "task_distribution_config_path",
         "task_distribution_id",
+        "proposal_type",
+        "task_distribution_reference",
+        "resolved_task_shape",
+        "proposal_fallback_used",
+        "proposal_failure_reason",
         "task_distribution_mode",
         "task_distribution_strength",
         "selected_stage_budget_profile",
@@ -1328,13 +1671,22 @@ def _final_stage_summary(final_stage: Mapping[str, Any] | None) -> dict[str, Any
         "manifest_path_relative": final_stage.get("manifest_path_relative"),
         "task_distribution_config_path": final_stage.get("task_distribution_config_path"),
         "task_distribution_id": final_stage.get("task_distribution_id"),
-        **{key: final_stage.get(key) for key in _stage_budget_metadata_keys()},
+        **{key: final_stage.get(key) for key in _stage_run_metadata_keys()},
     }
+
+
+def _stage_run_metadata_keys() -> tuple[str, ...]:
+    """Return stable stage metadata keys used in compact summaries."""
+    return (
+        *_stage_budget_metadata_keys(),
+        *_stage_proposal_metadata_keys(),
+    )
 
 
 def _stage_budget_metadata_keys() -> tuple[str, ...]:
     """Return stable stage budget metadata keys used in compact summaries."""
     return (
+        "stage_budget_profile",
         "requested_stage_budget_profile",
         "selected_stage_budget_profile",
         "stage_total_timesteps",
@@ -1343,6 +1695,20 @@ def _stage_budget_metadata_keys() -> tuple[str, ...]:
         "budget_was_clipped",
         "budget_fallback_reason",
         "budget_rationale",
+    )
+
+
+def _stage_proposal_metadata_keys() -> tuple[str, ...]:
+    """Return stable proposal audit metadata keys used in compact summaries."""
+    return (
+        "proposal_type",
+        "original_proposal",
+        "task_distribution_reference",
+        "resolved_task",
+        "resolved_task_shape",
+        "resolved_task_sample_metadata",
+        "proposal_fallback_used",
+        "proposal_failure_reason",
     )
 
 
@@ -1380,7 +1746,7 @@ def _bootstrap_snapshot(stage: LLMCurriculumStage | None) -> dict[str, Any]:
         "task": stage.task,
         "task_distribution_config_path": None if stage.task_distribution_config_path is None else str(stage.task_distribution_config_path),
         "task_distribution_id": stage.task_distribution_id,
-        **_stage_budget_metadata(stage),
+        **_stage_run_metadata(stage),
     }
 
 
@@ -1434,6 +1800,7 @@ __all__ = [
     "LLMCurriculumResult",
     "LLMCurriculumSettings",
     "LLMCurriculumStage",
+    "LLMProposalFallbackSettings",
     "LLMStageBudgetSettings",
     "derive_stage_run_name",
     "llm_curriculum_settings_from_mapping",

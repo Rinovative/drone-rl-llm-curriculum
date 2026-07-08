@@ -326,6 +326,23 @@ def test_task_schema_rejects_unknown_task_distribution_reference() -> None:
         llm.task_schema.normalize_proposed_task(proposal)
 
 
+def test_task_schema_accepts_distribution_reference_without_explicit_kind() -> None:
+    """Verify distribution-looking proposals do not need concrete task keys."""
+    proposal = {
+        "task_distribution_id": "tracking_medium",
+        "stage_budget_profile": "normal",
+        "budget_rationale": "Use the known medium distribution.",
+    }
+
+    normalized = llm.task_schema.normalize_proposed_task(proposal)
+    result = llm.task_schema.validate_proposed_task(proposal)
+
+    assert normalized["proposal_kind"] == "task_distribution"
+    assert normalized["task_distribution_id"] == "tracking_medium"
+    assert normalized["task_distribution_config_path"] == "configs/tasks/task_distribution_tracking_medium.yaml"
+    assert result.is_valid
+
+
 def test_prompt_contract_mentions_task_distributions_and_supported_families() -> None:
     """Verify LLM prompts expose constrained task-distribution guidance."""
     prompt_contract = llm.task_schema.build_task_prompt_contract()

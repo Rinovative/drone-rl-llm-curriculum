@@ -22,6 +22,12 @@ llm_stage_budget:
       total_timesteps: 40000
     extend:
       total_timesteps: 50000
+proposal_fallback:
+  enabled: true
+  task_distribution_id: tracking_medium
+  default_stage_budget_profile: short
+  ready_stage_budget_profile: normal
+
 bootstrap:
   enabled: true
   stage_name: line

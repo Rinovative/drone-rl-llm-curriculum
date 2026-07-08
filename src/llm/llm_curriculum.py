@@ -41,6 +41,18 @@ if TYPE_CHECKING:
 class LLMCurriculumProposalError(RuntimeError):
     """Raised when an LLM task proposal cannot be accepted after bounded repair."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        stats: Mapping[str, Any] | None = None,
+        rejected_proposals: tuple[dict[str, Any], ...] = (),
+    ) -> None:
+        """Initialize the proposal error with proposal accounting metadata."""
+        super().__init__(message)
+        self.stats = dict(stats or {})
+        self.rejected_proposals = tuple(rejected_proposals)
+
 
 @dataclass(frozen=True)
 class ProposalSettings:
@@ -126,6 +138,12 @@ class CurriculumProposalResult:
         Optional bounded budget profile selected by the LLM.
     budget_rationale
         Optional budget-profile rationale supplied by the LLM.
+    proposal_type
+        Accepted proposal type, either a concrete task or task distribution.
+    original_proposal
+        Raw parsed proposal object returned by the LLM for the accepted attempt.
+    normalized_proposal
+        Schema-normalized accepted proposal before metadata stripping.
     stats
         Proposal accounting for this request.
     rejected_proposals
@@ -137,6 +155,9 @@ class CurriculumProposalResult:
     task_reason: str | None
     stage_budget_profile: str | None
     budget_rationale: str | None
+    proposal_type: str | None
+    original_proposal: dict[str, Any] | None
+    normalized_proposal: dict[str, Any] | None
     stats: dict[str, Any]
     rejected_proposals: tuple[dict[str, Any], ...]
 
@@ -229,6 +250,9 @@ def propose_next_task(
                 task_reason=outcome.task_reason,
                 stage_budget_profile=outcome.stage_budget_profile,
                 budget_rationale=outcome.budget_rationale,
+                proposal_type=_proposal_type(outcome.normalized_task),
+                original_proposal=outcome.parsed_task,
+                normalized_proposal=outcome.normalized_task,
                 stats=stats,
                 rejected_proposals=tuple(rejected_proposals),
             )
@@ -254,12 +278,15 @@ def propose_next_task(
             task_reason=None,
             stage_budget_profile=None,
             budget_rationale=None,
+            proposal_type=None,
+            original_proposal=None,
+            normalized_proposal=None,
             stats=stats,
             rejected_proposals=tuple(rejected_proposals),
         )
     reason_text = "; ".join(previous_errors) if previous_errors else "unknown proposal failure"
     message = f"LLM proposal failed after {active_settings.max_repair_attempts + 1} attempt(s): {reason_text}"
-    raise LLMCurriculumProposalError(message)
+    raise LLMCurriculumProposalError(message, stats=stats, rejected_proposals=tuple(rejected_proposals))
 
 
 def empty_proposal_stats() -> dict[str, Any]:
@@ -278,6 +305,7 @@ def empty_proposal_stats() -> dict[str, Any]:
         "repair_attempts": 0,
         "repair_successes": 0,
         "final_accepted_tasks": 0,
+        "fallback_proposals": 0,
         "rejected_proposals": [],
     }
 
@@ -299,7 +327,7 @@ def merge_proposal_stats(accumulator: dict[str, Any], update: Mapping[str, Any])
         The same accumulator after adding counts and rejected proposals.
 
     """
-    for key in ("total_proposals", "invalid_proposals", "repair_attempts", "repair_successes", "final_accepted_tasks"):
+    for key in ("total_proposals", "invalid_proposals", "repair_attempts", "repair_successes", "final_accepted_tasks", "fallback_proposals"):
         accumulator[key] = int(accumulator.get(key, 0)) + int(update.get(key, 0))
     rejected = accumulator.setdefault("rejected_proposals", [])
     if isinstance(rejected, list):
@@ -421,6 +449,23 @@ def _rejected_outcome(
     )
 
 
+def _proposal_type(task: Mapping[str, Any] | None) -> str | None:
+    """Return the normalized proposal type for a task-like mapping."""
+    if task is None:
+        return None
+    return str(task.get(task_schema.PROPOSAL_KIND_FIELD, task_schema.PROPOSAL_KIND_TASK))
+
+
+def _task_distribution_reference(task: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Return the constrained distribution reference from a task-like mapping."""
+    if _proposal_type(task) != task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION or task is None:
+        return None
+    return {
+        task_schema.TASK_DISTRIBUTION_ID_FIELD: task.get(task_schema.TASK_DISTRIBUTION_ID_FIELD),
+        task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: task.get(task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD),
+    }
+
+
 def _proposal_event(
     *,
     context: ProposalContext,
@@ -444,6 +489,9 @@ def _proposal_event(
         "parsed_task": outcome.parsed_task,
         "normalized_task": outcome.normalized_task,
         "accepted_task": outcome.task,
+        "proposal_type": _proposal_type(outcome.normalized_task),
+        "task_distribution_reference": _task_distribution_reference(outcome.normalized_task),
+        "proposal_fallback_used": False,
         "task_reason": outcome.task_reason,
         "stage_budget_profile": outcome.stage_budget_profile,
         "budget_rationale": outcome.budget_rationale,

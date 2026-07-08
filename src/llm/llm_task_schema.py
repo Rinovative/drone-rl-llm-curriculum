@@ -155,7 +155,7 @@ def normalize_proposed_task(raw_task: object) -> dict[str, object]:
         raise ValueError(message)  # noqa: TRY004 - normalization contract requires ValueError.
 
     normalized = dict(raw_task)
-    proposal_kind = str(normalized.get(PROPOSAL_KIND_FIELD, PROPOSAL_KIND_TASK))
+    proposal_kind = _infer_proposal_kind(normalized)
     if proposal_kind == PROPOSAL_KIND_TASK_DISTRIBUTION:
         return _normalize_task_distribution_reference(normalized)
     if proposal_kind != PROPOSAL_KIND_TASK:
@@ -227,6 +227,16 @@ def task_without_metadata(task: Mapping[str, object]) -> dict[str, object]:
     if task.get(PROPOSAL_KIND_FIELD) != PROPOSAL_KIND_TASK_DISTRIBUTION:
         excluded.add(PROPOSAL_KIND_FIELD)
     return {key: value for key, value in task.items() if key not in excluded}
+
+
+def _infer_proposal_kind(raw: Mapping[str, object]) -> str:
+    """Infer whether a proposal is a concrete task or distribution reference."""
+    explicit_kind = raw.get(PROPOSAL_KIND_FIELD)
+    if explicit_kind is not None:
+        return str(explicit_kind)
+    if TASK_DISTRIBUTION_ID_FIELD in raw or TASK_DISTRIBUTION_CONFIG_PATH_FIELD in raw:
+        return PROPOSAL_KIND_TASK_DISTRIBUTION
+    return PROPOSAL_KIND_TASK
 
 
 def _normalize_task_distribution_reference(raw: dict[str, object]) -> dict[str, object]:

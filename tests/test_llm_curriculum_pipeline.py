@@ -130,9 +130,34 @@ def test_valid_task_distribution_proposal_is_accepted_and_logged(tmp_path: Path)
     events = llm.logging.read_jsonl(logger.log_path)
 
     assert result.task is not None
+    assert result.proposal_type == "task_distribution"
+    assert result.normalized_proposal is not None
     assert result.task["proposal_kind"] == "task_distribution"
     assert result.task["task_distribution_id"] == "tracking_small"
+    assert events[0]["proposal_type"] == "task_distribution"
+    assert events[0]["task_distribution_reference"]["task_distribution_id"] == "tracking_small"
     assert events[0]["accepted_task"]["task_distribution_config_path"] == "configs/tasks/task_distribution_tracking_small.yaml"
+
+
+def test_distribution_reference_without_kind_is_accepted_and_logged(tmp_path: Path) -> None:
+    """Verify distribution references may omit proposal_kind without becoming concrete tasks."""
+    logger = _logger(tmp_path)
+    response = '{"task_distribution_config_path":"configs/tasks/task_distribution_tracking_medium.yaml","reason":"Use medium distribution."}'
+
+    result = llm.curriculum.propose_next_task(
+        client=llm.client.MockLLMClient([response]),
+        context=_context(),
+        settings=llm.curriculum.ProposalSettings(max_repair_attempts=0),
+        logger=logger,
+    )
+    events = llm.logging.read_jsonl(logger.log_path)
+
+    assert result.task is not None
+    assert result.proposal_type == "task_distribution"
+    assert result.task["task_distribution_id"] == "tracking_medium"
+    assert events[0]["status"] == "accepted"
+    assert events[0]["proposal_type"] == "task_distribution"
+    assert events[0]["task_distribution_reference"]["task_distribution_id"] == "tracking_medium"
 
 
 def test_repair_prompt_mentions_supported_distributions_and_safe_ranges() -> None:

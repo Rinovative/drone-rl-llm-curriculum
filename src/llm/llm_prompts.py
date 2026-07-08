@@ -158,6 +158,8 @@ def build_task_repair_messages(
     user_prompt = (
         f"{JSON_ONLY_INSTRUCTION}\n"
         "Repair the previous invalid proposal. Address every error. "
+        "Return either a concrete task with task_type and shape, or a valid task-distribution reference from the supported list "
+        "using task_distribution_id or task_distribution_config_path. "
         "Use supported shapes, supported task-distribution families, safe numeric ranges, and one allowed budget profile. "
         "If stage_budget_profile is invalid, repair it to short, normal, recovery, or extend. "
         "Return a replacement JSON object only.\n"
