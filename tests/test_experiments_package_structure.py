@@ -54,6 +54,7 @@ CANONICAL_CLI_MODULE_PATHS = [
     "src.experiments.cli.experiments_cli_train_tracking",
     "src.experiments.cli.experiments_cli_train_curriculum",
     "src.experiments.cli.experiments_cli_evaluate_curriculum",
+    "src.experiments.cli.experiments_cli_evaluate_policy",
     "src.experiments.cli.experiments_cli_render_policy",
     "src.experiments.cli.experiments_cli_render_scenario",
     "src.experiments.cli.experiments_cli_render_smoke",

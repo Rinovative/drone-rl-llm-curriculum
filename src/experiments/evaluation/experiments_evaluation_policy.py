@@ -25,15 +25,22 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from src import envs, evaluation, utils, validation
 from src.experiments import experiments_config as config
+from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
 
 DEFAULT_RENDER_FPS = 20
 SIMULATOR_CAPTURE_FPS = 30
+OWN_TASK_EVALUATION_NAME = "own_task"
+STANDARD_EVALUATION_PROFILE = "standard"
+STANDARD_LINE_EVALUATION_SUITE_PATH = Path("configs/evaluation/line_eval_suite.yaml")
+STANDARD_FINAL_BENCHMARK_SUITE_PATH = Path("configs/evaluation/final_benchmark_eval_suite.yaml")
+STANDARD_GENERALIZATION_SUITE_PATH = Path("configs/evaluation/generalization_eval_suite.yaml")
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,13 @@ class PolicyEvaluationSpec:
     task_index: int = 0
     total_timesteps: int = 0
     normalize_actions: bool = True
+    evaluation_name: str | None = None
+    evaluation_suite_name: str | None = None
+    suite_task_name: str | None = None
+    suite_task_names: tuple[str, ...] = ()
+    suite_config_snapshot_path: Path | None = None
+    suite_config_snapshot_path_relative: str | None = None
+    suite_config_sha256: str | None = None
 
     def __post_init__(self) -> None:
         """Validate required spec fields."""
@@ -176,6 +190,24 @@ class PolicyEvaluationResult:
     render_enabled: bool
     plots_enabled: bool
     trace_enabled: bool
+    metrics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PolicySuiteEvaluationResult:
+    """Aggregate result returned after evaluating one direct PPO run on a suite."""
+
+    metrics_path: str
+    manifest_path: str
+    metrics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PolicyStandardEvaluationResult:
+    """Aggregate result returned after running the standard direct PPO profile."""
+
+    metrics_path: str
+    manifest_path: str
     metrics: dict[str, Any]
 
 
@@ -255,6 +287,14 @@ def run_policy_evaluation(
     metrics_payload = {
         "label": spec.label,
         "model_role": spec.model_role,
+        "evaluation_name": spec.evaluation_name,
+        "evaluation_suite_name": spec.evaluation_suite_name,
+        "suite_task_name": spec.suite_task_name,
+        "suite_task_names": list(spec.suite_task_names),
+        "suite_task_count": len(spec.suite_task_names),
+        "suite_config_snapshot_path": None if spec.suite_config_snapshot_path is None else str(spec.suite_config_snapshot_path),
+        "suite_config_snapshot_path_relative": spec.suite_config_snapshot_path_relative,
+        "suite_config_sha256": spec.suite_config_sha256,
         "model_path": str(spec.model_path),
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
@@ -319,6 +359,511 @@ def run_policy_evaluation(
         trace_enabled=options.trace_enabled,
         metrics=metrics_payload,
     )
+
+
+def run_direct_policy_own_task_evaluation(
+    run_manifest_path: str | Path,
+    wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED,
+) -> PolicySuiteEvaluationResult:
+    """Evaluate a direct PPO model on its recorded training task snapshot."""
+    if wandb_mode not in utils.wandb.WANDB_MODES:
+        message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
+        raise ValueError(message)
+    manifest_path = Path(run_manifest_path)
+    run_manifest = _read_json(manifest_path)
+    if run_manifest.get("run_kind") != "direct_ppo":
+        message = "own-task policy evaluation requires a direct PPO run manifest"
+        raise ValueError(message)
+
+    run_name = _required_text(run_manifest.get("run_name"), "run_name")
+    run_root = manifest_path.expanduser().resolve(strict=False).parent
+    storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
+    training = _mapping(run_manifest.get("training"), "training")
+    model_path = _resolve_manifest_path_value(
+        run_root=run_root,
+        absolute_value=training.get("model_path"),
+        relative_value=training.get("model_path_relative"),
+        field_name="training.model_path",
+    )
+    task_config_path = _direct_training_task_config_path(run_manifest=run_manifest, run_root=run_root)
+    if task_config_path is None:
+        message = "direct PPO run manifest must include a training task config snapshot for own_task evaluation"
+        raise ValueError(message)
+    task_index = _direct_training_task_index(run_manifest)
+    task_shape = _direct_training_task_shape(run_manifest)
+    total_timesteps = int(run_manifest.get("total_timesteps", 0))
+    normalize_actions = bool(run_manifest.get("normalize_actions", True))
+    eval_steps = int(run_manifest.get("eval_steps", 120))
+    seed = int(run_manifest.get("seed", 0))
+    output_root = utils.artifacts.get_run_evaluation_dir(run_name, OWN_TASK_EVALUATION_NAME, storage_root=storage_root)
+
+    result = run_policy_evaluation(
+        PolicyEvaluationSpec(
+            label=f"{run_name}_{OWN_TASK_EVALUATION_NAME}",
+            model_role="direct_ppo",
+            model_path=model_path,
+            task_config_path=task_config_path,
+            task_index=task_index,
+            task_shape=task_shape,
+            output_dir=output_root,
+            eval_steps=eval_steps,
+            seed=seed,
+            total_timesteps=total_timesteps,
+            normalize_actions=normalize_actions,
+            evaluation_name=OWN_TASK_EVALUATION_NAME,
+            evaluation_suite_name=None,
+            suite_task_name=OWN_TASK_EVALUATION_NAME,
+            suite_task_names=(OWN_TASK_EVALUATION_NAME,),
+        ),
+        PolicyEvaluationArtifactOptions(),
+    )
+    evaluated_models = [_evaluated_model_entry(result=result, run_root=run_root, suite_task_name=OWN_TASK_EVALUATION_NAME)]
+    update_run_evaluation_index(
+        manifest_path,
+        _evaluation_index_entry(
+            run_root=run_root,
+            run_name=run_name,
+            run_kind="direct_ppo",
+            evaluation_name=OWN_TASK_EVALUATION_NAME,
+            evaluation_suite_name=None,
+            suite_config_snapshot_path=None,
+            suite_config_snapshot_path_relative=None,
+            suite_config_sha256=None,
+            aggregate_metrics_path=Path(result.metrics_path),
+            aggregate_manifest_path=Path(result.manifest_path),
+            model_label=run_name,
+            model_role="direct_ppo",
+            model_path=model_path,
+            task_names=[OWN_TASK_EVALUATION_NAME],
+            evaluated_models=evaluated_models,
+            mode="direct_policy_own_task_evaluation",
+        ),
+    )
+    return PolicySuiteEvaluationResult(metrics_path=result.metrics_path, manifest_path=result.manifest_path, metrics=result.metrics)
+
+
+def run_direct_policy_standard_evaluation(
+    run_manifest_path: str | Path,
+    wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED,
+) -> PolicyStandardEvaluationResult:
+    """Run the standard direct PPO evaluation profile."""
+    if wandb_mode not in utils.wandb.WANDB_MODES:
+        message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
+        raise ValueError(message)
+    manifest_path = Path(run_manifest_path)
+    run_manifest = _read_json(manifest_path)
+    if run_manifest.get("run_kind") != "direct_ppo":
+        message = "standard policy evaluation requires a direct PPO run manifest"
+        raise ValueError(message)
+    run_root = manifest_path.expanduser().resolve(strict=False).parent
+    run_name = _required_text(run_manifest.get("run_name"), "run_name")
+
+    results: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    if _direct_training_task_config_path(run_manifest=run_manifest, run_root=run_root) is None:
+        skipped.append({"evaluation_name": OWN_TASK_EVALUATION_NAME, "reason": "training task snapshot unavailable"})
+    else:
+        own_task = run_direct_policy_own_task_evaluation(run_manifest_path=manifest_path, wandb_mode=wandb_mode)
+        results.append(_profile_result_entry(OWN_TASK_EVALUATION_NAME, own_task))
+
+    for suite_path in _standard_suite_paths():
+        suite = evaluation_suites.load_evaluation_suite(suite_path)
+        result = run_direct_policy_suite_evaluation(
+            run_manifest_path=manifest_path,
+            suite_path=suite_path,
+            wandb_mode=wandb_mode,
+        )
+        results.append(_profile_result_entry(suite.evaluation_name, result))
+
+    updated_manifest = _read_json(manifest_path)
+    index_path = _evaluation_index_path_from_manifest(run_manifest=updated_manifest, run_root=run_root)
+    index_payload = _read_json(index_path) if index_path.exists() else {"run_name": run_name, "evaluations": []}
+    profile_payload = {
+        "run_type": "evaluation",
+        "run_kind": "direct_ppo",
+        "mode": "direct_policy_standard_evaluation",
+        "profile_name": STANDARD_EVALUATION_PROFILE,
+        "run_name": run_name,
+        "evaluation_names": [entry["evaluation_name"] for entry in results],
+        "evaluations": results,
+        "skipped_evaluations": skipped,
+        "evaluation_index_path": str(index_path),
+        "evaluation_index_path_relative": utils.artifacts.path_relative_to(index_path, run_root),
+        "evaluation_index": index_payload,
+    }
+    return PolicyStandardEvaluationResult(metrics_path=str(index_path), manifest_path=str(index_path), metrics=profile_payload)
+
+
+def run_direct_policy_suite_evaluation(
+    run_manifest_path: str | Path,
+    suite_path: str | Path = evaluation_suites.DEFAULT_EVALUATION_SUITE_PATH,
+    wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED,
+) -> PolicySuiteEvaluationResult:
+    """Evaluate a direct PPO run on a suite and store outputs under that run."""
+    if wandb_mode not in utils.wandb.WANDB_MODES:
+        message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
+        raise ValueError(message)
+    manifest_path = Path(run_manifest_path)
+    run_manifest = _read_json(manifest_path)
+    if run_manifest.get("run_kind") != "direct_ppo":
+        message = "policy suite evaluation requires a direct PPO run manifest"
+        raise ValueError(message)
+
+    run_name = _required_text(run_manifest.get("run_name"), "run_name")
+    run_root = manifest_path.expanduser().resolve(strict=False).parent
+    storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
+    suite = evaluation_suites.load_evaluation_suite(suite_path)
+    snapshot = evaluation_suites.write_evaluation_suite_snapshot(
+        run_name=run_name,
+        suite=suite,
+        suite_path=suite_path,
+        storage_root=storage_root,
+    )
+    output_root = utils.artifacts.get_run_evaluation_dir(run_name, suite.evaluation_name, storage_root=storage_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    training = _mapping(run_manifest.get("training"), "training")
+    model_path = _resolve_manifest_path_value(
+        run_root=run_root,
+        absolute_value=training.get("model_path"),
+        relative_value=training.get("model_path_relative"),
+        field_name="training.model_path",
+    )
+    total_timesteps = int(run_manifest.get("total_timesteps", 0))
+    normalize_actions = bool(run_manifest.get("normalize_actions", True))
+    artifact_options = PolicyEvaluationArtifactOptions(
+        render_enabled=suite.render.enabled,
+        plots_enabled=suite.plots.enabled,
+        trace_enabled=suite.traces.enabled,
+        diagnostics_enabled=True,
+        render_fps=suite.render.fps,
+        render_max_steps=suite.render.max_steps,
+    )
+
+    evaluated_models: list[dict[str, Any]] = []
+    for suite_task in suite.tasks:
+        result = run_policy_evaluation(
+            PolicyEvaluationSpec(
+                label=f"{run_name}_{suite_task.task_name}",
+                model_role="direct_ppo",
+                model_path=model_path,
+                task_config_path=snapshot.task_config_paths[suite_task.task_name],
+                task_index=0,
+                task_shape=suite_task.task_shape,
+                output_dir=output_root / _safe_name(suite_task.task_name),
+                eval_steps=suite.eval_steps,
+                seed=suite.seed,
+                total_timesteps=total_timesteps,
+                normalize_actions=normalize_actions,
+                evaluation_name=suite.evaluation_name,
+                evaluation_suite_name=suite.evaluation_name,
+                suite_task_name=suite_task.task_name,
+                suite_task_names=tuple(suite.task_names),
+                suite_config_snapshot_path=snapshot.suite_config_path,
+                suite_config_snapshot_path_relative=snapshot.suite_config_path_relative,
+                suite_config_sha256=snapshot.suite_config_sha256,
+            ),
+            artifact_options,
+        )
+        evaluated_models.append(_evaluated_model_entry(result=result, run_root=run_root, suite_task_name=suite_task.task_name))
+
+    filename_stem = f"{run_name}_{suite.evaluation_name}"
+    metrics_dir = output_root / utils.artifacts.METRICS_DIRNAME
+    manifests_dir = output_root / utils.artifacts.MANIFESTS_DIRNAME
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = metrics_dir / f"{filename_stem}_metrics.json"
+    aggregate_manifest_path = manifests_dir / f"{filename_stem}_manifest.json"
+
+    aggregate_metrics = {
+        "run_type": "evaluation",
+        "run_kind": "direct_ppo",
+        "mode": "direct_policy_suite_evaluation",
+        "run_name": run_name,
+        "evaluation_name": suite.evaluation_name,
+        "evaluation_suite_name": suite.evaluation_name,
+        "evaluation_suite_path": str(Path(suite_path)),
+        "suite_config_snapshot_path": str(snapshot.suite_config_path),
+        "suite_config_snapshot_path_relative": snapshot.suite_config_path_relative,
+        "suite_config_sha256": snapshot.suite_config_sha256,
+        "suite_task_names": suite.task_names,
+        "suite_task_count": len(suite.task_names),
+        "model_label": run_name,
+        "model_role": "direct_ppo",
+        "model_path": str(model_path),
+        "model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
+        "evaluated_models": evaluated_models,
+        "summary_metrics_path": str(metrics_path),
+        "summary_metrics_path_relative": utils.artifacts.path_relative_to(metrics_path, run_root),
+        "summary_manifest_path": str(aggregate_manifest_path),
+        "summary_manifest_path_relative": utils.artifacts.path_relative_to(aggregate_manifest_path, run_root),
+        "entry_count": len(evaluated_models),
+    }
+    aggregate_manifest = {
+        key: aggregate_metrics[key]
+        for key in (
+            "run_type",
+            "run_kind",
+            "mode",
+            "run_name",
+            "evaluation_name",
+            "evaluation_suite_name",
+            "evaluation_suite_path",
+            "suite_config_snapshot_path",
+            "suite_config_snapshot_path_relative",
+            "suite_config_sha256",
+            "suite_task_names",
+            "suite_task_count",
+            "model_label",
+            "model_role",
+            "model_path",
+            "model_path_relative",
+            "summary_metrics_path",
+            "summary_metrics_path_relative",
+            "summary_manifest_path",
+            "summary_manifest_path_relative",
+            "entry_count",
+        )
+    }
+    _write_json(metrics_path, aggregate_metrics)
+    _write_json(aggregate_manifest_path, aggregate_manifest)
+
+    update_run_evaluation_index(
+        manifest_path,
+        _evaluation_index_entry(
+            run_root=run_root,
+            run_name=run_name,
+            run_kind="direct_ppo",
+            evaluation_name=suite.evaluation_name,
+            evaluation_suite_name=suite.evaluation_name,
+            suite_config_snapshot_path=snapshot.suite_config_path,
+            suite_config_snapshot_path_relative=snapshot.suite_config_path_relative,
+            suite_config_sha256=snapshot.suite_config_sha256,
+            aggregate_metrics_path=metrics_path,
+            aggregate_manifest_path=aggregate_manifest_path,
+            model_label=run_name,
+            model_role="direct_ppo",
+            model_path=model_path,
+            task_names=suite.task_names,
+            evaluated_models=evaluated_models,
+            mode="direct_policy_suite_evaluation",
+        ),
+    )
+    return PolicySuiteEvaluationResult(metrics_path=str(metrics_path), manifest_path=str(aggregate_manifest_path), metrics=aggregate_metrics)
+
+
+def update_run_evaluation_index(run_manifest_path: str | Path, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Upsert one linked evaluation entry into a run-scoped evaluation index."""
+    manifest_path = Path(run_manifest_path)
+    run_manifest = _read_json(manifest_path)
+    run_root = manifest_path.expanduser().resolve(strict=False).parent
+    run_name = _required_text(run_manifest.get("run_name"), "run_name")
+    index_path = _evaluation_index_path_from_manifest(run_manifest=run_manifest, run_root=run_root)
+    index_payload = _read_json(index_path) if index_path.exists() else {"run_name": run_name, "evaluations": []}
+    existing_entries = index_payload.get("evaluations", [])
+    if not isinstance(existing_entries, list):
+        existing_entries = []
+    entry_payload = dict(entry)
+    entry_key = str(entry_payload.get("index_key") or entry_payload.get("evaluation_name"))
+    entries = [candidate for candidate in existing_entries if not isinstance(candidate, Mapping) or candidate.get("index_key") != entry_key]
+    entries.append(entry_payload)
+    index_payload = {
+        "run_name": run_name,
+        "run_kind": run_manifest.get("run_kind"),
+        "index_path": str(index_path),
+        "index_path_relative": utils.artifacts.path_relative_to(index_path, run_root),
+        "entry_count": len(entries),
+        "evaluations": entries,
+    }
+    _write_json(index_path, index_payload)
+    run_manifest["evaluation_index"] = {
+        "path": str(index_path),
+        "path_relative": utils.artifacts.path_relative_to(index_path, run_root),
+        "entry_count": len(entries),
+        "evaluations": entries,
+    }
+    _write_json(manifest_path, run_manifest)
+    return index_payload
+
+
+def _evaluated_model_entry(result: PolicyEvaluationResult, run_root: Path, suite_task_name: str | None) -> dict[str, Any]:
+    """Build a manifest/index entry for one evaluated model-task pair."""
+    metrics = result.metrics
+    return {
+        "label": result.label,
+        "model_label": result.label,
+        "model_role": result.model_role,
+        "model_path": result.model_path,
+        "model_path_relative": utils.artifacts.path_relative_to(result.model_path, run_root),
+        "suite_task_name": suite_task_name,
+        "task_config_path": result.task_config_path,
+        "task_config_path_relative": utils.artifacts.path_relative_to(result.task_config_path, run_root),
+        "task_shape": result.task_shape,
+        "evaluation_dir": result.output_dir,
+        "evaluation_dir_relative": utils.artifacts.path_relative_to(result.output_dir, run_root),
+        "metrics_path": result.metrics_path,
+        "metrics_path_relative": utils.artifacts.path_relative_to(result.metrics_path, run_root),
+        "manifest_path": result.manifest_path,
+        "manifest_path_relative": utils.artifacts.path_relative_to(result.manifest_path, run_root),
+        "trace_path": result.trace_path,
+        "trace_path_relative": utils.artifacts.path_relative_to(result.trace_path, run_root),
+        "gif_path": result.gif_path,
+        "gif_path_relative": utils.artifacts.path_relative_to(result.gif_path, run_root),
+        "plot_paths": dict(result.plot_paths),
+        "plot_paths_relative": {key: utils.artifacts.path_relative_to(value, run_root) for key, value in result.plot_paths.items()},
+        "eval_steps": metrics.get("eval_steps"),
+        "seed": metrics.get("seed"),
+    }
+
+
+def _evaluation_index_entry(
+    *,
+    run_root: Path,
+    run_name: str,
+    run_kind: str,
+    evaluation_name: str,
+    evaluation_suite_name: str | None,
+    suite_config_snapshot_path: Path | None,
+    suite_config_snapshot_path_relative: str | None,
+    suite_config_sha256: str | None,
+    aggregate_metrics_path: Path,
+    aggregate_manifest_path: Path,
+    model_label: str,
+    model_role: str,
+    model_path: Path | str | None,
+    task_names: list[str],
+    evaluated_models: list[dict[str, Any]],
+    mode: str,
+) -> dict[str, Any]:
+    """Build a link-only evaluation index entry."""
+    model_path_text = None if model_path is None else str(model_path)
+    return {
+        "index_key": f"{mode}:{evaluation_name}",
+        "run_name": run_name,
+        "run_kind": run_kind,
+        "mode": mode,
+        "evaluation_name": evaluation_name,
+        "evaluation_suite_name": evaluation_suite_name,
+        "suite_name": evaluation_suite_name,
+        "suite_config_snapshot_path": None if suite_config_snapshot_path is None else str(suite_config_snapshot_path),
+        "suite_config_snapshot_path_relative": suite_config_snapshot_path_relative,
+        "suite_config_snapshot_relative": suite_config_snapshot_path_relative,
+        "suite_config_sha256": suite_config_sha256,
+        "aggregate_metrics_path": str(aggregate_metrics_path),
+        "aggregate_metrics_path_relative": utils.artifacts.path_relative_to(aggregate_metrics_path, run_root),
+        "aggregate_metrics_relative": utils.artifacts.path_relative_to(aggregate_metrics_path, run_root),
+        "evaluation_manifest_path": str(aggregate_manifest_path),
+        "evaluation_manifest_path_relative": utils.artifacts.path_relative_to(aggregate_manifest_path, run_root),
+        "evaluation_manifest_relative": utils.artifacts.path_relative_to(aggregate_manifest_path, run_root),
+        "model_label": model_label,
+        "model_role": model_role,
+        "model_path": model_path_text,
+        "model_path_relative": utils.artifacts.path_relative_to(model_path_text, run_root),
+        "task_names": list(task_names),
+        "evaluated_models": evaluated_models,
+    }
+
+
+def _evaluation_index_path_from_manifest(run_manifest: Mapping[str, Any], run_root: Path) -> Path:
+    """Resolve the canonical root evaluation index path for a run manifest."""
+    del run_manifest
+    return run_root / utils.artifacts.EVALUATION_INDEX_FILENAME
+
+
+def _direct_training_task_config_path(run_manifest: Mapping[str, Any], run_root: Path) -> Path | None:
+    """Return the task config snapshot used for direct PPO training when available."""
+    config_payload = run_manifest.get("config")
+    if not isinstance(config_payload, Mapping):
+        return None
+    relative_path = config_payload.get("task_config_snapshot_path_relative")
+    absolute_path = config_payload.get("task_config_snapshot_path")
+    if isinstance(relative_path, str) and relative_path:
+        return (run_root / relative_path).resolve(strict=False)
+    if isinstance(absolute_path, str) and absolute_path:
+        path = Path(absolute_path)
+        return path.resolve(strict=False) if path.is_absolute() else (run_root / path).resolve(strict=False)
+    source_path = config_payload.get("task_config_path")
+    if isinstance(source_path, str) and source_path:
+        path = Path(source_path)
+        return path.resolve(strict=False)
+    return None
+
+
+def _direct_training_task_index(run_manifest: Mapping[str, Any]) -> int:
+    """Return the task index selected during direct PPO training."""
+    config_payload = run_manifest.get("config")
+    if isinstance(config_payload, Mapping):
+        return int(config_payload.get("task_index", 0))
+    return int(run_manifest.get("task_index", 0))
+
+
+def _direct_training_task_shape(run_manifest: Mapping[str, Any]) -> str:
+    """Return the task shape selected during direct PPO training."""
+    config_payload = run_manifest.get("config")
+    if isinstance(config_payload, Mapping):
+        shape = config_payload.get("task_shape") or config_payload.get("training_task_shape")
+        if shape is not None and str(shape).strip():
+            return str(shape)
+    return _required_text(run_manifest.get("task_shape") or run_manifest.get("training_task_shape"), "config.task_shape")
+
+
+def _standard_suite_paths() -> list[Path]:
+    """Return suite configs included in the standard direct PPO profile."""
+    paths = [STANDARD_LINE_EVALUATION_SUITE_PATH, STANDARD_FINAL_BENCHMARK_SUITE_PATH]
+    if STANDARD_GENERALIZATION_SUITE_PATH.is_file():
+        paths.append(STANDARD_GENERALIZATION_SUITE_PATH)
+    return paths
+
+
+def _profile_result_entry(evaluation_name: str, result: PolicySuiteEvaluationResult) -> dict[str, Any]:
+    """Return a compact profile result link for one evaluation step."""
+    return {
+        "evaluation_name": evaluation_name,
+        "metrics_path": result.metrics_path,
+        "manifest_path": result.manifest_path,
+    }
+
+
+def _resolve_manifest_path_value(
+    *,
+    run_root: Path,
+    absolute_value: Any,
+    relative_value: Any,
+    field_name: str,
+) -> Path:
+    """Resolve a manifest path using a relative value first, then an absolute/local value."""
+    if isinstance(relative_value, str) and relative_value:
+        return (run_root / relative_value).resolve(strict=False)
+    if not isinstance(absolute_value, str) or not absolute_value:
+        message = f"run manifest must contain {field_name}"
+        raise ValueError(message)
+    path = Path(absolute_value)
+    return path.resolve(strict=False) if path.is_absolute() else (run_root / path).resolve(strict=False)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    """Read a JSON object from disk."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        message = f"expected JSON object at {path}"
+        raise TypeError(message)
+    return payload
+
+
+def _mapping(value: Any, field_name: str) -> Mapping[str, Any]:
+    """Return a mapping field from a manifest."""
+    if not isinstance(value, Mapping):
+        message = f"run manifest must contain a mapping at {field_name}"
+        raise TypeError(message)
+    return value
+
+
+def _required_text(value: Any, field_name: str) -> str:
+    """Return a required non-empty text field."""
+    if value is None or not str(value).strip():
+        message = f"run manifest must contain {field_name}"
+        raise ValueError(message)
+    return str(value)
 
 
 def _collect_diagnostics(
@@ -434,6 +979,14 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "label",
         "model_role",
+        "evaluation_name",
+        "evaluation_suite_name",
+        "suite_task_name",
+        "suite_task_names",
+        "suite_task_count",
+        "suite_config_snapshot_path",
+        "suite_config_snapshot_path_relative",
+        "suite_config_sha256",
         "model_path",
         "task_config_path_used_for_evaluation",
         "task_shape_used_for_evaluation",
@@ -495,8 +1048,19 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 __all__ = [
     "DEFAULT_RENDER_FPS",
+    "OWN_TASK_EVALUATION_NAME",
+    "STANDARD_EVALUATION_PROFILE",
+    "STANDARD_FINAL_BENCHMARK_SUITE_PATH",
+    "STANDARD_GENERALIZATION_SUITE_PATH",
+    "STANDARD_LINE_EVALUATION_SUITE_PATH",
     "PolicyEvaluationArtifactOptions",
     "PolicyEvaluationResult",
     "PolicyEvaluationSpec",
+    "PolicyStandardEvaluationResult",
+    "PolicySuiteEvaluationResult",
+    "run_direct_policy_own_task_evaluation",
+    "run_direct_policy_standard_evaluation",
+    "run_direct_policy_suite_evaluation",
     "run_policy_evaluation",
+    "update_run_evaluation_index",
 ]

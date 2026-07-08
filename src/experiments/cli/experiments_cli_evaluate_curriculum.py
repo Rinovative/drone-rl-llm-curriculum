@@ -2,12 +2,12 @@
 ===============================================================================
 experiments_cli_evaluate_curriculum.py
 ===============================================================================
-Command-line entry point for curriculum evaluation suites.
+Command-line entry point for curriculum evaluation profiles.
 
 Responsibilities:
-  - Parse curriculum summary, suite, model-scope, and baseline arguments
+  - Parse curriculum summary, optional suite, and model-scope arguments
   - Run reusable curriculum evaluation helpers
-  - Print aggregate metrics and manifest paths for operators
+  - Print root summary and index links for operators
 
 Design principles:
   - Keep CLI behavior thin and report-oriented
@@ -31,13 +31,13 @@ from src.experiments.curriculum import experiments_curriculum_evaluation as curr
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the curriculum evaluation CLI parser."""
-    parser = argparse.ArgumentParser(description="Evaluate trained curriculum PPO models through a canonical evaluation suite.")
+    parser = argparse.ArgumentParser(description="Evaluate trained curriculum PPO models through the standard profile or one explicit suite.")
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument(
         "--suite",
         type=Path,
-        default=curriculum_evaluation.DEFAULT_EVALUATION_SUITE_PATH,
-        help="Canonical evaluation suite YAML path.",
+        default=None,
+        help="Canonical evaluation suite YAML path. Omit to run the standard profile.",
     )
     parser.add_argument(
         "--mode",
@@ -48,8 +48,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-scope",
         choices=curriculum_evaluation.SUPPORTED_MODEL_SCOPES,
         default=curriculum_evaluation.DEFAULT_MODEL_SCOPE,
+        help="Use all stages by default; pass final-stage to narrow the standard profile or an explicit suite.",
     )
-    parser.add_argument("--include-baseline-model", type=Path, default=None)
+    parser.add_argument(
+        "--include-baseline-model",
+        type=Path,
+        default=None,
+        help=("Unsupported for the stage-owned curriculum layout; evaluate the direct PPO run separately with experiments_cli_evaluate_policy."),
+    )
     parser.add_argument("--baseline-label", default="baseline")
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--no-render", action="store_true", help="Disable simulator GIF rendering.")
@@ -69,21 +75,35 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the curriculum evaluation CLI and return a process status code."""
     args = build_parser().parse_args(argv)
-    result = curriculum_evaluation.run_curriculum_evaluation(
-        summary_path=args.summary,
-        mode=args.mode,
-        suite_path=args.suite,
-        model_scope=args.model_scope,
-        include_baseline_model=args.include_baseline_model,
-        baseline_label=args.baseline_label,
-        eval_steps=args.eval_steps,
-        wandb_mode=args.wandb_mode,
-        render=False if args.no_render else None,
-        render_fps=args.render_fps,
-        render_max_steps=args.render_max_steps,
-        plots=False if args.no_plots else None,
-        traces=False if args.no_traces else None,
-    )
+    result: curriculum_evaluation.CurriculumStandardEvaluationResult | curriculum_evaluation.CurriculumEvaluationResult
+    if args.suite is None:
+        result = curriculum_evaluation.run_curriculum_standard_evaluation(
+            summary_path=args.summary,
+            eval_steps=args.eval_steps,
+            wandb_mode=args.wandb_mode,
+            model_scope=args.model_scope,
+            render=False if args.no_render else None,
+            render_fps=args.render_fps,
+            render_max_steps=args.render_max_steps,
+            plots=False if args.no_plots else None,
+            traces=False if args.no_traces else None,
+        )
+    else:
+        result = curriculum_evaluation.run_curriculum_evaluation(
+            summary_path=args.summary,
+            mode=args.mode,
+            suite_path=args.suite,
+            model_scope=args.model_scope,
+            include_baseline_model=args.include_baseline_model,
+            baseline_label=args.baseline_label,
+            eval_steps=args.eval_steps,
+            wandb_mode=args.wandb_mode,
+            render=False if args.no_render else None,
+            render_fps=args.render_fps,
+            render_max_steps=args.render_max_steps,
+            plots=False if args.no_plots else None,
+            traces=False if args.no_traces else None,
+        )
     print(
         json.dumps(
             {"manifest_path": result.manifest_path, "metrics_path": result.metrics_path, "metrics": result.metrics},

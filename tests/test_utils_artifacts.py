@@ -30,6 +30,18 @@ def test_storage_root_respects_environment(tmp_path: Path, monkeypatch: pytest.M
         utils.artifacts.get_run_config_evaluation_suites_dir("direct_ppo_line_seed0")
         == storage_root / "runs" / "direct_ppo_line_seed0" / "config" / "evaluation_suites"
     )
+    assert (
+        utils.artifacts.get_run_training_config_snapshot_path("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "config" / "training_config.yaml"
+    )
+    assert (
+        utils.artifacts.get_run_task_config_snapshot_path("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "config" / "task_config.yaml"
+    )
+    assert (
+        utils.artifacts.get_run_curriculum_config_snapshot_path("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "config" / "curriculum_config.yaml"
+    )
     assert utils.artifacts.get_run_training_dir("direct_ppo_line_seed0") == storage_root / "runs" / "direct_ppo_line_seed0" / "training"
     assert (
         utils.artifacts.get_run_training_manifest_path("direct_ppo_line_seed0")
@@ -59,6 +71,24 @@ def test_storage_root_respects_environment(tmp_path: Path, monkeypatch: pytest.M
         utils.artifacts.get_run_evaluation_metrics_dir("direct_ppo_line_seed0", "line_basic")
         == storage_root / "runs" / "direct_ppo_line_seed0" / "evaluations" / "line_basic" / "metrics"
     )
+    assert (
+        utils.artifacts.get_run_evaluation_index_path("direct_ppo_line_seed0")
+        == storage_root / "runs" / "direct_ppo_line_seed0" / "evaluation_index.json"
+    )
+
+
+def test_relative_path_helpers_are_portable(tmp_path: Path) -> None:
+    """Verify manifest-relative paths avoid absolute storage paths when possible."""
+    run_root = tmp_path / "runs" / "direct_ppo_line_seed0"
+    metrics_path = run_root / "training" / "metrics" / "metrics.json"
+    outside_path = tmp_path / "external" / "artifact.json"
+
+    assert utils.artifacts.path_relative_to(metrics_path, run_root) == "training/metrics/metrics.json"
+    assert utils.artifacts.path_relative_to_run(metrics_path, "direct_ppo_line_seed0", storage_root=tmp_path) == "training/metrics/metrics.json"
+    assert utils.artifacts.path_relative_to("training/models/model.zip", run_root) == "training/models/model.zip"
+    assert utils.artifacts.path_relative_to(None, run_root) is None
+    assert utils.artifacts.path_relative_to(outside_path, run_root) == outside_path.as_posix()
+    assert utils.artifacts.storage_root_from_run_dir(run_root) == tmp_path
 
 
 def test_run_helpers_sanitize_single_path_segments(tmp_path: Path) -> None:

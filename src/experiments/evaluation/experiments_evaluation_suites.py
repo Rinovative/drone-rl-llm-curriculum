@@ -24,12 +24,13 @@ Boundaries:
 from __future__ import annotations
 
 import copy
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src import validation
+from src import utils, validation
 from src.experiments import experiments_config as config
 
 DEFAULT_RENDER_FPS = 20
@@ -261,6 +262,78 @@ class EvaluationSuite:
         }
 
 
+@dataclass(frozen=True)
+class EvaluationSuiteSnapshot:
+    """Paths and identity metadata for a copied evaluation suite snapshot."""
+
+    suite_config_path: Path
+    suite_config_path_relative: str
+    suite_config_sha256: str
+    task_config_paths: dict[str, Path]
+    task_config_paths_relative: dict[str, str]
+
+
+def write_evaluation_suite_snapshot(
+    run_name: str,
+    suite: EvaluationSuite,
+    suite_path: str | Path | None = None,
+    storage_root: str | Path | None = None,
+) -> EvaluationSuiteSnapshot:
+    """Copy a suite config and materialize one-task configs under a run."""
+    config_dir = utils.artifacts.get_run_config_evaluation_suites_dir(run_name, storage_root)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    suite_stem = _safe_name(suite.evaluation_name)
+    suite_copy_path = config_dir / f"{suite_stem}_eval_suite.yaml"
+    suite_text = _suite_snapshot_text(suite=suite, suite_path=suite_path)
+    suite_copy_path.write_text(suite_text, encoding="utf-8")
+
+    task_config_dir = config_dir / suite_stem
+    task_config_dir.mkdir(parents=True, exist_ok=True)
+    task_config_paths: dict[str, Path] = {}
+    task_config_paths_relative: dict[str, str] = {}
+    for suite_task in suite.tasks:
+        task_config_path = task_config_dir / f"{_safe_name(suite_task.task_name)}_task.yaml"
+        payload = {
+            "name": suite_task.task_name,
+            "evaluation_name": suite.evaluation_name,
+            "suite_task_name": suite_task.task_name,
+            "tasks": [copy.deepcopy(suite_task.task)],
+        }
+        task_config_path.write_text(_to_yaml(payload), encoding="utf-8")
+        task_config_paths[suite_task.task_name] = task_config_path
+        task_config_paths_relative[suite_task.task_name] = str(utils.artifacts.path_relative_to_run(task_config_path, run_name, storage_root))
+
+    return EvaluationSuiteSnapshot(
+        suite_config_path=suite_copy_path,
+        suite_config_path_relative=str(utils.artifacts.path_relative_to_run(suite_copy_path, run_name, storage_root)),
+        suite_config_sha256=hashlib.sha256(suite_text.encode("utf-8")).hexdigest(),
+        task_config_paths=task_config_paths,
+        task_config_paths_relative=task_config_paths_relative,
+    )
+
+
+def _suite_snapshot_text(suite: EvaluationSuite, suite_path: str | Path | None) -> str:
+    """Return exact suite source text when available, otherwise a normalized YAML snapshot."""
+    if suite_path is not None:
+        source_path = Path(suite_path)
+        if source_path.is_file():
+            return source_path.read_text(encoding="utf-8")
+    return _to_yaml(suite.to_dict())
+
+
+def _to_yaml(payload: Mapping[str, Any]) -> str:
+    """Serialize a compact evaluation-suite payload to YAML."""
+    import yaml  # noqa: PLC0415
+
+    return yaml.safe_dump(dict(payload), sort_keys=False)
+
+
+def _safe_name(value: str) -> str:
+    """Return a filesystem-safe suite/task path component."""
+    text = value.strip().replace(" ", "_")
+    return "".join(character if character.isalnum() or character in {"_", "-"} else "_" for character in text)
+
+
 def load_evaluation_suite(path: str | Path) -> EvaluationSuite:
     """
     Load and validate a canonical evaluation suite YAML file.
@@ -404,7 +477,9 @@ __all__ = [
     "EvaluationPlotOptions",
     "EvaluationRenderOptions",
     "EvaluationSuite",
+    "EvaluationSuiteSnapshot",
     "EvaluationSuiteTask",
     "EvaluationTraceOptions",
     "load_evaluation_suite",
+    "write_evaluation_suite_snapshot",
 ]

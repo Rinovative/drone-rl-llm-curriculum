@@ -71,7 +71,7 @@ tasks:
         },
     )
 
-    summary_path = tmp_path / "summary.json"
+    summary_path = tmp_path / "storage" / "runs" / "curriculum_manual_line_smoke_seed0" / "run_manifest.json"
     _write_json(
         summary_path,
         {
@@ -209,6 +209,14 @@ def _fake_policy_evaluation(spec: object, artifacts: object) -> policy_evaluatio
     payload = {
         "label": spec.label,
         "model_role": spec.model_role,
+        "evaluation_name": spec.evaluation_name,
+        "evaluation_suite_name": spec.evaluation_suite_name,
+        "suite_task_name": spec.suite_task_name,
+        "suite_task_names": list(spec.suite_task_names),
+        "suite_task_count": len(spec.suite_task_names),
+        "suite_config_snapshot_path": None if spec.suite_config_snapshot_path is None else str(spec.suite_config_snapshot_path),
+        "suite_config_snapshot_path_relative": spec.suite_config_snapshot_path_relative,
+        "suite_config_sha256": spec.suite_config_sha256,
         "model_path": str(spec.model_path),
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
@@ -316,6 +324,38 @@ def test_curriculum_evaluation_cli_parser_exposes_suite_options() -> None:
     assert args.no_traces is True
     assert args.model_scope == "final-stage"
 
+    default_args = parser.parse_args(["--summary", "summary.json"])
+    assert default_args.suite is None
+
+
+def test_curriculum_evaluation_cli_standard_profile_passes_model_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the no-suite CLI path passes explicit model-scope narrowing."""
+    captured: dict[str, object] = {}
+
+    def fake_standard_evaluation(**kwargs: object) -> curriculum_evaluation.CurriculumStandardEvaluationResult:
+        captured.update(kwargs)
+        return curriculum_evaluation.CurriculumStandardEvaluationResult(
+            metrics_path="evaluation_summary.json",
+            manifest_path="evaluation_summary.json",
+            metrics={"profile_name": "standard"},
+        )
+
+    monkeypatch.setattr(curriculum_evaluation, "run_curriculum_standard_evaluation", fake_standard_evaluation)
+
+    status = cli_evaluate_curriculum.main(
+        [
+            "--summary",
+            "storage/runs/curriculum_manual_line_smoke_seed0/run_manifest.json",
+            "--model-scope",
+            "final-stage",
+        ]
+    )
+
+    assert status == 0
+    assert captured["model_scope"] == "final-stage"
+
 
 def test_curriculum_evaluation_requires_suite_for_suite_mode(tmp_path: Path) -> None:
     """Verify suite mode requires a canonical --suite config."""
@@ -333,35 +373,44 @@ def test_curriculum_evaluation_own_stage_creates_stage_indexed_dirs_and_summary_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify own-stage mode still produces stage-indexed evaluation dirs."""
+    """Verify own-stage mode produces stage-owned own_task evaluation dirs."""
     summary_path = _curriculum_summary(tmp_path)
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
 
     result = curriculum_evaluation.run_curriculum_evaluation(summary_path=summary_path, mode="own-stage")
 
-    payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    payload = result.metrics
+    summary_payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    assert Path(result.metrics_path) == summary_path.parent / "evaluation_summary.json"
+    assert result.manifest_path == result.metrics_path
     assert payload["evaluation_mode"] == "own-stage"
+    assert payload["evaluation_name"] == "own_task"
     assert payload["run_kind"] == "curriculum"
     assert payload["curriculum_kind"] == "manual"
     assert payload["curriculum_run_name"] == "curriculum_manual_line_smoke_seed0"
     assert payload["evaluation_suite_name"] is None
     assert payload["suite_task_count"] == 0
     assert payload["model_scope"] == "all-stages"
+    assert payload["summary_metrics_path_relative"] == "evaluation_summary.json"
+    assert payload["summary_manifest_path_relative"] == "evaluation_summary.json"
     assert len(payload["evaluated_models"]) == 2
     directories = [entry["evaluation_dir"].replace("\\", "/") for entry in payload["evaluated_models"]]
-    assert directories[0].endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage01_hover_stabilization/evaluations/own_stage")
-    assert directories[1].endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/own_stage")
+    assert directories[0].endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage01_hover_stabilization/evaluations/own_task")
+    assert directories[1].endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/own_task")
     assert payload["evaluated_models"][0]["is_final_stage"] is False
     assert payload["evaluated_models"][1]["is_final_stage"] is True
     assert payload["evaluated_models"][0]["suite_task_name"] is None
+    assert not (summary_path.parent / "evaluations" / "own_task").exists()
+    assert summary_payload["entry_count"] == 1
+    assert summary_payload["evaluations"][0]["evaluation_name"] == "own_task"
 
 
-def test_curriculum_evaluation_suite_final_stage_writes_run_level_and_uses_suite_options(
+def test_curriculum_evaluation_suite_final_stage_writes_stage_owned_artifacts_and_uses_suite_options(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify final-stage suite evaluation writes run-level task artifacts."""
+    """Verify final-stage suite evaluation writes task artifacts under the final stage."""
     summary_path = _curriculum_summary(tmp_path)
     suite_path = _suite_config(tmp_path)
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
@@ -373,8 +422,10 @@ def test_curriculum_evaluation_suite_final_stage_writes_run_level_and_uses_suite
         model_scope="final-stage",
     )
 
-    payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    payload = result.metrics
+    summary_payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
     directories = [entry["evaluation_dir"].replace("\\", "/") for entry in payload["evaluated_models"]]
+    assert Path(result.metrics_path) == summary_path.parent / "evaluation_summary.json"
     assert payload["evaluation_mode"] == "suite"
     assert payload["evaluation_name"] == "final_suite"
     assert payload["evaluation_suite_name"] == "final_suite"
@@ -384,9 +435,11 @@ def test_curriculum_evaluation_suite_final_stage_writes_run_level_and_uses_suite
     assert payload["entry_count"] == 2
     assert all(entry["stage_index"] == 2 for entry in payload["evaluated_models"])
     assert all(entry["is_final_stage"] is True for entry in payload["evaluated_models"])
-    assert directories[0].endswith("runs/curriculum_manual_line_smoke_seed0/evaluations/final_suite/line_basic")
-    assert directories[1].endswith("runs/curriculum_manual_line_smoke_seed0/evaluations/final_suite/hover_basic")
-    assert not any("/stages/" in path for path in directories)
+    assert directories[0].endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/final_suite/line_basic")
+    assert directories[1].endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/final_suite/hover_basic")
+    assert all("/stages/stage02_line/" in path for path in directories)
+    root_evaluation = summary_path.parent / "evaluations" / "final_suite"
+    assert not root_evaluation.exists()
     assert {entry["suite_task_name"] for entry in payload["evaluated_models"]} == {"line_basic", "hover_basic"}
     assert all(entry["eval_steps"] == 88 for entry in payload["evaluated_models"])
     assert all(entry["seed"] == 7 for entry in payload["evaluated_models"])
@@ -396,34 +449,69 @@ def test_curriculum_evaluation_suite_final_stage_writes_run_level_and_uses_suite
     copied_task_config = Path(payload["evaluated_models"][0]["task_config_path_used_for_evaluation"])
     assert copied_task_config.exists()
     assert copied_task_config.as_posix().endswith("config/evaluation_suites/final_suite/line_basic_task.yaml")
+    assert payload["suite_config_snapshot_path_relative"] == "config/evaluation_suites/final_suite_eval_suite.yaml"
+    assert Path(payload["suite_config_snapshot_path"]).exists()
+    assert payload["summary_role"] == "derived_aggregate_link_summary"
+    assert payload["detailed_stage_artifacts_duplicated_at_run_root"] is False
+    assert payload["summary_metrics_path_relative"] == "evaluation_summary.json"
+    assert payload["summary_manifest_path_relative"] == "evaluation_summary.json"
+    assert payload["canonical_stage_evaluation_manifest_paths_relative"] == [
+        "stages/stage02_line/evaluations/final_suite/line_basic/manifests/stage02_line_line_basic_manifest.json",
+        "stages/stage02_line/evaluations/final_suite/hover_basic/manifests/stage02_line_hover_basic_manifest.json",
+    ]
+    assert summary_payload["entry_count"] == 1
+    assert summary_payload["evaluations"][0]["evaluation_name"] == "final_suite"
+
+    updated_manifest = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert updated_manifest["evaluation_index"]["path_relative"] == "evaluation_index.json"
+    assert updated_manifest["evaluation_index"]["entry_count"] == 1
+    index_entry = updated_manifest["evaluation_index"]["evaluations"][0]
+    assert index_entry["evaluation_name"] == "final_suite"
+    assert index_entry["suite_name"] == "final_suite"
+    assert index_entry["model_scope"] == "final-stage"
+    assert index_entry["aggregate_metrics_path_relative"] == "evaluation_summary.json"
+    assert index_entry["aggregate_metrics_relative"] == "evaluation_summary.json"
+    assert index_entry["evaluation_manifest_path_relative"] == "evaluation_summary.json"
+    assert index_entry["evaluation_manifest_relative"] == "evaluation_summary.json"
+    assert index_entry["suite_config_snapshot_path_relative"] == "config/evaluation_suites/final_suite_eval_suite.yaml"
+    assert index_entry["suite_config_snapshot_relative"] == "config/evaluation_suites/final_suite_eval_suite.yaml"
+    assert index_entry["task_names"] == ["line_basic", "hover_basic"]
+    assert index_entry["canonical_stage_evaluation_manifest_paths_relative"] == [
+        "stages/stage02_line/evaluations/final_suite/line_basic/manifests/stage02_line_line_basic_manifest.json",
+        "stages/stage02_line/evaluations/final_suite/hover_basic/manifests/stage02_line_hover_basic_manifest.json",
+    ]
+    final_stage_evaluation = updated_manifest["final_stage_evaluation"]
+    assert final_stage_evaluation["final_stage_index"] == 2
+    assert final_stage_evaluation["final_stage_name"] == "line"
+    assert final_stage_evaluation["evaluation_manifest_path_relative"] == "evaluation_summary.json"
+    assert final_stage_evaluation["canonical_stage_evaluation_manifest_paths_relative"] == [
+        "stages/stage02_line/evaluations/final_suite/line_basic/manifests/stage02_line_line_basic_manifest.json",
+        "stages/stage02_line/evaluations/final_suite/hover_basic/manifests/stage02_line_hover_basic_manifest.json",
+    ]
 
 
-def test_curriculum_evaluation_stage_suite_scope_uses_stage_dirs_and_baseline(
+def test_curriculum_evaluation_stage_suite_scope_uses_stage_dirs_without_root_details(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify all-stage suite evaluation uses stage dirs and optional baseline dirs."""
+    """Verify all-stage suite evaluation uses only owning stage dirs for details."""
     summary_path = _curriculum_summary(tmp_path)
     suite_path = _suite_config(tmp_path)
-    baseline = tmp_path / "baseline_model.zip"
-    baseline.write_bytes(b"model")
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
 
     result = curriculum_evaluation.run_curriculum_evaluation(
         summary_path=summary_path,
         suite_path=suite_path,
-        include_baseline_model=baseline,
-        baseline_label="ppo_line",
         render=True,
         plots=True,
         traces=True,
     )
 
-    payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    payload = result.metrics
     directories = [entry["evaluation_dir"].replace("\\", "/") for entry in payload["evaluated_models"]]
     assert payload["model_scope"] == "all-stages"
-    assert payload["entry_count"] == 6
+    assert payload["entry_count"] == 4
     assert any(
         path.endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage01_hover_stabilization/evaluations/final_suite/line_basic")
         for path in directories
@@ -431,13 +519,29 @@ def test_curriculum_evaluation_stage_suite_scope_uses_stage_dirs_and_baseline(
     assert any(
         path.endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/final_suite/hover_basic") for path in directories
     )
-    assert any(
-        path.endswith("runs/curriculum_manual_line_smoke_seed0/evaluations/final_suite/baselines/baseline_ppo_line/line_basic")
-        for path in directories
-    )
+    assert all("/stages/" in path for path in directories)
+    assert not (summary_path.parent / "evaluations" / "final_suite").exists()
+    assert payload["contains_convenience_baseline"] is False
+    assert payload["baseline_ownership"] is None
     assert all(entry["render_enabled"] is True for entry in payload["evaluated_models"])
     assert all(entry["plots_enabled"] is True for entry in payload["evaluated_models"])
     assert all(entry["trace_enabled"] is True for entry in payload["evaluated_models"])
+
+
+def test_curriculum_evaluation_rejects_convenience_baseline(tmp_path: Path) -> None:
+    """Verify curriculum runs do not create root-owned baseline detail artifacts."""
+    summary_path = _curriculum_summary(tmp_path)
+    suite_path = _suite_config(tmp_path)
+    baseline = tmp_path / "baseline_model.zip"
+    baseline.write_bytes(b"model")
+
+    with pytest.raises(ValueError, match="evaluate direct PPO separately"):
+        curriculum_evaluation.run_curriculum_evaluation(
+            summary_path=summary_path,
+            suite_path=suite_path,
+            include_baseline_model=baseline,
+            baseline_label="ppo_line",
+        )
 
 
 def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
@@ -456,12 +560,146 @@ def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
         model_scope="final-stage",
     )
 
-    payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    payload = result.metrics
 
     assert payload["model_scope"] == "final-stage"
     assert [entry["stage_index"] for entry in payload["evaluated_models"]] == [2]
     assert payload["evaluated_models"][0]["is_final_stage"] is True
     assert payload["evaluated_models"][0]["suite_task_name"] == "line_basic"
+    assert (
+        payload["evaluated_models"][0]["evaluation_dir"]
+        .replace("\\", "/")
+        .endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/line_suite/line_basic")
+    )
+
+
+def test_curriculum_standard_evaluation_runs_stage_owned_default_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify no-suite curriculum evaluation runs every default evaluation for every stage."""
+    summary_path = _curriculum_summary(tmp_path)
+    line_suite = _suite_config(tmp_path, evaluation_name="line_eval")
+    final_suite = _suite_config(tmp_path, evaluation_name="final_benchmark")
+    generalization_suite = _suite_config(tmp_path, evaluation_name="generalization")
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setattr(curriculum_evaluation, "STANDARD_LINE_EVALUATION_SUITE_PATH", line_suite)
+    monkeypatch.setattr(curriculum_evaluation, "STANDARD_FINAL_BENCHMARK_SUITE_PATH", final_suite)
+    monkeypatch.setattr(curriculum_evaluation, "STANDARD_GENERALIZATION_SUITE_PATH", generalization_suite)
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+
+    result = curriculum_evaluation.run_curriculum_standard_evaluation(
+        summary_path=summary_path,
+        render=False,
+        plots=False,
+        traces=False,
+    )
+
+    summary_payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    updated_manifest = json.loads(summary_path.read_text(encoding="utf-8"))
+    entries = summary_payload["evaluations"]
+    assert result.metrics["profile_name"] == "standard"
+    assert result.metrics["evaluation_names"] == ["own_task", "line_eval", "final_benchmark", "generalization"]
+    assert summary_payload["entry_count"] == 4
+    assert [(entry["evaluation_name"], entry["model_scope"], entry["entry_count"]) for entry in entries] == [
+        ("own_task", "all-stages", 2),
+        ("line_eval", "all-stages", 4),
+        ("final_benchmark", "all-stages", 4),
+        ("generalization", "all-stages", 4),
+    ]
+    assert updated_manifest["evaluation_index"]["path_relative"] == "evaluation_index.json"
+    assert updated_manifest["evaluation_index"]["entry_count"] == 4
+    assert [(entry["evaluation_name"], entry["model_scope"]) for entry in updated_manifest["evaluation_index"]["evaluations"]] == [
+        ("own_task", "all-stages"),
+        ("line_eval", "all-stages"),
+        ("final_benchmark", "all-stages"),
+        ("generalization", "all-stages"),
+    ]
+    for evaluation_name in ("own_task", "line_eval", "final_benchmark", "generalization"):
+        evaluation_dirs = [
+            model["evaluation_dir_relative"].replace("\\", "/")
+            for entry in entries
+            if entry["evaluation_name"] == evaluation_name
+            for model in entry["evaluated_models"]
+        ]
+        assert any(path.startswith(f"stages/stage01_hover_stabilization/evaluations/{evaluation_name}") for path in evaluation_dirs)
+        assert any(path.startswith(f"stages/stage02_line/evaluations/{evaluation_name}") for path in evaluation_dirs)
+    assert not (summary_path.parent / "evaluations").exists()
+
+
+def test_curriculum_standard_evaluation_final_stage_scope_narrows_every_default_evaluation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify explicit final-stage model scope narrows the whole standard profile."""
+    summary_path = _curriculum_summary(tmp_path)
+    line_suite = _suite_config(tmp_path, evaluation_name="line_eval")
+    final_suite = _suite_config(tmp_path, evaluation_name="final_benchmark")
+    generalization_suite = _suite_config(tmp_path, evaluation_name="generalization")
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setattr(curriculum_evaluation, "STANDARD_LINE_EVALUATION_SUITE_PATH", line_suite)
+    monkeypatch.setattr(curriculum_evaluation, "STANDARD_FINAL_BENCHMARK_SUITE_PATH", final_suite)
+    monkeypatch.setattr(curriculum_evaluation, "STANDARD_GENERALIZATION_SUITE_PATH", generalization_suite)
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+
+    result = curriculum_evaluation.run_curriculum_standard_evaluation(
+        summary_path=summary_path,
+        model_scope="final-stage",
+        render=False,
+        plots=False,
+        traces=False,
+    )
+
+    summary_payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    updated_manifest = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert [(entry["evaluation_name"], entry["model_scope"], entry["entry_count"]) for entry in summary_payload["evaluations"]] == [
+        ("own_task", "final-stage", 1),
+        ("line_eval", "final-stage", 2),
+        ("final_benchmark", "final-stage", 2),
+        ("generalization", "final-stage", 2),
+    ]
+    assert [(entry["evaluation_name"], entry["model_scope"]) for entry in updated_manifest["evaluation_index"]["evaluations"]] == [
+        ("own_task", "final-stage"),
+        ("line_eval", "final-stage"),
+        ("final_benchmark", "final-stage"),
+        ("generalization", "final-stage"),
+    ]
+    assert all(model["stage_index"] == 2 for entry in summary_payload["evaluations"] for model in entry["evaluated_models"])
+    assert not (summary_path.parent / "evaluations").exists()
+
+
+def test_curriculum_explicit_suite_runs_only_requested_suite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify explicit --suite line_eval avoids the full standard profile."""
+    summary_path = _curriculum_summary(tmp_path)
+    suite_path = _suite_config(tmp_path, evaluation_name="line_eval")
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+
+    result = curriculum_evaluation.run_curriculum_evaluation(
+        summary_path=summary_path,
+        suite_path=suite_path,
+        render=False,
+        plots=False,
+        traces=False,
+    )
+
+    summary_payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    updated_manifest = json.loads(summary_path.read_text(encoding="utf-8"))
+    evaluation_dirs = sorted(
+        path.relative_to(summary_path.parent).as_posix() for path in (summary_path.parent / "stages").glob("*/evaluations/*") if path.is_dir()
+    )
+    assert summary_payload["entry_count"] == 1
+    assert summary_payload["evaluations"][0]["evaluation_name"] == "line_eval"
+    assert updated_manifest["evaluation_index"]["entry_count"] == 1
+    assert updated_manifest["evaluation_index"]["evaluations"][0]["evaluation_name"] == "line_eval"
+    assert evaluation_dirs == [
+        "stages/stage01_hover_stabilization/evaluations/line_eval",
+        "stages/stage02_line/evaluations/line_eval",
+    ]
+    assert not (summary_path.parent / "evaluations").exists()
 
 
 def test_removed_benchmark_config_is_not_required() -> None:

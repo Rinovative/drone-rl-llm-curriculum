@@ -353,8 +353,16 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     logs_dir = _resolve_artifact_subdir(active_settings, training_run_name, utils.artifacts.LOGS_DIRNAME)
     diagnostics_dir = _resolve_artifact_subdir(active_settings, training_run_name, utils.artifacts.DIAGNOSTICS_DIRNAME)
     wandb_settings = _wandb_settings(active_settings, resolved_task_shape)
+    config_snapshots: dict[str, str | None] = {}
     if active_settings.artifact_root is None:
         utils.artifacts.ensure_run_training_dirs(training_run_name)
+        config_snapshots = _write_direct_config_snapshots(
+            settings=active_settings,
+            run_name=training_run_name,
+            task=task,
+            selected_task_index=selected_task_index,
+            task_source=task_source,
+        )
 
     warnings = [*selection_warnings, *(_check_tracking_env(task, active_settings.normalize_actions) if active_settings.check_env else ())]
     diagnostic_steps = min(active_settings.eval_steps, DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS)
@@ -464,6 +472,10 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "configured_task_index": active_settings.task_index,
         "task_config_path": str(active_settings.task_config_path),
         "training_config_path": str(active_settings.training_config_path) if active_settings.training_config_path is not None else None,
+        "training_config_snapshot_path": config_snapshots.get("training_config_snapshot_path"),
+        "training_config_snapshot_path_relative": config_snapshots.get("training_config_snapshot_path_relative"),
+        "task_config_snapshot_path": config_snapshots.get("task_config_snapshot_path"),
+        "task_config_snapshot_path_relative": config_snapshots.get("task_config_snapshot_path_relative"),
         "task_source": task_source,
         "task_shape_requested": active_settings.task_shape,
         "total_timesteps": active_settings.total_timesteps,
@@ -905,6 +917,10 @@ def _build_manifest(
         "run_name": run_name,
         "training_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
         "task_config_path": str(settings.task_config_path),
+        "training_config_snapshot_path": metrics.get("training_config_snapshot_path"),
+        "training_config_snapshot_path_relative": metrics.get("training_config_snapshot_path_relative"),
+        "task_config_snapshot_path": metrics.get("task_config_snapshot_path"),
+        "task_config_snapshot_path_relative": metrics.get("task_config_snapshot_path_relative"),
         "task_source": task_source,
         "task_index": selected_task_index,
         "task_shape": str(task.get("shape", "unknown")),
@@ -919,12 +935,17 @@ def _build_manifest(
         "model_transfer_enabled": metrics.get("model_transfer_enabled", False),
         "model_transfer_source": metrics.get("model_transfer_source"),
         "model_path": metrics["model_path"],
+        "model_path_relative": utils.artifacts.path_relative_to(metrics["model_path"], _manifest_relative_base(settings, run_name)),
         "metrics_path": metrics["metrics_path"],
+        "metrics_path_relative": utils.artifacts.path_relative_to(metrics["metrics_path"], _manifest_relative_base(settings, run_name)),
         "manifest_path": metrics["manifest_path"],
+        "manifest_path_relative": utils.artifacts.path_relative_to(metrics["manifest_path"], _manifest_relative_base(settings, run_name)),
         "run_manifest_path": metrics.get("run_manifest_path"),
         "output_dir": str(settings.output_dir or _default_artifact_root(settings, run_name)),
         "logs_dir": metrics["logs_dir"],
+        "logs_dir_relative": utils.artifacts.path_relative_to(metrics["logs_dir"], _manifest_relative_base(settings, run_name)),
         "diagnostics_dir": metrics.get("diagnostics_dir"),
+        "diagnostics_dir_relative": utils.artifacts.path_relative_to(metrics.get("diagnostics_dir"), _manifest_relative_base(settings, run_name)),
         "warnings": list(metrics.get("warnings", [])),
         "wandb": metrics.get("wandb", {}),
         "diagnostics": diagnostics,
@@ -949,14 +970,23 @@ def _build_run_manifest(
         "run_manifest_path": metrics.get("run_manifest_path"),
         "training": {
             "manifest_path": metrics["manifest_path"],
+            "manifest_path_relative": utils.artifacts.path_relative_to_run(metrics["manifest_path"], run_name),
             "model_path": metrics["model_path"],
+            "model_path_relative": utils.artifacts.path_relative_to_run(metrics["model_path"], run_name),
             "metrics_path": metrics["metrics_path"],
+            "metrics_path_relative": utils.artifacts.path_relative_to_run(metrics["metrics_path"], run_name),
             "logs_dir": metrics["logs_dir"],
+            "logs_dir_relative": utils.artifacts.path_relative_to_run(metrics["logs_dir"], run_name),
             "diagnostics_dir": metrics.get("diagnostics_dir"),
+            "diagnostics_dir_relative": utils.artifacts.path_relative_to_run(metrics.get("diagnostics_dir"), run_name),
         },
         "config": {
             "training_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
             "task_config_path": str(settings.task_config_path),
+            "training_config_snapshot_path": metrics.get("training_config_snapshot_path"),
+            "training_config_snapshot_path_relative": metrics.get("training_config_snapshot_path_relative"),
+            "task_config_snapshot_path": metrics.get("task_config_snapshot_path"),
+            "task_config_snapshot_path_relative": metrics.get("task_config_snapshot_path_relative"),
             "task_shape": training_manifest["task_shape"],
             "task_shape_requested": settings.task_shape,
             "task_index": training_manifest["task_index"],
@@ -972,6 +1002,104 @@ def _build_run_manifest(
         "model_transfer_source": metrics.get("model_transfer_source"),
         "wandb": metrics.get("wandb", {}),
         "warnings": list(metrics.get("warnings", [])),
+        "evaluation_index": _evaluation_index_manifest(run_name),
+    }
+
+
+def _write_direct_config_snapshots(
+    settings: PPOTrackingSmokeSettings,
+    run_name: str,
+    task: dict[str, Any],
+    selected_task_index: int,
+    task_source: str,
+) -> dict[str, str | None]:
+    """Write direct PPO config snapshots and return manifest path fields."""
+    training_snapshot_path = utils.artifacts.get_run_training_config_snapshot_path(run_name)
+    task_snapshot_path = utils.artifacts.get_run_task_config_snapshot_path(run_name)
+    training_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_config_snapshot(
+        source_path=settings.training_config_path,
+        destination_path=training_snapshot_path,
+        fallback_payload=_training_config_snapshot_payload(settings),
+    )
+    _write_config_snapshot(
+        source_path=settings.task_config_path,
+        destination_path=task_snapshot_path,
+        fallback_payload={
+            "name": f"{run_name}_selected_task",
+            "task_source": task_source,
+            "task_index": selected_task_index,
+            "tasks": [task],
+        },
+    )
+    return {
+        "training_config_snapshot_path": str(training_snapshot_path),
+        "training_config_snapshot_path_relative": str(utils.artifacts.path_relative_to_run(training_snapshot_path, run_name)),
+        "task_config_snapshot_path": str(task_snapshot_path),
+        "task_config_snapshot_path_relative": str(utils.artifacts.path_relative_to_run(task_snapshot_path, run_name)),
+    }
+
+
+def _write_config_snapshot(source_path: Path | None, destination_path: Path, fallback_payload: dict[str, Any]) -> None:
+    """Copy a YAML source config exactly when available, otherwise materialize a fallback."""
+    if source_path is not None and source_path.is_file():
+        destination_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+        return
+    destination_path.write_text(_to_yaml(fallback_payload), encoding="utf-8")
+
+
+def _training_config_snapshot_payload(settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
+    """Build a fallback training config snapshot from resolved settings."""
+    return {
+        "task_config_path": str(settings.task_config_path),
+        "task_index": settings.task_index,
+        "task_shape": settings.task_shape,
+        "run_name": settings.run_name,
+        "total_timesteps": settings.total_timesteps,
+        "eval_steps": settings.eval_steps,
+        "seed": settings.seed,
+        "check_env": settings.check_env,
+        "normalize_actions": settings.normalize_actions,
+        "ppo": settings.ppo_config.to_dict(),
+        "wandb_mode": settings.wandb_mode,
+        "wandb_project": settings.wandb_project,
+        "wandb_entity": settings.wandb_entity,
+        "wandb_group": settings.wandb_group,
+        "wandb_name": settings.wandb_name,
+        "wandb_tags": list(settings.wandb_tags),
+    }
+
+
+def _to_yaml(payload: dict[str, Any]) -> str:
+    """Serialize a small config snapshot payload to YAML."""
+    import yaml  # noqa: PLC0415
+
+    return yaml.safe_dump(payload, sort_keys=False)
+
+
+def _manifest_relative_base(settings: PPOTrackingSmokeSettings, run_name: str) -> Path:
+    """Return the manifest-relative base for direct runs or curriculum stages."""
+    if settings.artifact_root is not None:
+        return settings.artifact_root.expanduser().resolve(strict=False).parent
+    return utils.artifacts.get_run_dir(run_name)
+
+
+def _evaluation_index_manifest(run_name: str) -> dict[str, Any]:
+    """Return the run-manifest link to the deterministic evaluation index."""
+    index_path = utils.artifacts.get_run_evaluation_index_path(run_name)
+    entries: list[Any] = []
+    if index_path.exists():
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+        raw_entries = payload.get("evaluations") if isinstance(payload, dict) else None
+        entries = raw_entries if isinstance(raw_entries, list) else []
+    return {
+        "path": str(index_path),
+        "path_relative": utils.artifacts.path_relative_to_run(index_path, run_name),
+        "entry_count": len(entries),
+        "evaluations": entries,
     }
 
 

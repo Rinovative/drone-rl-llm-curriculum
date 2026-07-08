@@ -196,17 +196,19 @@ python -m src.experiments.cli.experiments_cli_train_tracking --config configs/tr
 python -m src.experiments.cli.experiments_cli_train_curriculum --config configs/curricula/curriculum_manual_line_final.yaml --seed 0 --wandb-mode auto
 ```
 
-Evaluate the final manual-curriculum checkpoint and direct PPO baseline on the same line-focused benchmark suite:
+Evaluate direct PPO and manual-curriculum checkpoints as separate owned runs. When `--suite` is omitted, both evaluation CLIs run the standard profile: `own_task`, `line_eval`, `final_benchmark`, and `generalization` when `configs/evaluation/generalization_eval_suite.yaml` exists. Direct PPO evaluation artifacts stay under the direct run root. Curriculum evaluation runs every default evaluation for every stage, with artifacts written under the owning curriculum stage. The curriculum run root keeps only `evaluation_index.json`, optional `evaluation_summary.json`, and config snapshots; `config/evaluation_suites/` contains reproducibility snapshots, not duplicate result data.
 
 ```bash
+python -m src.experiments.cli.experiments_cli_evaluate_policy \
+  --run-manifest storage/runs/direct_ppo_line_final_seed0/run_manifest.json \
+  --wandb-mode auto
+
 python -m src.experiments.cli.experiments_cli_evaluate_curriculum \
   --summary storage/runs/curriculum_manual_line_final_seed0/run_manifest.json \
-  --suite configs/evaluation/final_benchmark_eval_suite.yaml \
-  --mode suite \
-  --model-scope final-stage \
-  --include-baseline-model storage/runs/direct_ppo_line_final_seed0/training/models/direct_ppo_line_final_seed0.zip \
-  --baseline-label direct_ppo_line_final_seed0
+  --wandb-mode auto
 ```
+
+Pass `--suite configs/evaluation/final_benchmark_eval_suite.yaml` for a single explicit suite instead of the full standard profile. Pass `--model-scope final-stage` to evaluate only the final curriculum stage.
 
 All generated artifacts stay under `storage/runs/<self_describing_run_id>/`. The direct PPO task source for real training is `configs/training/ppo_tracking_tasks.yaml`; `configs/smoke/*` remains correctness-only.
 
@@ -269,7 +271,7 @@ All generated artifacts stay under `storage/runs/<self_describing_run_id>/`. The
 
 </details>
 
-Generated artifacts use a run-scoped layout under `storage/runs/<self_describing_run_id>/`. Direct PPO training writes to `training/`, evaluations write to `evaluations/<evaluation_name>/`, and curriculum runs write stage-specific outputs under `stages/stageNN_<stage_name>/`.
+Generated artifacts use a run-scoped layout under `storage/runs/<self_describing_run_id>/`. Direct PPO training writes to `training/` and direct evaluations write to `evaluations/<evaluation_name>/`. Curriculum training and evaluation artifacts are stage-centric: each stage writes under `stages/stageNN_<stage_name>/`, while the curriculum run root keeps only `evaluation_index.json` and optional `evaluation_summary.json` links to stage-owned evaluation manifests.
 
 ---
 

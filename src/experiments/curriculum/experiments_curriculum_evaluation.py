@@ -24,7 +24,6 @@ Boundaries:
 
 from __future__ import annotations
 
-import copy
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -36,6 +35,11 @@ from src.experiments.evaluation import experiments_evaluation_policy as policy_e
 from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
 
 DEFAULT_EVALUATION_SUITE_PATH = evaluation_suites.DEFAULT_EVALUATION_SUITE_PATH
+OWN_TASK_EVALUATION_NAME = policy_evaluation.OWN_TASK_EVALUATION_NAME
+STANDARD_EVALUATION_PROFILE = policy_evaluation.STANDARD_EVALUATION_PROFILE
+STANDARD_LINE_EVALUATION_SUITE_PATH = policy_evaluation.STANDARD_LINE_EVALUATION_SUITE_PATH
+STANDARD_FINAL_BENCHMARK_SUITE_PATH = policy_evaluation.STANDARD_FINAL_BENCHMARK_SUITE_PATH
+STANDARD_GENERALIZATION_SUITE_PATH = policy_evaluation.STANDARD_GENERALIZATION_SUITE_PATH
 SUPPORTED_EVALUATION_MODES = ("own-stage", "suite")
 DEFAULT_EVALUATION_MODE = "suite"
 SUPPORTED_MODEL_SCOPES = ("all-stages", "final-stage")
@@ -51,17 +55,102 @@ class CurriculumEvaluationResult:
     Parameters
     ----------
     metrics_path
-        Path to the aggregate summary metrics JSON.
+        Path to the root evaluation summary JSON.
     manifest_path
-        Path to the aggregate summary manifest JSON.
+        Path to the root evaluation summary JSON.
     metrics
-        JSON-serializable aggregate summary payload.
+        JSON-serializable aggregate summary payload for this evaluation.
 
     """
 
     metrics_path: str
     manifest_path: str
     metrics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CurriculumStandardEvaluationResult:
+    """Aggregate result returned after running the standard curriculum profile."""
+
+    metrics_path: str
+    manifest_path: str
+    metrics: dict[str, Any]
+
+
+def run_curriculum_standard_evaluation(
+    summary_path: str | Path,
+    eval_steps: int | None = None,
+    wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED,
+    model_scope: str = DEFAULT_MODEL_SCOPE,
+    render: bool | None = None,
+    render_fps: int | None = None,
+    render_max_steps: int | None = None,
+    plots: bool | None = None,
+    traces: bool | None = None,
+) -> CurriculumStandardEvaluationResult:
+    """Run the standard stage-owned curriculum evaluation profile."""
+    if wandb_mode not in utils.wandb.WANDB_MODES:
+        message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
+        raise ValueError(message)
+    _validate_model_scope(model_scope)
+
+    results: list[dict[str, str]] = []
+    own_task = run_curriculum_evaluation(
+        summary_path=summary_path,
+        mode="own-stage",
+        suite_path=None,
+        model_scope=model_scope,
+        eval_steps=eval_steps,
+        wandb_mode=wandb_mode,
+        render=render,
+        render_fps=render_fps,
+        render_max_steps=render_max_steps,
+        plots=plots,
+        traces=traces,
+    )
+    results.append(_standard_profile_result_entry(OWN_TASK_EVALUATION_NAME, model_scope, own_task))
+
+    for suite_path, suite_model_scope in _standard_curriculum_suite_plan(model_scope):
+        suite = evaluation_suites.load_evaluation_suite(suite_path)
+        result = run_curriculum_evaluation(
+            summary_path=summary_path,
+            mode="suite",
+            suite_path=suite_path,
+            model_scope=suite_model_scope,
+            eval_steps=eval_steps,
+            wandb_mode=wandb_mode,
+            render=render,
+            render_fps=render_fps,
+            render_max_steps=render_max_steps,
+            plots=plots,
+            traces=traces,
+        )
+        results.append(_standard_profile_result_entry(suite.evaluation_name, suite_model_scope, result))
+
+    run_manifest_path = Path(summary_path)
+    run_root = run_manifest_path.expanduser().resolve(strict=False).parent
+    summary = _read_json(run_manifest_path)
+    run_name = _curriculum_run_name(summary)
+    storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
+    evaluation_summary_path = utils.artifacts.get_run_evaluation_summary_path(run_name, storage_root=storage_root)
+    evaluation_summary = _read_json(evaluation_summary_path) if evaluation_summary_path.exists() else {}
+    profile_payload = {
+        "run_type": "evaluation",
+        "run_kind": "curriculum",
+        "mode": "curriculum_standard_evaluation",
+        "profile_name": STANDARD_EVALUATION_PROFILE,
+        "curriculum_run_name": run_name,
+        "evaluation_names": [entry["evaluation_name"] for entry in results],
+        "evaluations": results,
+        "evaluation_summary_path": str(evaluation_summary_path),
+        "evaluation_summary_path_relative": utils.artifacts.path_relative_to(evaluation_summary_path, run_root),
+        "evaluation_summary": evaluation_summary,
+    }
+    return CurriculumStandardEvaluationResult(
+        metrics_path=str(evaluation_summary_path),
+        manifest_path=str(evaluation_summary_path),
+        metrics=profile_payload,
+    )
 
 
 def run_curriculum_evaluation(
@@ -93,9 +182,9 @@ def run_curriculum_evaluation(
     model_scope
         Stage model selection scope: ``all-stages`` or ``final-stage``.
     include_baseline_model
-        Optional baseline model path evaluated alongside selected curriculum models in suite mode.
+        Unsupported legacy convenience baseline path. Direct PPO should be evaluated through its own run.
     baseline_label
-        Human-readable baseline label.
+        Deprecated baseline label retained for CLI argument validation.
     eval_steps
         Optional evaluation-step override. Suite mode defaults to the suite ``eval_steps`` value.
     wandb_mode
@@ -119,14 +208,30 @@ def run_curriculum_evaluation(
     """
     _validate_mode_and_wandb(mode=mode, wandb_mode=wandb_mode)
     _validate_model_scope(model_scope)
-    summary = _read_json(Path(summary_path))
+    if include_baseline_model is not None:
+        message = "curriculum evaluation no longer writes convenience baseline artifacts inside curriculum runs; evaluate direct PPO separately"
+        raise ValueError(message)
+    run_manifest_path = Path(summary_path)
+    run_root = run_manifest_path.expanduser().resolve(strict=False).parent
+    storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
+    summary = _read_json(run_manifest_path)
     stages = _stages(summary)
     suite = _load_suite_for_mode(mode=mode, suite_path=suite_path)
 
     curriculum_run_name = _curriculum_run_name(summary)
     evaluation_name = _evaluation_name(mode=mode, suite=suite)
-    output_root = _mode_output_root(summary=summary, evaluation_name=evaluation_name)
-    output_root.mkdir(parents=True, exist_ok=True)
+    suite_snapshot = (
+        None
+        if suite is None
+        else evaluation_suites.write_evaluation_suite_snapshot(
+            run_name=curriculum_run_name,
+            suite=suite,
+            suite_path=suite_path,
+            storage_root=storage_root,
+        )
+    )
+    output_root = run_root
+    summary_output_path = utils.artifacts.get_run_evaluation_summary_path(curriculum_run_name, storage_root=storage_root)
 
     artifact_options = _artifact_options_from_suite(
         suite=suite,
@@ -145,10 +250,12 @@ def run_curriculum_evaluation(
         curriculum_run_name=curriculum_run_name,
         evaluation_name=evaluation_name,
         suite=suite,
+        suite_snapshot=suite_snapshot,
         model_scope=model_scope,
         include_baseline_model=include_baseline_model,
         baseline_label=baseline_label,
         eval_steps_override=eval_steps,
+        storage_root=storage_root,
     )
 
     evaluated_models: list[dict[str, Any]] = []
@@ -163,19 +270,18 @@ def run_curriculum_evaluation(
                 is_final_stage=bool(payload.get("is_final_stage", False)),
                 evaluation_suite_name=None if suite is None else suite.evaluation_name,
                 suite_task_name=payload.get("suite_task_name"),
+                run_root=run_root,
             )
         )
 
-    filename_stem = _summary_filename_stem(summary=summary, mode=mode, suite=suite)
-    metrics_dir = output_root / utils.artifacts.METRICS_DIRNAME
-    manifests_dir = output_root / utils.artifacts.MANIFESTS_DIRNAME
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    manifests_dir.mkdir(parents=True, exist_ok=True)
-
-    metrics_path = metrics_dir / f"{filename_stem}_metrics.json"
-    manifest_path = manifests_dir / f"{filename_stem}_manifest.json"
+    metrics_path = summary_output_path
+    manifest_path = summary_output_path
     suite_path_for_metrics = None if suite is None or suite_path is None else str(Path(suite_path))
     suite_task_names = [] if suite is None else suite.task_names
+    suite_snapshot_path = None if suite_snapshot is None else str(suite_snapshot.suite_config_path)
+    suite_snapshot_path_relative = None if suite_snapshot is None else suite_snapshot.suite_config_path_relative
+    suite_snapshot_sha256 = None if suite_snapshot is None else suite_snapshot.suite_config_sha256
+    contains_convenience_baseline = include_baseline_model is not None
 
     aggregate_metrics = {
         "run_type": "evaluation",
@@ -188,42 +294,109 @@ def run_curriculum_evaluation(
         "evaluation_name": evaluation_name,
         "evaluation_suite_name": None if suite is None else suite.evaluation_name,
         "evaluation_suite_path": suite_path_for_metrics,
+        "suite_config_snapshot_path": suite_snapshot_path,
+        "suite_config_snapshot_path_relative": suite_snapshot_path_relative,
+        "suite_config_sha256": suite_snapshot_sha256,
         "suite_task_names": suite_task_names,
         "suite_task_count": len(suite_task_names),
         "curriculum_run_name": curriculum_run_name,
         "model_scope": model_scope,
+        "contains_convenience_baseline": contains_convenience_baseline,
+        "baseline_ownership": _baseline_ownership_note(contains_convenience_baseline),
+        "summary_role": "derived_aggregate_link_summary",
+        "canonical_evaluation_owner": "curriculum_stage",
+        "detailed_stage_artifacts_duplicated_at_run_root": False,
         "evaluated_models": evaluated_models,
+        "canonical_stage_evaluation_manifest_paths": _stage_manifest_paths(evaluated_models),
+        "canonical_stage_evaluation_manifest_paths_relative": _stage_manifest_paths_relative(evaluated_models),
         "summary_metrics_path": str(metrics_path),
+        "summary_metrics_path_relative": utils.artifacts.path_relative_to(metrics_path, run_root),
         "summary_manifest_path": str(manifest_path),
+        "summary_manifest_path_relative": utils.artifacts.path_relative_to(manifest_path, run_root),
         "entry_count": len(evaluated_models),
+        "index_key": f"curriculum_evaluation:{evaluation_name}:{model_scope}",
     }
-    aggregate_manifest = {
-        "run_type": "evaluation",
-        "run_kind": "curriculum",
-        "curriculum_kind": summary.get("curriculum_kind"),
-        "mode": "curriculum_evaluation",
-        "curriculum_name": str(summary["curriculum_name"]),
-        "seed": int(summary.get("seed", 0)),
-        "evaluation_mode": mode,
-        "evaluation_name": evaluation_name,
-        "evaluation_suite_name": None if suite is None else suite.evaluation_name,
-        "evaluation_suite_path": suite_path_for_metrics,
-        "suite_task_names": suite_task_names,
-        "suite_task_count": len(suite_task_names),
-        "curriculum_run_name": curriculum_run_name,
-        "model_scope": model_scope,
-        "summary_metrics_path": str(metrics_path),
-        "summary_manifest_path": str(manifest_path),
-        "entry_count": len(evaluated_models),
-    }
-
-    _write_json(metrics_path, aggregate_metrics)
-    _write_json(manifest_path, aggregate_manifest)
+    _update_curriculum_evaluation_summary(
+        run_name=curriculum_run_name,
+        run_root=run_root,
+        summary_path=summary_output_path,
+        aggregate_entry=aggregate_metrics,
+    )
+    _update_curriculum_evaluation_index(
+        run_manifest_path=run_manifest_path,
+        summary=summary,
+        run_root=run_root,
+        evaluation_name=evaluation_name,
+        mode=mode,
+        model_scope=model_scope,
+        suite_name=None if suite is None else suite.evaluation_name,
+        suite_snapshot=suite_snapshot,
+        aggregate_metrics_path=metrics_path,
+        aggregate_manifest_path=manifest_path,
+        evaluated_models=evaluated_models,
+        task_names=suite_task_names if suite is not None else [str(stage.get("stage_name")) for stage in stages],
+    )
     return CurriculumEvaluationResult(
         metrics_path=str(metrics_path),
         manifest_path=str(manifest_path),
         metrics=aggregate_metrics,
     )
+
+
+def _standard_curriculum_suite_plan(model_scope: str) -> list[tuple[Path, str]]:
+    """Return suite configs and model scopes for the standard curriculum profile."""
+    plan = [
+        (STANDARD_LINE_EVALUATION_SUITE_PATH, model_scope),
+        (STANDARD_FINAL_BENCHMARK_SUITE_PATH, model_scope),
+    ]
+    if STANDARD_GENERALIZATION_SUITE_PATH.is_file():
+        plan.append((STANDARD_GENERALIZATION_SUITE_PATH, model_scope))
+    return plan
+
+
+def _standard_profile_result_entry(
+    evaluation_name: str,
+    model_scope: str,
+    result: CurriculumEvaluationResult,
+) -> dict[str, str]:
+    """Return a compact standard-profile result link."""
+    return {
+        "evaluation_name": evaluation_name,
+        "model_scope": model_scope,
+        "metrics_path": result.metrics_path,
+        "manifest_path": result.manifest_path,
+    }
+
+
+def _update_curriculum_evaluation_summary(
+    *,
+    run_name: str,
+    run_root: Path,
+    summary_path: Path,
+    aggregate_entry: Mapping[str, Any],
+) -> None:
+    """Upsert one link-only curriculum evaluation entry into the root summary."""
+    existing = _read_json(summary_path) if summary_path.exists() else {"evaluations": []}
+    raw_entries = existing.get("evaluations") if isinstance(existing, Mapping) else None
+    entries = raw_entries if isinstance(raw_entries, list) else []
+    entry = dict(aggregate_entry)
+    entry_key = str(entry.get("index_key") or f"curriculum_evaluation:{entry.get('evaluation_name')}:{entry.get('model_scope')}")
+    entry["index_key"] = entry_key
+    updated_entries = [candidate for candidate in entries if not isinstance(candidate, Mapping) or candidate.get("index_key") != entry_key]
+    updated_entries.append(entry)
+    payload = {
+        "run_type": "evaluation",
+        "run_kind": "curriculum",
+        "mode": "curriculum_evaluation_summary",
+        "summary_role": "derived_aggregate_link_summary",
+        "run_name": run_name,
+        "curriculum_run_name": run_name,
+        "evaluation_summary_path": str(summary_path),
+        "evaluation_summary_path_relative": utils.artifacts.path_relative_to(summary_path, run_root),
+        "entry_count": len(updated_entries),
+        "evaluations": updated_entries,
+    }
+    _write_json(summary_path, payload)
 
 
 def _validate_mode_and_wandb(mode: str, wandb_mode: str) -> None:
@@ -288,10 +461,12 @@ def _evaluation_spec_payloads(
     curriculum_run_name: str,
     evaluation_name: str,
     suite: evaluation_suites.EvaluationSuite | None,
+    suite_snapshot: evaluation_suites.EvaluationSuiteSnapshot | None,
     model_scope: str,
     include_baseline_model: str | Path | None,
     baseline_label: str,
     eval_steps_override: int | None,
+    storage_root: Path | None,
 ) -> list[dict[str, Any]]:
     """Build model-evaluation spec payloads for the requested mode."""
     selected_stages = _selected_stages(stages=stages, model_scope=model_scope)
@@ -303,22 +478,27 @@ def _evaluation_spec_payloads(
             evaluation_name=evaluation_name,
             eval_steps_override=eval_steps_override,
             default_seed=int(summary.get("seed", 0)),
+            storage_root=storage_root,
         )
 
     if suite is None:
         message = "suite must be provided for suite mode"
         raise ValueError(message)
+    if suite_snapshot is None:
+        message = "suite snapshot must be available for suite mode"
+        raise ValueError(message)
     return _suite_payloads(
         stages=stages,
         selected_stages=selected_stages,
         suite=suite,
+        suite_snapshot=suite_snapshot,
         output_root=output_root,
         curriculum_run_name=curriculum_run_name,
         evaluation_name=evaluation_name,
-        model_scope=model_scope,
         include_baseline_model=include_baseline_model,
         baseline_label=baseline_label,
         eval_steps_override=eval_steps_override,
+        storage_root=storage_root,
     )
 
 
@@ -326,35 +506,32 @@ def _suite_payloads(
     stages: list[Mapping[str, Any]],
     selected_stages: list[Mapping[str, Any]],
     suite: evaluation_suites.EvaluationSuite,
+    suite_snapshot: evaluation_suites.EvaluationSuiteSnapshot,
     output_root: Path,
     curriculum_run_name: str,
     evaluation_name: str,
-    model_scope: str,
     include_baseline_model: str | Path | None,
     baseline_label: str,
     eval_steps_override: int | None,
+    storage_root: Path | None,
 ) -> list[dict[str, Any]]:
     """Build suite-task evaluation payloads for selected curriculum models."""
-    task_config_paths = _write_suite_task_configs(curriculum_run_name=curriculum_run_name, suite=suite)
+    task_config_paths = suite_snapshot.task_config_paths
     payloads: list[dict[str, Any]] = []
     final_stage_index = int(stages[-1]["stage_index"])
-    final_stage_run_level = model_scope == "final-stage"
 
     for stage in selected_stages:
         stage_index = int(stage["stage_index"])
         stage_name = str(stage["stage_name"])
         stage_dir_name = f"stage{stage_index:02d}_{stage_name}"
-        stage_output_root = (
-            output_root
-            if final_stage_run_level
-            else utils.artifacts.get_curriculum_stage_evaluation_dir(
-                curriculum_run_name,
-                stage_index,
-                stage_name,
-                evaluation_name,
-            )
+        stage_output_root = utils.artifacts.get_curriculum_stage_evaluation_dir(
+            curriculum_run_name,
+            stage_index,
+            stage_name,
+            evaluation_name,
+            storage_root=storage_root,
         )
-        label_prefix = "final_stage" if final_stage_run_level else stage_dir_name
+        label_prefix = stage_dir_name
         payloads.extend(
             {
                 "spec": policy_evaluation.PolicyEvaluationSpec(
@@ -369,6 +546,13 @@ def _suite_payloads(
                     seed=suite.seed,
                     total_timesteps=int(stage.get("total_timesteps", 0)),
                     normalize_actions=bool(stage.get("normalize_actions", True)),
+                    evaluation_name=evaluation_name,
+                    evaluation_suite_name=suite.evaluation_name,
+                    suite_task_name=suite_task.task_name,
+                    suite_task_names=tuple(suite.task_names),
+                    suite_config_snapshot_path=suite_snapshot.suite_config_path,
+                    suite_config_snapshot_path_relative=suite_snapshot.suite_config_path_relative,
+                    suite_config_sha256=suite_snapshot.suite_config_sha256,
                 ),
                 "stage_index": stage_index,
                 "stage_name": stage_name,
@@ -395,6 +579,13 @@ def _suite_payloads(
                     seed=suite.seed,
                     total_timesteps=0,
                     normalize_actions=True,
+                    evaluation_name=evaluation_name,
+                    evaluation_suite_name=suite.evaluation_name,
+                    suite_task_name=suite_task.task_name,
+                    suite_task_names=tuple(suite.task_names),
+                    suite_config_snapshot_path=suite_snapshot.suite_config_path,
+                    suite_config_snapshot_path_relative=suite_snapshot.suite_config_path_relative,
+                    suite_config_sha256=suite_snapshot.suite_config_sha256,
                 ),
                 "stage_index": None,
                 "stage_name": None,
@@ -425,6 +616,7 @@ def _own_stage_payloads(
     evaluation_name: str,
     eval_steps_override: int | None,
     default_seed: int,
+    storage_root: Path | None,
 ) -> list[dict[str, Any]]:
     """Build stage-indexed evaluation payloads for own-stage mode."""
     payloads: list[dict[str, Any]] = []
@@ -439,6 +631,7 @@ def _own_stage_payloads(
             stage_index,
             stage_name,
             evaluation_name,
+            storage_root=storage_root,
         )
         payloads.append(
             {
@@ -465,11 +658,6 @@ def _own_stage_payloads(
     return payloads
 
 
-def _mode_output_root(summary: Mapping[str, Any], evaluation_name: str) -> Path:
-    """Return mode-scoped curriculum evaluation output root."""
-    return utils.artifacts.get_run_evaluation_dir(_curriculum_run_name(summary), evaluation_name)
-
-
 def _curriculum_run_name(summary: Mapping[str, Any]) -> str:
     """Return the canonical curriculum run name from a summary payload."""
     run_name = summary.get("run_name")
@@ -482,7 +670,7 @@ def _curriculum_run_name(summary: Mapping[str, Any]) -> str:
 def _evaluation_name(mode: str, suite: evaluation_suites.EvaluationSuite | None) -> str:
     """Return the canonical evaluation name for a curriculum evaluation mode."""
     if mode == "own-stage":
-        return "own_stage"
+        return OWN_TASK_EVALUATION_NAME
     if suite is None:
         message = "suite must be provided for suite evaluation naming"
         raise ValueError(message)
@@ -493,42 +681,17 @@ def _summary_filename_stem(
     summary: Mapping[str, Any],
     mode: str,
     suite: evaluation_suites.EvaluationSuite | None,
+    model_scope: str,
 ) -> str:
     """Return summary filename stem for aggregate metrics/manifest outputs."""
     run_name = _curriculum_run_name(summary)
+    scope_name = model_scope.replace("-", "_")
     if mode == "own-stage":
-        return f"{run_name}_own_stage"
+        return f"{run_name}_{OWN_TASK_EVALUATION_NAME}_{scope_name}"
     if suite is None:
         message = "suite must be provided for suite summary naming"
         raise ValueError(message)
-    return f"{run_name}_{suite.evaluation_name}"
-
-
-def _write_suite_task_configs(
-    curriculum_run_name: str,
-    suite: evaluation_suites.EvaluationSuite,
-) -> dict[str, Path]:
-    """Copy a canonical suite and write one-task configs consumed by policy evaluation."""
-    config_dir = utils.artifacts.get_run_config_evaluation_suites_dir(curriculum_run_name)
-    config_dir.mkdir(parents=True, exist_ok=True)
-    suite_stem = _safe_name(suite.evaluation_name)
-    suite_copy_path = config_dir / f"{suite_stem}_eval_suite.yaml"
-    suite_copy_path.write_text(_to_yaml(suite.to_dict()), encoding="utf-8")
-
-    task_config_dir = config_dir / suite_stem
-    task_config_dir.mkdir(parents=True, exist_ok=True)
-    task_config_paths: dict[str, Path] = {}
-    for suite_task in suite.tasks:
-        task_config_path = task_config_dir / f"{_safe_name(suite_task.task_name)}_task.yaml"
-        payload = {
-            "name": suite_task.task_name,
-            "evaluation_name": suite.evaluation_name,
-            "suite_task_name": suite_task.task_name,
-            "tasks": [copy.deepcopy(suite_task.task)],
-        }
-        task_config_path.write_text(_to_yaml(payload), encoding="utf-8")
-        task_config_paths[suite_task.task_name] = task_config_path
-    return task_config_paths
+    return f"{run_name}_{suite.evaluation_name}_{scope_name}"
 
 
 def _evaluated_model_entry(
@@ -539,64 +702,194 @@ def _evaluated_model_entry(
     is_final_stage: bool,
     evaluation_suite_name: str | None,
     suite_task_name: str | None,
+    run_root: Path,
 ) -> dict[str, Any]:
-    """Build one evaluated-model summary entry from a shared helper result."""
+    """Build one link-oriented evaluated-model summary entry."""
     metrics = result.metrics
-    keys = (
-        "label",
-        "model_role",
-        "model_path",
-        "task_config_path_used_for_evaluation",
-        "task_shape_used_for_evaluation",
-        "evaluation_dir",
-        "diagnostics_dir",
-        "traces_dir",
-        "plots_dir",
-        "renders_dir",
-        "metrics_path",
-        "manifest_path",
-        "trace_path",
-        "gif_path",
-        "plot_paths",
-        "plot_trace_scope",
-        "plot_trace_step_count",
-        "plot_trace_terminated",
-        "plot_trace_truncated",
-        "failure_report_path",
-        "episode_summaries_path",
-        "curriculum_feedback_path",
-        "render_enabled",
-        "plots_enabled",
-        "trace_enabled",
-        "diagnostics_enabled",
-        "eval_steps",
-        "seed",
-        "start_hold_enabled",
-        "start_hold_sec",
-        "exclude_start_hold_from_tracking_metrics",
-        "tracking_phase_start_step",
-        "tracking_phase_start_time_sec",
-        "mean_position_error_m",
-        "mean_position_error_tracking_m",
-        "final_position_error_m",
-        "max_position_error_m",
-        "actual_xy_span_m",
-        "reference_xy_span_m",
-        "xy_tracking_ratio",
-        "action_saturation_fraction",
-        "real_action_saturation_fraction",
-        "failure_overall_status",
-        "failure_primary_mode",
-        "failure_modes",
-    )
-    entry = {key: metrics.get(key) for key in keys}
-    entry["stage_index"] = stage_index
-    entry["stage_name"] = stage_name
-    entry["is_final_stage"] = bool(is_final_stage)
-    entry["evaluation_suite_name"] = evaluation_suite_name
-    entry["suite_task_name"] = suite_task_name
-    entry["source_run_name"] = source_run_name
+    entry = {
+        "label": result.label,
+        "model_label": result.label,
+        "model_role": result.model_role,
+        "model_path": result.model_path,
+        "model_path_relative": utils.artifacts.path_relative_to(result.model_path, run_root),
+        "task_config_path_used_for_evaluation": result.task_config_path,
+        "task_config_path_relative": utils.artifacts.path_relative_to(result.task_config_path, run_root),
+        "task_shape_used_for_evaluation": result.task_shape,
+        "evaluation_dir": result.output_dir,
+        "evaluation_dir_relative": utils.artifacts.path_relative_to(result.output_dir, run_root),
+        "diagnostics_dir": result.diagnostics_dir,
+        "diagnostics_dir_relative": utils.artifacts.path_relative_to(result.diagnostics_dir, run_root),
+        "traces_dir": result.traces_dir,
+        "traces_dir_relative": utils.artifacts.path_relative_to(result.traces_dir, run_root),
+        "plots_dir": result.plots_dir,
+        "plots_dir_relative": utils.artifacts.path_relative_to(result.plots_dir, run_root),
+        "renders_dir": result.renders_dir,
+        "renders_dir_relative": utils.artifacts.path_relative_to(result.renders_dir, run_root),
+        "metrics_path": result.metrics_path,
+        "metrics_path_relative": utils.artifacts.path_relative_to(result.metrics_path, run_root),
+        "manifest_path": result.manifest_path,
+        "manifest_path_relative": utils.artifacts.path_relative_to(result.manifest_path, run_root),
+        "trace_path": result.trace_path,
+        "trace_path_relative": utils.artifacts.path_relative_to(result.trace_path, run_root),
+        "gif_path": result.gif_path,
+        "gif_path_relative": utils.artifacts.path_relative_to(result.gif_path, run_root),
+        "plot_paths": dict(result.plot_paths),
+        "plot_paths_relative": {key: utils.artifacts.path_relative_to(value, run_root) for key, value in result.plot_paths.items()},
+        "render_enabled": result.render_enabled,
+        "plots_enabled": result.plots_enabled,
+        "trace_enabled": result.trace_enabled,
+        "diagnostics_enabled": metrics.get("diagnostics_enabled"),
+        "eval_steps": metrics.get("eval_steps"),
+        "seed": metrics.get("seed"),
+        "stage_index": stage_index,
+        "stage_name": stage_name,
+        "is_final_stage": bool(is_final_stage),
+        "evaluation_suite_name": evaluation_suite_name,
+        "suite_task_name": suite_task_name,
+        "source_run_name": source_run_name,
+        "canonical_owner": "convenience_baseline" if result.model_role == "baseline" else "curriculum_stage",
+    }
+    if result.model_role == "baseline":
+        entry["baseline_ownership"] = _baseline_ownership_note(True)
     return entry
+
+
+def _baseline_ownership_note(contains_baseline: bool) -> str | None:
+    """Return the ownership note for convenience baseline outputs."""
+    if not contains_baseline:
+        return None
+    return "convenience_only_not_primary_comparison_truth; evaluate the baseline run separately through experiments_cli_evaluate_policy"
+
+
+def _update_curriculum_evaluation_index(
+    *,
+    run_manifest_path: Path,
+    summary: Mapping[str, Any],
+    run_root: Path,
+    evaluation_name: str,
+    mode: str,
+    model_scope: str,
+    suite_name: str | None,
+    suite_snapshot: evaluation_suites.EvaluationSuiteSnapshot | None,
+    aggregate_metrics_path: Path,
+    aggregate_manifest_path: Path,
+    evaluated_models: list[dict[str, Any]],
+    task_names: list[str],
+) -> None:
+    """Update the owning curriculum run manifest with evaluation links."""
+    final_model_path = summary.get("final_model_path")
+    final_stage = _stages(summary)[-1]
+    index_entry = {
+        "index_key": f"curriculum_evaluation:{evaluation_name}:{model_scope}",
+        "run_name": _curriculum_run_name(summary),
+        "run_kind": "curriculum",
+        "mode": "curriculum_evaluation",
+        "evaluation_mode": mode,
+        "model_scope": model_scope,
+        "evaluation_name": evaluation_name,
+        "evaluation_suite_name": suite_name,
+        "suite_name": suite_name,
+        "suite_config_snapshot_path": None if suite_snapshot is None else str(suite_snapshot.suite_config_path),
+        "suite_config_snapshot_path_relative": None if suite_snapshot is None else suite_snapshot.suite_config_path_relative,
+        "suite_config_snapshot_relative": None if suite_snapshot is None else suite_snapshot.suite_config_path_relative,
+        "suite_config_sha256": None if suite_snapshot is None else suite_snapshot.suite_config_sha256,
+        "aggregate_metrics_path": str(aggregate_metrics_path),
+        "aggregate_metrics_path_relative": utils.artifacts.path_relative_to(aggregate_metrics_path, run_root),
+        "aggregate_metrics_relative": utils.artifacts.path_relative_to(aggregate_metrics_path, run_root),
+        "evaluation_manifest_path": str(aggregate_manifest_path),
+        "evaluation_manifest_path_relative": utils.artifacts.path_relative_to(aggregate_manifest_path, run_root),
+        "evaluation_manifest_relative": utils.artifacts.path_relative_to(aggregate_manifest_path, run_root),
+        "model_label": f"curriculum_{model_scope}",
+        "model_role": "stage",
+        "model_path": final_model_path if model_scope == "final-stage" else None,
+        "model_path_relative": utils.artifacts.path_relative_to(final_model_path, run_root) if model_scope == "final-stage" else None,
+        "task_names": list(task_names),
+        "summary_role": "derived_aggregate_link_summary",
+        "canonical_evaluation_owner": "curriculum_stage",
+        "detailed_stage_artifacts_duplicated_at_run_root": False,
+        "canonical_stage_evaluation_manifest_paths": _stage_manifest_paths(evaluated_models),
+        "canonical_stage_evaluation_manifest_paths_relative": _stage_manifest_paths_relative(evaluated_models),
+        "final_stage_index": int(final_stage["stage_index"]),
+        "final_stage_name": str(final_stage["stage_name"]),
+        "evaluated_models": evaluated_models,
+    }
+    policy_evaluation.update_run_evaluation_index(run_manifest_path, index_entry)
+    _update_curriculum_manifest_evaluation_links(
+        run_manifest_path=run_manifest_path,
+        summary=summary,
+        run_root=run_root,
+        index_entry=index_entry,
+    )
+
+
+def _stage_manifest_paths(evaluated_models: list[dict[str, Any]]) -> list[str]:
+    """Return canonical stage-owned per-task evaluation manifest paths."""
+    return [
+        str(entry["manifest_path"]) for entry in evaluated_models if entry.get("model_role") == "stage" and entry.get("manifest_path") is not None
+    ]
+
+
+def _stage_manifest_paths_relative(evaluated_models: list[dict[str, Any]]) -> list[str]:
+    """Return canonical stage-owned per-task evaluation manifest paths relative to the run."""
+    return [
+        str(entry["manifest_path_relative"])
+        for entry in evaluated_models
+        if entry.get("model_role") == "stage" and entry.get("manifest_path_relative") is not None
+    ]
+
+
+def _update_curriculum_manifest_evaluation_links(
+    *,
+    run_manifest_path: Path,
+    summary: Mapping[str, Any],
+    run_root: Path,
+    index_entry: Mapping[str, Any],
+) -> None:
+    """Add notebook-friendly curriculum evaluation links to the run manifest."""
+    manifest = _read_json(run_manifest_path)
+    final_stage = _stages(summary)[-1]
+    final_model_path = summary.get("final_model_path")
+    existing_final_stage = manifest.get("final_stage")
+    final_stage_link = dict(existing_final_stage) if isinstance(existing_final_stage, Mapping) else {}
+    final_stage_link.update(
+        {
+            "stage_index": int(final_stage["stage_index"]),
+            "stage_name": str(final_stage["stage_name"]),
+            "model_path": final_model_path,
+            "model_path_relative": utils.artifacts.path_relative_to(final_model_path, run_root),
+        }
+    )
+    manifest["final_stage"] = final_stage_link
+    link = {
+        "index_key": index_entry.get("index_key"),
+        "evaluation_name": index_entry.get("evaluation_name"),
+        "evaluation_suite_name": index_entry.get("evaluation_suite_name"),
+        "model_scope": index_entry.get("model_scope"),
+        "aggregate_metrics_path": index_entry.get("aggregate_metrics_path"),
+        "aggregate_metrics_path_relative": index_entry.get("aggregate_metrics_path_relative"),
+        "evaluation_manifest_path": index_entry.get("evaluation_manifest_path"),
+        "evaluation_manifest_path_relative": index_entry.get("evaluation_manifest_path_relative"),
+        "canonical_stage_evaluation_manifest_paths": index_entry.get("canonical_stage_evaluation_manifest_paths", []),
+        "canonical_stage_evaluation_manifest_paths_relative": index_entry.get("canonical_stage_evaluation_manifest_paths_relative", []),
+        "suite_config_snapshot_path": index_entry.get("suite_config_snapshot_path"),
+        "suite_config_snapshot_path_relative": index_entry.get("suite_config_snapshot_path_relative"),
+        "suite_config_sha256": index_entry.get("suite_config_sha256"),
+        "task_names": index_entry.get("task_names", []),
+    }
+    if index_entry.get("model_scope") == "final-stage":
+        manifest["final_stage_evaluation"] = {
+            **link,
+            "final_stage_index": int(final_stage["stage_index"]),
+            "final_stage_name": str(final_stage["stage_name"]),
+            "final_model_path": final_model_path,
+            "final_model_path_relative": utils.artifacts.path_relative_to(final_model_path, run_root),
+        }
+    elif index_entry.get("model_scope") == "all-stages":
+        existing = manifest.get("all_stage_evaluations")
+        entries = existing if isinstance(existing, list) else []
+        key = str(link.get("index_key"))
+        manifest["all_stage_evaluations"] = [entry for entry in entries if not isinstance(entry, Mapping) or entry.get("index_key") != key] + [link]
+    _write_json(run_manifest_path, manifest)
 
 
 def _stages(summary: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -633,20 +926,20 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _to_yaml(payload: Mapping[str, Any]) -> str:
-    """Serialize a compact evaluation config to YAML."""
-    import yaml  # noqa: PLC0415
-
-    return yaml.safe_dump(dict(payload), sort_keys=False)
-
-
 __all__ = [
     "DEFAULT_EVALUATION_MODE",
     "DEFAULT_EVALUATION_SUITE_PATH",
     "DEFAULT_MODEL_SCOPE",
     "DEFAULT_RENDER_FPS",
+    "OWN_TASK_EVALUATION_NAME",
+    "STANDARD_EVALUATION_PROFILE",
+    "STANDARD_FINAL_BENCHMARK_SUITE_PATH",
+    "STANDARD_GENERALIZATION_SUITE_PATH",
+    "STANDARD_LINE_EVALUATION_SUITE_PATH",
     "SUPPORTED_EVALUATION_MODES",
     "SUPPORTED_MODEL_SCOPES",
     "CurriculumEvaluationResult",
+    "CurriculumStandardEvaluationResult",
     "run_curriculum_evaluation",
+    "run_curriculum_standard_evaluation",
 ]

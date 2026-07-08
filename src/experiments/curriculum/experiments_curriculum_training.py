@@ -439,25 +439,35 @@ def _stage_summary_entry(
 ) -> dict[str, Any]:
     """Build one compact stage summary entry from PPO metrics."""
     metrics = result.metrics
+    run_root = training_dir.parent.parent.parent
     entry: dict[str, Any] = {
         "stage_index": stage_index,
         "stage_name": stage.stage_name,
         "task_shape": stage.task_shape,
         "run_name": run_name,
         "stage_dir": str(training_dir.parent),
+        "stage_dir_relative": utils.artifacts.path_relative_to(training_dir.parent, run_root),
         "training_dir": str(training_dir),
+        "training_dir_relative": utils.artifacts.path_relative_to(training_dir, run_root),
         "model_path": result.model_path,
+        "model_path_relative": utils.artifacts.path_relative_to(result.model_path, run_root),
         "metrics_path": result.metrics_path,
+        "metrics_path_relative": utils.artifacts.path_relative_to(result.metrics_path, run_root),
         "manifest_path": result.manifest_path,
+        "manifest_path_relative": utils.artifacts.path_relative_to(result.manifest_path, run_root),
         "diagnostics_dir": metrics.get("diagnostics_dir"),
+        "diagnostics_dir_relative": utils.artifacts.path_relative_to(metrics.get("diagnostics_dir"), run_root),
         "total_timesteps": stage.total_timesteps,
         "eval_steps": stage.eval_steps,
         "seed": metrics.get("seed"),
         "normalize_actions": normalize_actions,
         "initial_model_path": initial_model_path,
+        "initial_model_path_relative": utils.artifacts.path_relative_to(initial_model_path, run_root),
         "previous_model_path": previous_model_path,
+        "previous_model_path_relative": utils.artifacts.path_relative_to(previous_model_path, run_root),
         "model_transfer_enabled": initial_model_path is not None,
         "model_transfer_source": initial_model_path,
+        "model_transfer_source_relative": utils.artifacts.path_relative_to(initial_model_path, run_root),
     }
     for key in SUMMARY_METRIC_KEYS:
         entry[key] = metrics.get(key)
@@ -488,6 +498,15 @@ def _build_curriculum_summary(
         "model_transfer_enabled": model_transfer_enabled,
         "final_stage_run_name": final_stage["run_name"],
         "final_model_path": final_stage["model_path"],
+        "final_stage": {
+            "stage_index": final_stage["stage_index"],
+            "stage_name": final_stage["stage_name"],
+            "run_name": final_stage["run_name"],
+            "model_path": final_stage["model_path"],
+            "model_path_relative": final_stage.get("model_path_relative"),
+            "manifest_path": final_stage["manifest_path"],
+            "manifest_path_relative": final_stage.get("manifest_path_relative"),
+        },
         "stages": list(stage_entries),
     }
 
@@ -499,14 +518,76 @@ def _write_curriculum_artifacts(settings: ManualCurriculumSettings, summary: dic
     manifest_path = utils.artifacts.get_run_manifest_path(artifact_run_name)
     curriculum_root.mkdir(parents=True, exist_ok=True)
     _curriculum_config_dir(settings).mkdir(parents=True, exist_ok=True)
+    config_snapshot_path = _write_curriculum_config_snapshot(settings)
     manifest = {
         **summary,
         "artifact_root": str(curriculum_root),
+        "artifact_root_relative": ".",
         "summary_path": str(manifest_path),
+        "summary_path_relative": utils.artifacts.path_relative_to(manifest_path, curriculum_root),
         "manifest_path": str(manifest_path),
+        "manifest_path_relative": utils.artifacts.path_relative_to(manifest_path, curriculum_root),
+        "curriculum_config_snapshot_path": str(config_snapshot_path),
+        "curriculum_config_snapshot_path_relative": utils.artifacts.path_relative_to(config_snapshot_path, curriculum_root),
+        "config": {
+            "curriculum_config_path": str(settings.config_path) if settings.config_path is not None else None,
+            "curriculum_config_snapshot_path": str(config_snapshot_path),
+            "curriculum_config_snapshot_path_relative": utils.artifacts.path_relative_to(config_snapshot_path, curriculum_root),
+            "base_training_config": str(settings.base_training_config),
+        },
+        "evaluation_index": _evaluation_index_manifest(artifact_run_name),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest_path, manifest_path
+
+
+def _write_curriculum_config_snapshot(settings: ManualCurriculumSettings) -> Path:
+    """Copy or materialize the curriculum config snapshot for a run."""
+    artifact_run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
+    snapshot_path = utils.artifacts.get_run_curriculum_config_snapshot_path(artifact_run_name)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    if settings.config_path is not None and settings.config_path.is_file():
+        snapshot_path.write_text(settings.config_path.read_text(encoding="utf-8"), encoding="utf-8")
+        return snapshot_path
+    payload = {
+        "curriculum_name": settings.curriculum_name,
+        "base_training_config": str(settings.base_training_config),
+        "seed": settings.seed,
+        "wandb_mode": settings.wandb_mode,
+        "normalize_actions": settings.normalize_actions,
+        "stages": [
+            {
+                "stage_name": stage.stage_name,
+                "task_shape": stage.task_shape,
+                "total_timesteps": stage.total_timesteps,
+                "eval_steps": stage.eval_steps,
+                "notes": stage.notes,
+                "task": stage.task,
+            }
+            for stage in settings.stages
+        ],
+    }
+    snapshot_path.write_text(_to_yaml(payload), encoding="utf-8")
+    return snapshot_path
+
+
+def _evaluation_index_manifest(run_name: str) -> dict[str, Any]:
+    """Return the run-manifest link to the deterministic evaluation index."""
+    index_path = utils.artifacts.get_run_evaluation_index_path(run_name)
+    entries: list[Any] = []
+    if index_path.exists():
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+        raw_entries = payload.get("evaluations") if isinstance(payload, dict) else None
+        entries = raw_entries if isinstance(raw_entries, list) else []
+    return {
+        "path": str(index_path),
+        "path_relative": utils.artifacts.path_relative_to_run(index_path, run_name),
+        "entry_count": len(entries),
+        "evaluations": entries,
+    }
 
 
 def _curriculum_artifact_run_name(curriculum_name: str, seed: int, curriculum_kind: str = MANUAL_CURRICULUM_KIND) -> str:

@@ -14,8 +14,10 @@ The repository now has the intended source-package split, canonical run layout, 
 - The post-audit legacy cleanup is complete: flat PPO keys, mixed flat+nested PPO configs, old root experiment imports, and stale Docker job references to removed CLI paths are rejected or absent from active code.
 - Evaluation suites under `configs/evaluation/*_eval_suite.yaml` are now the canonical source for benchmark tasks used by policy and curriculum evaluation.
 - The real-training config cleanup is complete: direct PPO uses `configs/training/ppo_tracking_tasks.yaml`, manual curriculum configs are split into smoke/medium/final tiers, and optional OOD checks live in `configs/evaluation/generalization_eval_suite.yaml`.
+- The pre-Phase-5 artifact-contract cleanup is complete: direct PPO and manual curriculum runs snapshot their run configs, manifests expose portable relative artifact links, suite evaluations snapshot suite identity, and run manifests link to deterministic evaluation indexes.
+- Direct PPO suite evaluation is owned by the direct PPO run through `python -m src.experiments.cli.experiments_cli_evaluate_policy`; curriculum suite task artifacts are owned by the curriculum stage whose model is evaluated. Optional curriculum baseline evaluation is convenience-only, not the primary comparison truth.
 
-Phase 4 is completed. The next real implementation phase is Phase 5: comparison pipeline.
+Phase 4 is completed. Phase 5 comparison should start only after direct PPO and curriculum runs both own suite evaluations for the suite being compared.
 
 ## 2. Current Source Layout
 
@@ -55,7 +57,10 @@ The canonical generated artifact contract is run-scoped:
 storage/runs/<self_describing_run_id>/
 ├── run_manifest.json
 ├── config/
-│   └── evaluation_suites/
+│   ├── training_config.yaml          # direct PPO runs
+│   ├── task_config.yaml              # direct PPO selected task snapshot
+│   ├── curriculum_config.yaml        # curriculum runs
+│   └── evaluation_suites/            # copied suite configs and per-task snapshots
 ├── training/
 │   ├── manifest.json
 │   ├── models/
@@ -63,21 +68,27 @@ storage/runs/<self_describing_run_id>/
 │   ├── diagnostics/
 │   ├── logs/
 │   └── wandb/
+├── evaluation_index.json
+├── evaluation_summary.json           # curriculum derived link summary, when evaluations have run
 ├── evaluations/
-│   └── <evaluation_name>/
-│       ├── diagnostics/
-│       ├── traces/
-│       ├── plots/
-│       ├── renders/
+│   └── <evaluation_name>/             # direct PPO run-owned evaluations only
 │       ├── metrics/
 │       └── manifests/
 └── stages/
     └── stageNN_<stage_name>/
         ├── training/
         └── evaluations/
+            └── <evaluation_name>/
+                └── <suite_task_name>/
+                    ├── diagnostics/
+                    ├── traces/
+                    ├── plots/
+                    ├── renders/
+                    ├── metrics/
+                    └── manifests/
 ```
 
-Direct PPO, manual curriculum, rendering, W&B, and evaluation helpers should use this run container contract by default. Generated artifacts should not be committed. Existing generated artifacts should not be bulk-moved by cleanup work.
+Direct PPO, manual curriculum, rendering, W&B, and evaluation helpers should use this run container contract by default. Direct PPO evaluations stay under the direct run root, while curriculum model evaluations stay under the stage that owns the model. The curriculum run root may keep only `evaluation_index.json` and optional `evaluation_summary.json` link summaries; it must not duplicate detailed stage metrics, plots, renders, traces, or manifests as a second source of truth. Later comparison runs should reference owned manifests from direct runs and curriculum stages. Generated artifacts should not be committed. Existing generated artifacts should not be bulk-moved by cleanup work.
 
 The intentionally removed legacy directories remain removed from active code:
 
@@ -119,7 +130,7 @@ Phase 3 is not open. Do not re-migrate storage or reintroduce old storage helper
 
 Phase 4 added canonical evaluation suite loading through `src/experiments/evaluation/experiments_evaluation_suites.py`, migrated benchmark tasks into `configs/evaluation/final_benchmark_eval_suite.yaml`, and added `configs/evaluation/line_eval_suite.yaml` for focused line evaluations. The old `configs/evaluation/curriculum_benchmarks.yaml` format is removed from active configs.
 
-Curriculum evaluation now consumes `--suite` configs instead of custom benchmark configs. Final-stage suite evaluation writes under the run-level `storage/runs/<curriculum_run>/evaluations/<evaluation_name>/...` tree, while all-stage suite evaluation writes stage-scoped artifacts under `storage/runs/<curriculum_run>/stages/stageNN_<stage_name>/evaluations/<evaluation_name>/...`. Metrics, plot filenames, render/GIF behavior, diagnostics, reward logic, and action semantics remain unchanged.
+Curriculum evaluation consumes `--suite` configs for explicit single-suite runs and uses a standard profile when `--suite` is omitted. The standard profile runs `own_task`, `line_eval`, `final_benchmark`, and optional `generalization` for every stage unless `--model-scope final-stage` explicitly narrows it. Suite evaluations write model-owned task artifacts under `storage/runs/<curriculum_run>/stages/stageNN_<stage_name>/evaluations/<evaluation_name>/<suite_task_name>/...`. The curriculum run root keeps only `evaluation_index.json`, optional `evaluation_summary.json` links, and config snapshots; `config/evaluation_suites/` contains reproducibility snapshots, not duplicated metrics, plots, renders, traces, or manifests. Metrics definitions, plot filenames, render/GIF behavior, diagnostics, reward logic, and action semantics remain unchanged.
 
 ## 5. Post-Audit Static Analysis And Legacy Findings
 
@@ -157,21 +168,26 @@ These are cleanup items, not Phase 5 implementation:
 
 ### Phase 4: Completed - policy evaluation suites
 Phase 4 uses the canonical `storage/runs` layout and does not add adapters for old benchmark configs. Evaluation suites are now the canonical source for benchmark tasks.
-Config-driven evaluation suites are available for direct PPO, curriculum stages, and final benchmark evaluation through the suite loader under `src/experiments/evaluation`. Curriculum evaluation CLI coverage now uses `--suite`, and output naming is deterministic for notebook/report loading.
+Config-driven evaluation suites are available for direct PPO, curriculum stages, and final benchmark evaluation through the suite loader under `src/experiments/evaluation`. Direct PPO evaluation uses `src.experiments.cli.experiments_cli_evaluate_policy` and writes under the direct run; curriculum evaluation uses `src.experiments.cli.experiments_cli_evaluate_curriculum` and writes detailed artifacts under the owning curriculum stage, with root `evaluation_index.json` and optional `evaluation_summary.json` links for notebook/report loading. Omitting `--suite` runs the standard profile across every curriculum stage; reduced or focused evaluation requires explicit CLI arguments such as `--suite` or `--model-scope final-stage`. Output naming, suite snapshots under `config/evaluation_suites/`, and evaluation indexes are deterministic.
 
 ### Phase 5: Comparison pipeline
 
 Immediate next actions:
 
-- Define comparison inputs around completed run manifests and matching `evaluation_suite_name` / `suite_task_names` metadata.
-- Compare direct PPO and manual curriculum runs only after they have both been evaluated through the same suite.
+- Do not start Phase 5 until the direct PPO run and the manual curriculum run both own suite evaluations for the same suite.
+- Define comparison inputs around completed run manifests, evaluation indexes, and matching `evaluation_suite_name` / `suite_task_names` / suite snapshot hash metadata.
+- Compare direct PPO and manual curriculum runs by reading their owned evaluation manifests from direct-run evaluations and curriculum stage evaluations.
 - Keep comparison outputs under canonical `storage/runs` without reintroducing `storage/comparison_reports`.
 
 Add a report-ready comparison workflow for direct PPO, manual curriculum, and later LLM curriculum runs. Expected outputs include JSON summaries, CSV rows, plots, and a manifest that records suite identity so mismatched evaluations cannot be compared silently.
 
 ### Phase 6: LLM curriculum
 
-Implement the LLM-guided proposal pipeline with strict JSON parsing, deterministic validation, bounded repair, event logging, and offline/mock tests. The LLM remains a curriculum generator only; it must not control the drone or generate executable Python code.
+Implement the LLM-guided proposal pipeline with strict JSON parsing, deterministic validation, bounded repair, event logging, and offline/mock tests. Use a provider/client abstraction so tests can run with offline or mock providers and real experiments can use an API-backed provider reproducibly. Do not rely on manual ChatGPT UI interactions for reproducible experiments. A local GPU LLM can be a later optional ablation, not the default proposal path. The LLM remains a curriculum generator only; it must not control the drone or generate executable Python code.
+
+### Future diagnostic: RL CPU/GPU benchmark
+
+PyBullet PPO may be CPU/simulation-bound, so do not assume V100/CUDA is faster. Keep CPU as the default RL training target unless a small benchmark proves CUDA faster for this project. A CPU-vs-CUDA PPO smoke benchmark can be added later as optional diagnostic work, without changing default training semantics.
 
 ### Phase 7: Notebook and report integration
 

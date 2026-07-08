@@ -30,8 +30,13 @@ from pathlib import Path
 RUNS_DIRNAME = "runs"
 CONFIG_DIRNAME = "config"
 EVALUATION_SUITES_DIRNAME = "evaluation_suites"
+TRAINING_CONFIG_SNAPSHOT_FILENAME = "training_config.yaml"
+TASK_CONFIG_SNAPSHOT_FILENAME = "task_config.yaml"
+CURRICULUM_CONFIG_SNAPSHOT_FILENAME = "curriculum_config.yaml"
 TRAINING_DIRNAME = "training"
 EVALUATIONS_DIRNAME = "evaluations"
+EVALUATION_INDEX_FILENAME = "evaluation_index.json"
+EVALUATION_SUMMARY_FILENAME = "evaluation_summary.json"
 STAGES_DIRNAME = "stages"
 METRICS_DIRNAME = "metrics"
 MANIFESTS_DIRNAME = "manifests"
@@ -90,6 +95,21 @@ def get_run_config_evaluation_suites_dir(run_name: str, storage_root: str | Path
     return get_run_config_dir(run_name, storage_root) / EVALUATION_SUITES_DIRNAME
 
 
+def get_run_training_config_snapshot_path(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Return the canonical copied training-config snapshot path for a run."""
+    return get_run_config_dir(run_name, storage_root) / TRAINING_CONFIG_SNAPSHOT_FILENAME
+
+
+def get_run_task_config_snapshot_path(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Return the canonical copied task-config snapshot path for a run."""
+    return get_run_config_dir(run_name, storage_root) / TASK_CONFIG_SNAPSHOT_FILENAME
+
+
+def get_run_curriculum_config_snapshot_path(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Return the canonical copied curriculum-config snapshot path for a run."""
+    return get_run_config_dir(run_name, storage_root) / CURRICULUM_CONFIG_SNAPSHOT_FILENAME
+
+
 def get_run_training_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
     """Return the training artifact directory for a canonical run."""
     return get_run_dir(run_name, storage_root) / TRAINING_DIRNAME
@@ -128,6 +148,16 @@ def get_run_training_wandb_dir(run_name: str, storage_root: str | Path | None = 
 def get_run_evaluations_dir(run_name: str, storage_root: str | Path | None = None) -> Path:
     """Return the evaluations container directory for a canonical run."""
     return get_run_dir(run_name, storage_root) / EVALUATIONS_DIRNAME
+
+
+def get_run_evaluation_index_path(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Return the deterministic evaluation-index JSON path for a canonical run."""
+    return get_run_dir(run_name, storage_root) / EVALUATION_INDEX_FILENAME
+
+
+def get_run_evaluation_summary_path(run_name: str, storage_root: str | Path | None = None) -> Path:
+    """Return the optional root evaluation-summary JSON path for a canonical run."""
+    return get_run_dir(run_name, storage_root) / EVALUATION_SUMMARY_FILENAME
 
 
 def get_run_evaluation_dir(
@@ -316,6 +346,38 @@ def ensure_run_evaluation_dirs(
     return paths
 
 
+def path_relative_to(path: str | Path | None, base_dir: str | Path) -> str | None:
+    """Return a stable POSIX path relative to a base directory when possible."""
+    if path is None:
+        return None
+    raw_path = Path(path).expanduser()
+    if not raw_path.is_absolute():
+        return raw_path.as_posix()
+    resolved_path = raw_path.resolve(strict=False)
+    resolved_base = Path(base_dir).expanduser().resolve(strict=False)
+    try:
+        return resolved_path.relative_to(resolved_base).as_posix()
+    except ValueError:
+        return raw_path.as_posix()
+
+
+def path_relative_to_run(
+    path: str | Path | None,
+    run_name: str,
+    storage_root: str | Path | None = None,
+) -> str | None:
+    """Return a stable POSIX path relative to a canonical run root."""
+    return path_relative_to(path, get_run_dir(run_name, storage_root))
+
+
+def storage_root_from_run_dir(run_dir: str | Path) -> Path | None:
+    """Infer the storage root from a ``storage/runs/<run_name>`` directory."""
+    resolved = Path(run_dir).expanduser().resolve(strict=False)
+    if resolved.parent.name != RUNS_DIRNAME:
+        return None
+    return resolved.parent.parent
+
+
 def ensure_curriculum_stage_training_dirs(
     run_name: str,
     stage_index: int,
@@ -442,9 +504,12 @@ def _stage_dirname(stage_index: int, stage_name: str) -> str:
 
 __all__ = [
     "CONFIG_DIRNAME",
+    "CURRICULUM_CONFIG_SNAPSHOT_FILENAME",
     "DIAGNOSTICS_DIRNAME",
     "EVALUATIONS_DIRNAME",
+    "EVALUATION_INDEX_FILENAME",
     "EVALUATION_SUITES_DIRNAME",
+    "EVALUATION_SUMMARY_FILENAME",
     "LLM_LOGS_DIRNAME",
     "LOGS_DIRNAME",
     "MANIFESTS_DIRNAME",
@@ -456,7 +521,9 @@ __all__ = [
     "RUNS_DIRNAME",
     "RUN_MANIFEST_FILENAME",
     "STAGES_DIRNAME",
+    "TASK_CONFIG_SNAPSHOT_FILENAME",
     "TRACES_DIRNAME",
+    "TRAINING_CONFIG_SNAPSHOT_FILENAME",
     "TRAINING_DIRNAME",
     "WANDB_DIRNAME",
     "ensure_curriculum_stage_evaluation_dirs",
@@ -470,16 +537,21 @@ __all__ = [
     "get_curriculum_stage_training_manifest_path",
     "get_run_config_dir",
     "get_run_config_evaluation_suites_dir",
+    "get_run_curriculum_config_snapshot_path",
     "get_run_dir",
     "get_run_evaluation_diagnostics_dir",
     "get_run_evaluation_dir",
+    "get_run_evaluation_index_path",
     "get_run_evaluation_manifests_dir",
     "get_run_evaluation_metrics_dir",
     "get_run_evaluation_plots_dir",
     "get_run_evaluation_renders_dir",
+    "get_run_evaluation_summary_path",
     "get_run_evaluation_traces_dir",
     "get_run_evaluations_dir",
     "get_run_manifest_path",
+    "get_run_task_config_snapshot_path",
+    "get_run_training_config_snapshot_path",
     "get_run_training_diagnostics_dir",
     "get_run_training_dir",
     "get_run_training_logs_dir",
@@ -488,4 +560,7 @@ __all__ = [
     "get_run_training_models_dir",
     "get_run_training_wandb_dir",
     "get_storage_root",
+    "path_relative_to",
+    "path_relative_to_run",
+    "storage_root_from_run_dir",
 ]

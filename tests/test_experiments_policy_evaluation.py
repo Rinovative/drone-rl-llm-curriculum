@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,11 +12,14 @@ from typing import Any
 import pytest
 import yaml
 
+from src.experiments.cli import experiments_cli_evaluate_policy as cli_evaluate_policy
 from src.experiments.evaluation import experiments_evaluation_policy as policy_evaluation
 from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
 
 FULL_EVALUATION_EPISODE_COUNT = 2
 SUITE_EVALUATION_STEPS = 120
+OWN_TASK_EVAL_STEPS = 12
+OWN_TASK_SEED = 4
 
 
 @dataclass
@@ -50,6 +54,38 @@ tasks:
     position: [0.0, 0.0, 1.0]
 """
     path.write_text(payload, encoding="utf-8")
+
+
+def _fake_render_artifact(
+    spec: policy_evaluation.PolicyEvaluationSpec,
+    task: dict[str, Any],
+    renders_dir: Path,
+    render_steps: int,
+    render_fps: int,
+) -> policy_evaluation._RenderArtifactResult:
+    """Write a tiny fake GIF for tests that exercise render-enabled defaults."""
+    del spec, task, render_steps, render_fps
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    gif_path = renders_dir / "scenario_rollout.gif"
+    gif_path.write_bytes(b"GIF89a")
+    return policy_evaluation._RenderArtifactResult(  # noqa: SLF001
+        gif_path=gif_path,
+        warnings=[],
+        trace_records=[
+            {
+                "source": "render",
+                "step_index": 0,
+                "episode_index": 0,
+                "time_sec": 0.0,
+                "actual_position_xyz_m": [0.0, 0.0, 1.0],
+                "reference_position_xyz_m": [0.0, 0.0, 1.0],
+                "position_error_m": 0.0,
+                "action": [0.0, 0.0, 0.0, 0.0],
+                "terminated": False,
+                "truncated": False,
+            }
+        ],
+    )
 
 
 def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
@@ -293,7 +329,20 @@ def test_shared_policy_evaluation_no_plots_records_flag_and_skips_plot_paths(
         lambda *args, **kwargs: policy_evaluation._RenderArtifactResult(  # noqa: SLF001
             gif_path=tmp_path / "render.gif",
             warnings=[],
-            trace_records=[{"source": "render", "terminated": False, "truncated": False}],
+            trace_records=[
+                {
+                    "source": "render",
+                    "step_index": 0,
+                    "episode_index": 0,
+                    "time_sec": 0.0,
+                    "actual_position_xyz_m": [0.0, 0.0, 1.0],
+                    "reference_position_xyz_m": [0.0, 0.0, 1.0],
+                    "position_error_m": 0.0,
+                    "action": [0.0, 0.0, 0.0, 0.0],
+                    "terminated": False,
+                    "truncated": False,
+                }
+            ],
         ),
     )
 
@@ -386,3 +435,303 @@ tasks:
     assert result.task_shape == "line"
     assert result.metrics["task_config_path_used_for_evaluation"] == str(task_config)
     assert result.metrics["eval_steps"] == SUITE_EVALUATION_STEPS
+
+
+def test_direct_policy_evaluation_cli_parser_accepts_run_manifest_and_suite() -> None:
+    """Verify the direct policy suite CLI exposes the canonical run-owned inputs."""
+    parser = cli_evaluate_policy.build_parser()
+    args = parser.parse_args(
+        [
+            "--run-manifest",
+            "storage/runs/direct_ppo_line_seed0/run_manifest.json",
+            "--suite",
+            "configs/evaluation/line_eval_suite.yaml",
+            "--wandb-mode",
+            "disabled",
+        ]
+    )
+
+    assert args.run_manifest == Path("storage/runs/direct_ppo_line_seed0/run_manifest.json")
+    assert args.suite == Path("configs/evaluation/line_eval_suite.yaml")
+    assert args.wandb_mode == "disabled"
+
+    default_args = parser.parse_args(["--run-manifest", "storage/runs/direct_ppo_line_seed0/run_manifest.json"])
+    assert default_args.suite is None
+
+
+def test_direct_policy_suite_evaluation_writes_under_direct_run_and_updates_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify direct PPO suite evaluation owns artifacts under the direct run."""
+    storage_root = tmp_path / "storage"
+    run_name = "direct_ppo_line_seed0"
+    run_root = storage_root / "runs" / run_name
+    model_path = run_root / "training" / "models" / f"{run_name}.zip"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_bytes(b"model")
+    run_manifest_path = run_root / "run_manifest.json"
+    run_manifest_path.write_text(
+        json.dumps(
+            {
+                "run_name": run_name,
+                "run_kind": "direct_ppo",
+                "total_timesteps": 10,
+                "normalize_actions": True,
+                "training": {
+                    "model_path": str(model_path),
+                    "model_path_relative": "training/models/direct_ppo_line_seed0.zip",
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    suite_path = tmp_path / "line_eval_suite.yaml"
+    suite_path.write_text(
+        """evaluation_name: line_eval
+seed: 3
+eval_steps: 11
+render:
+  enabled: false
+  fps: 20
+  max_steps: null
+plots:
+  enabled: false
+traces:
+  enabled: false
+tasks:
+  - task_name: line_basic
+    task_shape: line
+    task:
+      task_type: trajectory
+      shape: line
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      start: [0.0, 0.0, 1.0]
+      end: [1.0, 0.0, 1.0]
+""",
+        encoding="utf-8",
+    )
+
+    def fake_collect(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        task: dict[str, Any],
+        diagnostics_dir: Path,
+    ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
+        assert spec.evaluation_name == "line_eval"
+        assert spec.evaluation_suite_name == "line_eval"
+        assert spec.suite_task_name == "line_basic"
+        assert spec.suite_task_names == ("line_basic",)
+        assert spec.suite_config_snapshot_path == run_root / "config" / "evaluation_suites" / "line_eval_eval_suite.yaml"
+        assert spec.suite_config_snapshot_path_relative == "config/evaluation_suites/line_eval_eval_suite.yaml"
+        assert spec.task_config_path == run_root / "config" / "evaluation_suites" / "line_eval" / "line_basic_task.yaml"
+        assert task["shape"] == "line"
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        trace_path = diagnostics_dir / "evaluation_trace.jsonl"
+        trace_path.write_text("{}\n", encoding="utf-8")
+        return _FakeDiagnostics(metrics={"episode_count": 1}, trace_records=[]), {
+            "evaluation_trace_path": str(trace_path),
+            "failure_report_path": str(diagnostics_dir / "failure_report.json"),
+            "episode_summaries_path": str(diagnostics_dir / "episode_summaries.json"),
+            "curriculum_feedback_path": str(diagnostics_dir / "curriculum_feedback.json"),
+        }
+
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
+
+    result = policy_evaluation.run_direct_policy_suite_evaluation(
+        run_manifest_path=run_manifest_path,
+        suite_path=suite_path,
+        wandb_mode="disabled",
+    )
+
+    evaluation_root = run_root / "evaluations" / "line_eval"
+    assert Path(result.metrics_path) == evaluation_root / "metrics" / "direct_ppo_line_seed0_line_eval_metrics.json"
+    assert Path(result.manifest_path) == evaluation_root / "manifests" / "direct_ppo_line_seed0_line_eval_manifest.json"
+    assert (run_root / "config" / "evaluation_suites" / "line_eval_eval_suite.yaml").read_text(encoding="utf-8") == suite_path.read_text(
+        encoding="utf-8"
+    )
+    assert (evaluation_root / "line_basic" / "manifests" / "direct_ppo_line_seed0_line_basic_manifest.json").exists()
+
+    metrics = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    assert metrics["run_kind"] == "direct_ppo"
+    assert metrics["mode"] == "direct_policy_suite_evaluation"
+    assert metrics["evaluation_name"] == "line_eval"
+    assert metrics["suite_config_snapshot_path_relative"] == "config/evaluation_suites/line_eval_eval_suite.yaml"
+    assert metrics["model_path_relative"] == "training/models/direct_ppo_line_seed0.zip"
+    assert metrics["summary_manifest_path_relative"] == "evaluations/line_eval/manifests/direct_ppo_line_seed0_line_eval_manifest.json"
+    assert (
+        metrics["evaluated_models"][0]["metrics_path_relative"]
+        == "evaluations/line_eval/line_basic/metrics/direct_ppo_line_seed0_line_basic_metrics.json"
+    )
+
+    updated_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    assert updated_manifest["evaluation_index"]["path_relative"] == "evaluation_index.json"
+    assert updated_manifest["evaluation_index"]["entry_count"] == 1
+    index_entry = updated_manifest["evaluation_index"]["evaluations"][0]
+    assert index_entry["evaluation_name"] == "line_eval"
+    assert index_entry["aggregate_metrics_path_relative"] == "evaluations/line_eval/metrics/direct_ppo_line_seed0_line_eval_metrics.json"
+    assert index_entry["evaluation_manifest_path_relative"] == "evaluations/line_eval/manifests/direct_ppo_line_seed0_line_eval_manifest.json"
+    assert index_entry["task_names"] == ["line_basic"]
+    assert (run_root / "evaluation_index.json").exists()
+
+
+def _write_suite_config(path: Path, evaluation_name: str, task_name: str = "line_basic") -> None:
+    """Write a one-task line evaluation suite."""
+    path.write_text(
+        f"""evaluation_name: {evaluation_name}
+seed: 3
+eval_steps: 11
+render:
+  enabled: false
+  fps: 20
+  max_steps: null
+plots:
+  enabled: false
+traces:
+  enabled: false
+tasks:
+  - task_name: {task_name}
+    task_shape: line
+    task:
+      task_type: trajectory
+      shape: line
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      start: [0.0, 0.0, 1.0]
+      end: [1.0, 0.0, 1.0]
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_direct_run_manifest(run_root: Path, run_name: str) -> Path:
+    """Write a direct PPO run manifest with a training task snapshot."""
+    model_path = run_root / "training" / "models" / f"{run_name}.zip"
+    task_snapshot = run_root / "config" / "task_config.yaml"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    task_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_bytes(b"model")
+    _write_task_config(task_snapshot)
+    run_manifest_path = run_root / "run_manifest.json"
+    run_manifest_path.write_text(
+        json.dumps(
+            {
+                "run_name": run_name,
+                "run_kind": "direct_ppo",
+                "total_timesteps": 10,
+                "eval_steps": OWN_TASK_EVAL_STEPS,
+                "seed": OWN_TASK_SEED,
+                "normalize_actions": True,
+                "training": {
+                    "model_path": str(model_path),
+                    "model_path_relative": f"training/models/{run_name}.zip",
+                },
+                "config": {
+                    "task_config_snapshot_path": str(task_snapshot),
+                    "task_config_snapshot_path_relative": "config/task_config.yaml",
+                    "task_index": 0,
+                    "task_shape": "line",
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return run_manifest_path
+
+
+def test_direct_policy_own_task_evaluation_uses_training_task_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify direct own_task evaluation uses the recorded training task snapshot."""
+    run_name = "direct_ppo_line_seed0"
+    run_root = tmp_path / "storage" / "runs" / run_name
+    run_manifest_path = _write_direct_run_manifest(run_root, run_name)
+
+    def fake_collect(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        task: dict[str, Any],
+        diagnostics_dir: Path,
+    ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
+        assert spec.evaluation_name == "own_task"
+        assert spec.suite_task_name == "own_task"
+        assert spec.task_config_path == run_root / "config" / "task_config.yaml"
+        assert spec.output_dir == run_root / "evaluations" / "own_task"
+        assert spec.eval_steps == OWN_TASK_EVAL_STEPS
+        assert spec.seed == OWN_TASK_SEED
+        assert task["shape"] == "line"
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        trace_path = diagnostics_dir / "evaluation_trace.jsonl"
+        trace_path.write_text("{}\n", encoding="utf-8")
+        return _FakeDiagnostics(metrics={"episode_count": 1}, trace_records=[]), {"evaluation_trace_path": str(trace_path)}
+
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
+    monkeypatch.setattr(policy_evaluation, "_write_render_artifact", _fake_render_artifact)
+
+    result = policy_evaluation.run_direct_policy_own_task_evaluation(run_manifest_path=run_manifest_path, wandb_mode="disabled")
+
+    assert Path(result.metrics_path) == run_root / "evaluations" / "own_task" / "metrics" / "direct_ppo_line_seed0_own_task_metrics.json"
+    updated_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    assert updated_manifest["evaluation_index"]["path_relative"] == "evaluation_index.json"
+    index_entry = updated_manifest["evaluation_index"]["evaluations"][0]
+    assert index_entry["evaluation_name"] == "own_task"
+    assert index_entry["suite_name"] is None
+    assert index_entry["aggregate_metrics_relative"] == "evaluations/own_task/metrics/direct_ppo_line_seed0_own_task_metrics.json"
+    assert index_entry["evaluation_manifest_relative"] == "evaluations/own_task/manifests/direct_ppo_line_seed0_own_task_manifest.json"
+    assert (run_root / "evaluation_index.json").exists()
+
+
+def test_direct_policy_standard_evaluation_runs_default_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify no-suite direct evaluation runs own_task plus standard suites."""
+    run_name = "direct_ppo_line_seed0"
+    run_root = tmp_path / "storage" / "runs" / run_name
+    run_manifest_path = _write_direct_run_manifest(run_root, run_name)
+    line_suite = tmp_path / "line_eval_suite.yaml"
+    final_suite = tmp_path / "final_benchmark_eval_suite.yaml"
+    generalization_suite = tmp_path / "generalization_eval_suite.yaml"
+    _write_suite_config(line_suite, "line_eval", "line_basic")
+    _write_suite_config(final_suite, "final_benchmark", "line_final")
+    _write_suite_config(generalization_suite, "generalization", "line_generalization")
+    monkeypatch.setattr(policy_evaluation, "STANDARD_LINE_EVALUATION_SUITE_PATH", line_suite)
+    monkeypatch.setattr(policy_evaluation, "STANDARD_FINAL_BENCHMARK_SUITE_PATH", final_suite)
+    monkeypatch.setattr(policy_evaluation, "STANDARD_GENERALIZATION_SUITE_PATH", generalization_suite)
+
+    seen: list[str | None] = []
+
+    def fake_collect(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        task: dict[str, Any],
+        diagnostics_dir: Path,
+    ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
+        del task
+        seen.append(spec.evaluation_name)
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        trace_path = diagnostics_dir / "evaluation_trace.jsonl"
+        trace_path.write_text("{}\n", encoding="utf-8")
+        return _FakeDiagnostics(metrics={"episode_count": 1}, trace_records=[]), {"evaluation_trace_path": str(trace_path)}
+
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
+    monkeypatch.setattr(policy_evaluation, "_write_render_artifact", _fake_render_artifact)
+
+    result = policy_evaluation.run_direct_policy_standard_evaluation(run_manifest_path=run_manifest_path, wandb_mode="disabled")
+
+    assert result.metrics_path == str(run_root / "evaluation_index.json")
+    assert result.metrics["evaluation_names"] == ["own_task", "line_eval", "final_benchmark", "generalization"]
+    assert seen == ["own_task", "line_eval", "final_benchmark", "generalization"]
+    updated_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    assert updated_manifest["evaluation_index"]["path_relative"] == "evaluation_index.json"
+    assert [entry["evaluation_name"] for entry in updated_manifest["evaluation_index"]["evaluations"]] == [
+        "own_task",
+        "line_eval",
+        "final_benchmark",
+        "generalization",
+    ]

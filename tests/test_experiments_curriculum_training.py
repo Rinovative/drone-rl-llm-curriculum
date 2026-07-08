@@ -170,15 +170,33 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert Path(result.manifest_path).exists()
     assert summary["run_name"] == "curriculum_manual_line_smoke_seed0"
     assert summary["artifact_root"] == str(expected_root)
+    assert summary["artifact_root_relative"] == "."
     assert summary["summary_path"] == str(expected_root / "run_manifest.json")
+    assert summary["summary_path_relative"] == "run_manifest.json"
+    assert summary["manifest_path_relative"] == "run_manifest.json"
+    assert summary["curriculum_config_snapshot_path"] == str(expected_root / "config" / "curriculum_config.yaml")
+    assert summary["curriculum_config_snapshot_path_relative"] == "config/curriculum_config.yaml"
+    assert (expected_root / "config" / "curriculum_config.yaml").exists()
+    assert summary["config"]["curriculum_config_snapshot_path_relative"] == "config/curriculum_config.yaml"
+    assert summary["evaluation_index"]["path_relative"] == "evaluation_index.json"
+    assert summary["evaluation_index"]["entry_count"] == 0
     assert summary["run_kind"] == "curriculum"
     assert summary["curriculum_kind"] == "manual"
     assert summary["curriculum_name"] == "curriculum_manual_line_smoke"
     assert summary["stage_count"] == EXPECTED_CURRICULUM_STAGE_COUNT
     assert summary["model_transfer_enabled"] is True
     assert summary["final_stage_run_name"] == "curriculum_manual_line_smoke_stage02_nearby_target_hover_seed0"
+    assert summary["final_stage"]["stage_index"] == EXPECTED_CURRICULUM_STAGE_COUNT
+    assert summary["final_stage"]["stage_name"] == "nearby_target_hover"
+    assert summary["final_stage"]["run_name"] == "curriculum_manual_line_smoke_stage02_nearby_target_hover_seed0"
+    assert summary["final_stage"]["model_path"] == summary["final_model_path"]
+    assert summary["final_stage"]["model_path_relative"] == summary["stages"][1]["model_path_relative"]
+    assert summary["final_stage"]["manifest_path_relative"] == summary["stages"][1]["manifest_path_relative"]
     assert summary["stages"][0]["stage_dir"] == str(expected_root / "stages" / "stage01_hover_stabilization")
+    assert summary["stages"][0]["stage_dir_relative"] == "stages/stage01_hover_stabilization"
     assert summary["stages"][0]["training_dir"] == str(expected_root / "stages" / "stage01_hover_stabilization" / "training")
+    assert summary["stages"][0]["training_dir_relative"] == "stages/stage01_hover_stabilization/training"
+    assert summary["stages"][0]["manifest_path_relative"].endswith("_manifest.json")
     assert summary["stages"][0]["diagnostics_dir"].endswith("diagnostics")
     assert summary["stages"][0]["model_transfer_enabled"] is False
     assert summary["stages"][1]["model_transfer_enabled"] is True

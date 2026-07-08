@@ -601,15 +601,37 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
     assert manifest["curriculum_kind"] is None
     assert "artifact_layout" not in manifest
     run_root = tmp_path / "runs" / "configured_ppo"
+    training_snapshot = run_root / "config" / "training_config.yaml"
+    task_snapshot = run_root / "config" / "task_config.yaml"
     assert (run_root / "config").is_dir()
     assert (run_root / "config" / "evaluation_suites").is_dir()
+    assert training_snapshot.exists()
+    assert task_snapshot.exists()
+    assert result.metrics["training_config_snapshot_path"] == str(training_snapshot)
+    assert result.metrics["training_config_snapshot_path_relative"] == "config/training_config.yaml"
+    assert result.metrics["task_config_snapshot_path"] == str(task_snapshot)
+    assert result.metrics["task_config_snapshot_path_relative"] == "config/task_config.yaml"
     assert (run_root / "training" / "wandb").is_dir()
+    assert manifest["model_path_relative"] == "training/models/configured_ppo.zip"
+    assert manifest["metrics_path_relative"] == "training/metrics/configured_ppo_metrics.json"
+    assert manifest["manifest_path_relative"] == "training/manifest.json"
+    assert manifest["training_config_snapshot_path_relative"] == "config/training_config.yaml"
+    assert manifest["task_config_snapshot_path_relative"] == "config/task_config.yaml"
     run_manifest = json.loads(Path(result.metrics["run_manifest_path"]).read_text(encoding="utf-8"))
     assert run_manifest["run_kind"] == "direct_ppo"
     assert run_manifest["curriculum_kind"] is None
     assert "artifact_layout" not in run_manifest
     assert run_manifest["training"]["manifest_path"] == result.manifest_path
+    assert run_manifest["training"]["manifest_path_relative"] == "training/manifest.json"
+    assert run_manifest["training"]["model_path_relative"] == "training/models/configured_ppo.zip"
     assert run_manifest["training"]["metrics_path"] == result.metrics_path
+    assert run_manifest["training"]["metrics_path_relative"] == "training/metrics/configured_ppo_metrics.json"
+    assert run_manifest["config"]["training_config_snapshot_path"] == str(training_snapshot)
+    assert run_manifest["config"]["training_config_snapshot_path_relative"] == "config/training_config.yaml"
+    assert run_manifest["config"]["task_config_snapshot_path"] == str(task_snapshot)
+    assert run_manifest["config"]["task_config_snapshot_path_relative"] == "config/task_config.yaml"
+    assert run_manifest["evaluation_index"]["path_relative"] == "evaluation_index.json"
+    assert run_manifest["evaluation_index"]["entry_count"] == 0
 
 
 def test_cli_train_tracking_parser_accepts_task_shape_and_run_name() -> None:
