@@ -31,16 +31,14 @@ Notes:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Mapping
+from typing import Any, cast
 
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
 from src import envs, validation
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 OBSERVATION_DIMENSIONS = 10
 DYNAMICS_OBSERVATION_DIMENSIONS = 9
@@ -123,7 +121,7 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
     Parameters
     ----------
     task
-        Valid trajectory task mapping or prebuilt environment task reference.
+        Valid trajectory task mapping, task-distribution sampler/settings, or prebuilt environment task reference.
     gui
         Whether the wrapped HoverAviary should open a GUI.
     record
@@ -153,7 +151,10 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
 
     def __init__(
         self,
-        task: Mapping[str, Any] | envs.task_adapter.EnvironmentTaskReference,
+        task: Mapping[str, Any]
+        | envs.task_adapter.EnvironmentTaskReference
+        | envs.task_distribution.TaskDistributionSettings
+        | envs.task_distribution.TaskDistributionSampler,
         gui: bool = False,
         record: bool = False,
         limits: validation.tasks.ValidationLimits | None = None,
@@ -167,7 +168,10 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         """Initialize the tracking wrapper and its base HoverAviary environment."""
         super().__init__()
         self.metadata = {"render_modes": []}
-        self.reference = _coerce_task_reference(task=task, limits=limits)
+        self.task_distribution_sampler = _coerce_task_distribution_sampler(task)
+        self._task_reference_limits = _task_reference_limits(limits, self.task_distribution_sampler)
+        self.reference = _initial_task_reference(task=task, sampler=self.task_distribution_sampler, limits=self._task_reference_limits)
+        self.task_distribution_metadata = _task_distribution_metadata(self.task_distribution_sampler)
         self.action_config = envs.actions.ActionInterfaceConfig(
             action_interface=action_interface,
             rpm_delta_scale=rpm_delta_scale,
@@ -185,10 +189,12 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             action_interface=self.action_config.parsed_action_interface,
             rpm_delta_scale=self.rpm_delta_scale,
         )
+        self._use_distribution_action_space = _use_distribution_action_space(self.task_distribution_sampler)
         self._tracking_action_space = _make_tracking_action_space(
             self.reference,
             self.base_env.action_space,
             self.action_config.parsed_action_interface,
+            use_base_bounds=self._use_distribution_action_space,
         )
         self.action_space = self._tracking_action_space
         self.ppo_action_dim = _action_dimension(self.action_space)
@@ -232,6 +238,7 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
 
         """
         super().reset(seed=seed)
+        self._refresh_task_reference_for_reset()
         _, base_info = self.base_env.reset(seed=seed, options=options)
         self._step_index = 0
         self._reset_previous_action()
@@ -348,6 +355,14 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         finally:
             self._closed = True
 
+    def _refresh_task_reference_for_reset(self) -> None:
+        """Refresh the active reference from a task-distribution sampler when configured."""
+        if self.task_distribution_sampler is None:
+            return
+        task = self.task_distribution_sampler.sample_task()
+        self.reference = envs.task_adapter.make_task_reference(task, limits=self._task_reference_limits)
+        self.task_distribution_metadata = _task_distribution_metadata(self.task_distribution_sampler)
+
     def _current_position(self) -> np.ndarray:
         """Extract the current drone XYZ position from the HoverAviary state vector."""
         return _state_position(self._current_state_vector())
@@ -431,6 +446,7 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         tracking_phase_start_step = int(self.reference.tracking_phase_start_step)
         tracking_phase_start_time_sec = float(self.reference.tracking_phase_start_time_sec)
         is_start_hold = bool(self.reference.start_hold_enabled and reference_index < tracking_phase_start_step)
+        task_distribution_fields = _compact_task_distribution_info_fields(self.task_distribution_metadata)
         return {
             "action_interface": self.action_interface,
             "real_action_type": self._real_action_type(),
@@ -447,6 +463,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             "current_xyz": current,
             "position_error_m": float(position_error_m),
             "task_shape": self.reference.shape,
+            "task_distribution": dict(self.task_distribution_metadata),
+            **task_distribution_fields,
             "reference_step_index": reference_index,
             "reference_time_sec": float(self.reference.times[reference_index]),
             "start_hold_enabled": bool(self.reference.start_hold_enabled),
@@ -554,7 +572,10 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
 
 
 def make_trajectory_tracking_env(
-    task: Mapping[str, Any] | envs.task_adapter.EnvironmentTaskReference,
+    task: Mapping[str, Any]
+    | envs.task_adapter.EnvironmentTaskReference
+    | envs.task_distribution.TaskDistributionSettings
+    | envs.task_distribution.TaskDistributionSampler,
     gui: bool = False,
     record: bool = False,
     limits: validation.tasks.ValidationLimits | None = None,
@@ -668,11 +689,12 @@ def _make_tracking_action_space(
     reference: envs.task_adapter.EnvironmentTaskReference,
     base_action_space: spaces.Box,
     action_interface: envs.actions.ActionInterface,
+    use_base_bounds: bool = False,
 ) -> spaces.Box:
     """Build action bounds for the selected tracking interface."""
     base_low = np.asarray(base_action_space.low, dtype=np.float32)
     base_high = np.asarray(base_action_space.high, dtype=np.float32)
-    if action_interface == envs.actions.ActionInterface.DIRECT_RPM:
+    if action_interface == envs.actions.ActionInterface.DIRECT_RPM or use_base_bounds:
         return spaces.Box(low=base_low, high=base_high, dtype=np.float32)
     positions = np.asarray(reference.positions, dtype=np.float32)
     reference_min = np.min(positions, axis=0)
@@ -690,6 +712,88 @@ def _clip_action_to_space(action: np.ndarray, action_space: spaces.Box) -> np.nd
     """Clip an incoming action to the wrapper's configured action bounds."""
     action_array = np.asarray(action, dtype=action_space.dtype)
     return np.clip(action_array, action_space.low, action_space.high).astype(action_space.dtype, copy=False)
+
+
+def _coerce_task_distribution_sampler(task: Any) -> envs.task_distribution.TaskDistributionSampler | None:
+    """Return a task-distribution sampler when task carries distribution settings."""
+    if isinstance(task, envs.task_distribution.TaskDistributionSampler):
+        return task
+    if isinstance(task, envs.task_distribution.TaskDistributionSettings):
+        return envs.task_distribution.TaskDistributionSampler(task)
+    return None
+
+
+def _initial_task_reference(
+    task: Mapping[str, Any]
+    | envs.task_adapter.EnvironmentTaskReference
+    | envs.task_distribution.TaskDistributionSettings
+    | envs.task_distribution.TaskDistributionSampler,
+    sampler: envs.task_distribution.TaskDistributionSampler | None,
+    limits: validation.tasks.ValidationLimits | None,
+) -> envs.task_adapter.EnvironmentTaskReference:
+    """Build the initial task reference from a fixed task or sampler."""
+    if sampler is None:
+        return _coerce_task_reference(task=task, limits=limits)
+    return envs.task_adapter.make_task_reference(sampler.sample_task(), limits=limits)
+
+
+def _task_reference_limits(
+    limits: validation.tasks.ValidationLimits | None,
+    sampler: envs.task_distribution.TaskDistributionSampler | None,
+) -> validation.tasks.ValidationLimits | None:
+    """Return explicit limits or distribution-specific validation limits."""
+    if limits is not None:
+        return limits
+    if sampler is None:
+        return None
+    return sampler.settings.validation_limits
+
+
+def _task_distribution_metadata(sampler: envs.task_distribution.TaskDistributionSampler | None) -> dict[str, Any]:
+    """Return current task-distribution metadata or disabled metadata."""
+    if sampler is None:
+        return {
+            "task_distribution_enabled": False,
+            "task_distribution_mode": None,
+            "task_distribution_strength": 0.0,
+            "task_distribution_sample_on_reset": False,
+            "task_distribution_seed": None,
+            "task_distribution_config_path": None,
+            "task_distribution_supported_families": list(envs.task_distribution.supported_task_families()),
+            "task_distribution_family_weights": {},
+            "task_distribution_name": None,
+        }
+    return sampler.sample_metadata()
+
+
+def _compact_task_distribution_info_fields(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Return compact task-distribution fields suitable for every info payload."""
+    keys = (
+        "task_distribution_enabled",
+        "task_distribution_mode",
+        "task_distribution_strength",
+        "task_distribution_sample_on_reset",
+        "task_distribution_seed",
+        "task_distribution_config_path",
+        "task_distribution_supported_families",
+        "task_distribution_family_weights",
+        "task_distribution_name",
+        "task_distribution_env_rank",
+        "task_distribution_effective_seed",
+        "task_distribution_sample_index",
+        "task_distribution_sampled_family",
+        "task_distribution_sampled_task_shape",
+        "task_distribution_sampled_task_name",
+    )
+    return {key: copy_value for key in keys if (copy_value := metadata.get(key)) is not None}
+
+
+def _use_distribution_action_space(sampler: envs.task_distribution.TaskDistributionSampler | None) -> bool:
+    """Return whether randomized reset sampling needs stable base action bounds."""
+    if sampler is None:
+        return False
+    settings = sampler.settings
+    return bool(settings.enabled and settings.mode == envs.task_distribution.MODE_RANDOMIZED and settings.sample_on_reset and settings.strength > 0.0)
 
 
 def _action_was_clipped(requested_action: np.ndarray, applied_action: np.ndarray) -> bool:
@@ -915,13 +1019,16 @@ def _rpm_max(base_env: Any) -> float:
 
 
 def _coerce_task_reference(
-    task: Mapping[str, Any] | envs.task_adapter.EnvironmentTaskReference,
+    task: Any,
     limits: validation.tasks.ValidationLimits | None,
 ) -> envs.task_adapter.EnvironmentTaskReference:
     """Return an environment task reference, validating mappings as needed."""
     if isinstance(task, envs.task_adapter.EnvironmentTaskReference):
         return task
-    return envs.task_adapter.make_task_reference(task=task, limits=limits)
+    if isinstance(task, Mapping):
+        return envs.task_adapter.make_task_reference(task=task, limits=limits)
+    message = "task must be a mapping, task reference, or task-distribution settings"
+    raise TypeError(message)
 
 
 __all__ = [

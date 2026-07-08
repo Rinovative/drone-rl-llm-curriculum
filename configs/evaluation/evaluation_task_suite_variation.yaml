@@ -1,0 +1,114 @@
+evaluation_name: variation
+seed: 0
+eval_steps: 360
+
+render:
+  enabled: true
+  fps: 20
+  max_steps: null
+
+plots:
+  enabled: true
+
+traces:
+  enabled: true
+
+tasks:
+  - task_name: hover_center
+    task_shape: hover_stabilization
+    task:
+      task_type: trajectory
+      shape: hover_stabilization
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      position: [0.0, 0.0, 1.0]
+  - task_name: hover_low
+    task_shape: hover_stabilization
+    task:
+      task_type: trajectory
+      shape: hover_stabilization
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      position: [0.0, 0.0, 0.8]
+  - task_name: hover_high
+    task_shape: hover_stabilization
+    task:
+      task_type: trajectory
+      shape: hover_stabilization
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      position: [0.0, 0.0, 1.2]
+  - task_name: hover_offset_x
+    task_shape: hover_stabilization
+    task:
+      task_type: trajectory
+      shape: hover_stabilization
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      position: [0.2, 0.0, 1.0]
+  - task_name: hover_offset_y
+    task_shape: hover_stabilization
+    task:
+      task_type: trajectory
+      shape: hover_stabilization
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      position: [0.0, 0.2, 1.0]
+  - task_name: hover_offset_xy
+    task_shape: hover_stabilization
+    task:
+      task_type: trajectory
+      shape: hover_stabilization
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      position: [0.2, -0.2, 1.0]
+  - task_name: takeoff_stabilization_vertical
+    task_shape: vertical
+    task:
+      task_type: trajectory
+      shape: vertical
+      duration_sec: 4.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      xy: [0.0, 0.0]
+      start_height: 0.35
+      end_height: 1.0
+  - task_name: line_slow
+    task_shape: line
+    task:
+      task_type: trajectory
+      shape: line
+      duration_sec: 5.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      start: [0.0, 0.0, 1.0]
+      end: [0.5, 0.0, 1.0]
+  - task_name: line_medium
+    task_shape: line
+    task:
+      task_type: trajectory
+      shape: line
+      duration_sec: 5.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      start: [0.0, 0.0, 1.0]
+      end: [0.8, 0.2, 1.0]
+  - task_name: start_hold_then_line_slow
+    task_shape: start_hold_then_short_line
+    task:
+      task_type: trajectory
+      shape: start_hold_then_short_line
+      hold_duration_sec: 1.25
+      move_duration_sec: 4.5
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.25
+      exclude_start_hold_from_tracking_metrics: true
+      start: [0.0, 0.0, 1.0]
+      end: [0.55, 0.0, 1.0]

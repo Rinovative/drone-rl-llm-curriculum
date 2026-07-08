@@ -31,9 +31,10 @@ if TYPE_CHECKING:
 from . import llm_task_schema as task_schema
 
 SYSTEM_PROMPT = (
-    "You are a curriculum task proposer for a single-drone reinforcement-learning experiment. "
+    "You are a curriculum proposer for a single-drone reinforcement-learning experiment. "
+    "You may propose one concrete trajectory task or select one known bounded task distribution. "
     "You never control the drone at runtime. You never generate Python code, shell commands, markdown, or prose. "
-    "Your only output is one valid JSON object describing the next trajectory task."
+    "Your only output is one valid JSON object describing the next task or task distribution."
 )
 JSON_ONLY_INSTRUCTION = (
     "Return exactly one JSON object. Do not wrap it in markdown. Do not include prose before or after JSON. "
@@ -49,6 +50,7 @@ def build_task_proposal_messages(
     recent_rejected_tasks: Sequence[Mapping[str, Any]],
     metrics_summary: Mapping[str, Any] | None,
     recent_context_limit: int,
+    budget_context: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """
     Build chat messages for the next curriculum task proposal.
@@ -67,6 +69,8 @@ def build_task_proposal_messages(
         Compact metrics from the latest trained stage or dry-run placeholder.
     recent_context_limit
         Maximum number of accepted and rejected entries included in the prompt.
+    budget_context
+        Optional bounded budget profile context for this proposal.
 
     Returns
     -------
@@ -81,10 +85,12 @@ def build_task_proposal_messages(
         recent_rejected_tasks=recent_rejected_tasks,
         metrics_summary=metrics_summary,
         recent_context_limit=recent_context_limit,
+        budget_context=budget_context,
     )
     user_prompt = (
         f"{JSON_ONLY_INSTRUCTION}\n"
-        "Propose the next training task using this bounded context. Prefer a small, feasible progression from the latest accepted task.\n"
+        "Propose the next training task using this bounded context. Prefer a small, feasible progression from the latest accepted task. "
+        "If adaptive budget profiles are enabled, choose only stage_budget_profile=short, normal, recovery, or extend; never request raw timesteps.\n"
         f"Context JSON:\n{_compact_json(context)}"
     )
     return [
@@ -101,8 +107,9 @@ def build_task_repair_messages(
     recent_rejected_tasks: Sequence[Mapping[str, Any]],
     metrics_summary: Mapping[str, Any] | None,
     recent_context_limit: int,
-    previous_response: str,
-    error_messages: Sequence[str],
+    budget_context: Mapping[str, Any] | None = None,
+    previous_response: str = "",
+    error_messages: Sequence[str] = (),
 ) -> list[dict[str, str]]:
     """
     Build chat messages asking the LLM to repair an invalid proposal.
@@ -121,6 +128,8 @@ def build_task_repair_messages(
         Compact metrics from the latest trained stage or dry-run placeholder.
     recent_context_limit
         Maximum number of accepted and rejected entries included in the prompt.
+    budget_context
+        Optional bounded budget profile context for this repair attempt.
     previous_response
         Raw invalid response returned by the provider.
     error_messages
@@ -139,6 +148,7 @@ def build_task_repair_messages(
         recent_rejected_tasks=recent_rejected_tasks,
         metrics_summary=metrics_summary,
         recent_context_limit=recent_context_limit,
+        budget_context=budget_context,
     )
     repair_payload = {
         "context": context,
@@ -147,7 +157,10 @@ def build_task_repair_messages(
     }
     user_prompt = (
         f"{JSON_ONLY_INSTRUCTION}\n"
-        "Repair the previous invalid proposal. Address every error. Return a replacement JSON object only.\n"
+        "Repair the previous invalid proposal. Address every error. "
+        "Use supported shapes, supported task-distribution families, safe numeric ranges, and one allowed budget profile. "
+        "If stage_budget_profile is invalid, repair it to short, normal, recovery, or extend. "
+        "Return a replacement JSON object only.\n"
         f"Repair JSON:\n{_compact_json(repair_payload)}"
     )
     return [
@@ -164,6 +177,7 @@ def _context_payload(
     recent_rejected_tasks: Sequence[Mapping[str, Any]],
     metrics_summary: Mapping[str, Any] | None,
     recent_context_limit: int,
+    budget_context: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Build the bounded JSON context embedded in proposal and repair prompts."""
     return {
@@ -171,6 +185,7 @@ def _context_payload(
         "next_stage_index": stage_index,
         "task_contract": task_schema.build_task_prompt_contract(),
         "task_schema": task_schema.build_task_schema(),
+        "llm_stage_budget": dict(budget_context or {}),
         "recent_accepted_tasks": _tail(recent_accepted_tasks, recent_context_limit),
         "recent_rejected_tasks": _tail(recent_rejected_tasks, recent_context_limit),
         "latest_metrics_summary": dict(metrics_summary or {}),

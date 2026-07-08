@@ -45,12 +45,54 @@ def test_valid_circle_task_passes_validation() -> None:
     assert result.trajectory is not None
 
 
+def test_valid_ellipse_task_passes_validation() -> None:
+    """Verify a feasible ellipse task is accepted."""
+    contracts = validation.contracts
+    result = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_ELLIPSE,
+            contracts.FIELD_DURATION_SEC: 12.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_RADIUS_X: 0.35,
+            contracts.FIELD_RADIUS_Y: 0.20,
+            contracts.FIELD_HEIGHT: 1.0,
+            contracts.FIELD_CENTER: [0.0, 0.0],
+        }
+    )
+
+    assert result.is_valid
+    assert result.messages == ()
+    assert result.trajectory is not None
+
+
+def test_valid_figure_eight_task_passes_validation() -> None:
+    """Verify a feasible figure-eight task is accepted."""
+    contracts = validation.contracts
+    result = validation.tasks.validate_task(
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_FIGURE_EIGHT,
+            contracts.FIELD_DURATION_SEC: 14.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_RADIUS_X: 0.30,
+            contracts.FIELD_RADIUS_Y: 0.18,
+            contracts.FIELD_HEIGHT: 1.0,
+            contracts.FIELD_CENTER: [0.0, 0.0],
+        }
+    )
+
+    assert result.is_valid
+    assert result.messages == ()
+    assert result.trajectory is not None
+
+
 def test_unsupported_shape_fails_validation() -> None:
     """Verify unsupported task shapes are rejected."""
     result = validation.tasks.validate_task(
         {
             "task_type": "trajectory",
-            "shape": "figure_eight",
+            "shape": "spiral",
             "duration_sec": 2.0,
             "sample_rate_hz": 5.0,
         }

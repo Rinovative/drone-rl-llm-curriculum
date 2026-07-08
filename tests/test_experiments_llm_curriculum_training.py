@@ -6,14 +6,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import pytest
 
 from src.experiments.cli import experiments_cli_train_llm_curriculum as cli_train_llm_curriculum
 from src.experiments.curriculum import experiments_curriculum_llm_training as llm_curriculum_training
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
-
-if TYPE_CHECKING:
-    import pytest
 
 CONFIG_STAGE_COUNT = 3
 DRY_RUN_STAGE_COUNT = 2
@@ -23,6 +21,12 @@ CLI_MAX_STAGES = 2
 CLI_MAX_REPAIR_ATTEMPTS = 1
 EXPECTED_PID_ACTION_DIM = 3
 EXPECTED_BASE_OBSERVATION_DIM = 10
+EXPECTED_LOCAL_LLM_MAX_STAGES = 10
+EXPECTED_LLM_BUDGET_CAP = 350000
+EXPECTED_LLM_BUDGET_PROFILES = {"short": 20000, "normal": 30000, "recovery": 40000, "extend": 50000}
+BUDGET_TEST_STAGE_COUNT = 4
+BUDGET_TEST_CAP = 110
+BUDGET_TEST_STAGE_BUDGETS = [30, 20, 40, 20]
 
 
 def test_llm_curriculum_config_loads_and_validates() -> None:
@@ -64,9 +68,10 @@ def test_llm_curriculum_dry_run_writes_manifest_and_proposal_log(tmp_path: Path,
     assert summary["proposal_stats"]["total_proposals"] == 1
     assert summary["proposal_stats"]["final_accepted_tasks"] == 1
     assert summary["stages"][0]["task_shape"] == "hover_stabilization"
+    proposal_events = [event for event in events if event["event_type"] == "llm_proposal_attempt"]
     assert summary["stages"][1]["task_shape"] == "start_hold_then_short_line"
     assert summary["stages"][1]["task_reason"]
-    assert events[0]["status"] == "accepted"
+    assert proposal_events[0]["status"] == "accepted"
     assert not (expected_root / "training").exists()
 
 
@@ -216,3 +221,155 @@ def test_llm_curriculum_cli_parser_accepts_expected_options() -> None:
     assert args.max_stages == CLI_MAX_STAGES
     assert args.max_repair_attempts == CLI_MAX_REPAIR_ATTEMPTS
     assert args.dry_run_proposals is True
+
+
+def test_llm_taskdist_curriculum_configs_load() -> None:
+    """Verify local LLM task-distribution curriculum configs resolve with taskdist bases."""
+    for config_path in (
+        "configs/curricula/curriculum_llm_local_pid_dynprev_taskdist_medium_medium.yaml",
+        "configs/curricula/curriculum_llm_local_directrpm_dynprev_taskdist_medium_medium.yaml",
+    ):
+        settings = llm_curriculum_training.load_llm_curriculum_settings(config_path)
+        base_settings = ppo_tracking.load_ppo_tracking_settings(settings.base_training_config)
+
+        assert settings.llm_provider == "openai_compatible"
+        assert settings.max_stages == EXPECTED_LOCAL_LLM_MAX_STAGES
+        assert settings.llm_stage_budget.enabled is True
+        assert settings.llm_stage_budget.total_budget_cap_timesteps == EXPECTED_LLM_BUDGET_CAP
+        assert settings.llm_stage_budget.profiles == EXPECTED_LLM_BUDGET_PROFILES
+        assert base_settings.task_distribution_settings is not None
+        assert base_settings.include_dynamics_observation is True
+        assert base_settings.include_previous_action is True
+
+
+def _budget_test_settings() -> llm_curriculum_training.LLMCurriculumSettings:
+    """Return tiny dry-run settings that exercise adaptive budget resolution."""
+    return llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_budget_unit",
+            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "seed": 5,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "max_stages": 4,
+            "stage_defaults": {"total_timesteps": 30, "eval_steps": 4},
+            "llm_stage_budget": {
+                "enabled": True,
+                "total_budget_cap_timesteps": 110,
+                "default_profile": "normal",
+                "min_stage_timesteps": 20,
+                "max_stage_timesteps": 50,
+                "profiles": {
+                    "short": {"total_timesteps": 20},
+                    "normal": {"total_timesteps": 30},
+                    "recovery": {"total_timesteps": 40},
+                    "extend": {"total_timesteps": 50},
+                },
+            },
+            "bootstrap": {
+                "enabled": True,
+                "stage_name": "hover_stabilization",
+                "task_shape": "hover_stabilization",
+                "stage_budget_profile": "normal",
+                "budget_rationale": "Bootstrap with normal budget.",
+                "total_timesteps": 30,
+                "eval_steps": 4,
+                "task": {
+                    "task_type": "trajectory",
+                    "shape": "hover_stabilization",
+                    "duration_sec": 2.0,
+                    "sample_rate_hz": 10.0,
+                    "position": [0.0, 0.0, 1.0],
+                },
+            },
+            "llm": {
+                "provider": "mock",
+                "model": "mock",
+                "max_repair_attempts": 1,
+                "mock_responses": [
+                    (
+                        '{"proposal_kind":"task_distribution","task_distribution_id":"tracking_medium",'
+                        '"stage_budget_profile":"extend","budget_rationale":"Probe medium distribution."}'
+                    ),
+                    (
+                        '{"task_type":"trajectory","shape":"nearby_target_hover","duration_sec":2.5,'
+                        '"sample_rate_hz":10.0,"position":[0.1,0.0,1.0],'
+                        '"stage_budget_profile":"recovery","budget_rationale":"Recover after mixed tracking."}'
+                    ),
+                    (
+                        '{"proposal_kind":"task_distribution","task_distribution_id":"tracking_medium",'
+                        '"stage_budget_profile":"extend","budget_rationale":"Try to extend if cap allows."}'
+                    ),
+                ],
+            },
+        }
+    )
+
+
+def test_llm_adaptive_budget_dry_run_logs_metadata_and_enforces_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify adaptive budget decisions appear in logs and never exceed the configured cap."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+
+    result = llm_curriculum_training.run_llm_curriculum_training(_budget_test_settings(), dry_run_proposals=True)
+    summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
+    budget_events = [event for event in events if event["event_type"] == "llm_stage_budget_decision"]
+
+    assert summary["stage_count"] == BUDGET_TEST_STAGE_COUNT
+    assert summary["llm_budget_cap_timesteps"] == BUDGET_TEST_CAP
+    assert summary["cumulative_llm_budget_timesteps"] == BUDGET_TEST_CAP
+    assert [stage["stage_total_timesteps"] for stage in summary["stages"]] == BUDGET_TEST_STAGE_BUDGETS
+    assert summary["stages"][1]["requested_stage_budget_profile"] == "extend"
+    assert summary["stages"][1]["selected_stage_budget_profile"] == "short"
+    assert summary["stages"][1]["budget_was_clipped"] is True
+    assert summary["stages"][1]["budget_rationale"] == "Probe medium distribution."
+    assert len(budget_events) == BUDGET_TEST_STAGE_COUNT
+    assert budget_events[-1]["cumulative_llm_budget_timesteps"] == BUDGET_TEST_CAP
+    assert any(event.get("stage_budget_profile") == "extend" for event in events if event["event_type"] == "llm_proposal_attempt")
+
+
+def test_llm_budget_cap_must_reserve_minimum_budget_for_all_stages() -> None:
+    """Verify impossible total caps are rejected at config load time."""
+    config = {
+        "curriculum_name": "curriculum_llm_bad_budget",
+        "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+        "max_stages": 4,
+        "stage_defaults": {"total_timesteps": 30, "eval_steps": 4},
+        "llm_stage_budget": {
+            "enabled": True,
+            "total_budget_cap_timesteps": 70,
+            "default_profile": "normal",
+            "min_stage_timesteps": 20,
+            "max_stage_timesteps": 50,
+            "profiles": {
+                "short": {"total_timesteps": 20},
+                "normal": {"total_timesteps": 30},
+                "recovery": {"total_timesteps": 40},
+                "extend": {"total_timesteps": 50},
+            },
+        },
+        "bootstrap": {
+            "enabled": True,
+            "stage_name": "hover_stabilization",
+            "task_shape": "hover_stabilization",
+            "task": {
+                "task_type": "trajectory",
+                "shape": "hover_stabilization",
+                "duration_sec": 2.0,
+                "sample_rate_hz": 10.0,
+                "position": [0.0, 0.0, 1.0],
+            },
+        },
+        "llm": {"provider": "mock", "mock_responses": []},
+    }
+
+    with pytest.raises(ValueError, match="total cap"):
+        llm_curriculum_training.llm_curriculum_settings_from_mapping(config)
+
+
+def test_old_local_llm_smoke_config_keeps_adaptive_budget_disabled() -> None:
+    """Verify legacy local LLM smoke config loads without adaptive budget settings."""
+    settings = llm_curriculum_training.load_llm_curriculum_settings("configs/curricula/curriculum_llm_local_smoke.yaml")
+
+    assert settings.llm_stage_budget.enabled is False
+    assert settings.llm_stage_budget.profiles == {"normal": settings.stage_total_timesteps}

@@ -1,0 +1,81 @@
+curriculum_name: curriculum_manual_directrpm_dynprev_taskdist_medium_medium
+base_training_config: configs/training/ppo_tracking_directrpm_dynprev_taskdist_medium_medium.yaml
+seed: 0
+wandb_mode: auto
+normalize_actions: true
+stages:
+- stage_name: hover_stabilization
+  task_shape: hover_stabilization
+  total_timesteps: 25000
+  eval_steps: 240
+  notes: Stabilize around nominal hover before varied tracking.
+  task:
+    task_type: trajectory
+    shape: hover_stabilization
+    duration_sec: 3.0
+    sample_rate_hz: 10.0
+    position: [0.0, 0.0, 1.0]
+- stage_name: vertical_low_high
+  task_shape: vertical
+  total_timesteps: 25000
+  eval_steps: 240
+  notes: Practice low-to-high altitude correction before horizontal movement.
+  task:
+    task_type: trajectory
+    shape: vertical
+    duration_sec: 4.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    xy: [0.1, 0.0]
+    start_height: 0.75
+    end_height: 1.25
+- stage_name: start_hold_then_short_line
+  task_shape: start_hold_then_short_line
+  total_timesteps: 50000
+  eval_steps: 240
+  notes: Hold the start briefly, then move along a short horizontal segment.
+  task:
+    task_type: trajectory
+    shape: start_hold_then_short_line
+    hold_duration_sec: 1.0
+    move_duration_sec: 3.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [0.35, 0.0, 1.0]
+- stage_name: polyline_l_shape
+  task_shape: polyline
+  total_timesteps: 50000
+  eval_steps: 240
+  notes: Track a gentle L-shaped polyline before broader randomized tracking.
+  task:
+    task_type: trajectory
+    shape: polyline
+    duration_sec: 7.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    points:
+    - [0.0, 0.0, 1.0]
+    - [0.45, 0.0, 1.0]
+    - [0.45, 0.35, 1.05]
+- stage_name: medium_tracking_distribution
+  task_shape: line
+  total_timesteps: 100000
+  eval_steps: 240
+  notes: Finish with the medium task-distribution base task while PPO samples the full medium distribution.
+  task:
+    task_type: trajectory
+    shape: line
+    duration_sec: 4.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [0.6, 0.0, 1.0]

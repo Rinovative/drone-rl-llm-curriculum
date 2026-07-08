@@ -89,6 +89,8 @@ class ProposalContext:
         Recent rejected proposal summaries with reasons.
     metrics_summary
         Compact latest-stage metrics or dry-run placeholder.
+    budget_context
+        Optional bounded budget profile context for this stage.
 
     """
 
@@ -97,6 +99,7 @@ class ProposalContext:
     recent_accepted_tasks: tuple[Mapping[str, Any], ...] = ()
     recent_rejected_tasks: tuple[Mapping[str, Any], ...] = ()
     metrics_summary: Mapping[str, Any] | None = None
+    budget_context: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Validate prompt context metadata."""
@@ -119,6 +122,10 @@ class CurriculumProposalResult:
         Accepted training task without LLM-only metadata, or ``None`` when skipped.
     task_reason
         Optional reason metadata supplied by the LLM.
+    stage_budget_profile
+        Optional bounded budget profile selected by the LLM.
+    budget_rationale
+        Optional budget-profile rationale supplied by the LLM.
     stats
         Proposal accounting for this request.
     rejected_proposals
@@ -128,6 +135,8 @@ class CurriculumProposalResult:
 
     task: dict[str, Any] | None
     task_reason: str | None
+    stage_budget_profile: str | None
+    budget_rationale: str | None
     stats: dict[str, Any]
     rejected_proposals: tuple[dict[str, Any], ...]
 
@@ -144,6 +153,8 @@ class _AttemptOutcome:
     normalized_task: dict[str, Any] | None
     task: dict[str, Any] | None
     task_reason: str | None
+    stage_budget_profile: str | None
+    budget_rationale: str | None
 
 
 def propose_next_task(
@@ -216,6 +227,8 @@ def propose_next_task(
             return CurriculumProposalResult(
                 task=outcome.task,
                 task_reason=outcome.task_reason,
+                stage_budget_profile=outcome.stage_budget_profile,
+                budget_rationale=outcome.budget_rationale,
                 stats=stats,
                 rejected_proposals=tuple(rejected_proposals),
             )
@@ -236,7 +249,14 @@ def propose_next_task(
         previous_errors = outcome.rejection_reasons
 
     if active_settings.skip_invalid_proposals:
-        return CurriculumProposalResult(task=None, task_reason=None, stats=stats, rejected_proposals=tuple(rejected_proposals))
+        return CurriculumProposalResult(
+            task=None,
+            task_reason=None,
+            stage_budget_profile=None,
+            budget_rationale=None,
+            stats=stats,
+            rejected_proposals=tuple(rejected_proposals),
+        )
     reason_text = "; ".join(previous_errors) if previous_errors else "unknown proposal failure"
     message = f"LLM proposal failed after {active_settings.max_repair_attempts + 1} attempt(s): {reason_text}"
     raise LLMCurriculumProposalError(message)
@@ -306,6 +326,7 @@ def _messages_for_attempt(
             recent_rejected_tasks=context.recent_rejected_tasks,
             metrics_summary=context.metrics_summary,
             recent_context_limit=settings.recent_context_limit,
+            budget_context=context.budget_context,
         )
     return prompts.build_task_repair_messages(
         curriculum_name=context.curriculum_name,
@@ -314,6 +335,7 @@ def _messages_for_attempt(
         recent_rejected_tasks=context.recent_rejected_tasks,
         metrics_summary=context.metrics_summary,
         recent_context_limit=settings.recent_context_limit,
+        budget_context=context.budget_context,
         previous_response=previous_response,
         error_messages=previous_errors,
     )
@@ -347,6 +369,11 @@ def _evaluate_response(response_text: str) -> _AttemptOutcome:
             normalized_task=normalized_task,
         )
 
+    stage_budget_profile_value = normalized_task.get(task_schema.STAGE_BUDGET_PROFILE_FIELD)
+    budget_rationale_value = normalized_task.get(task_schema.BUDGET_RATIONALE_FIELD)
+    stage_budget_profile = str(stage_budget_profile_value) if stage_budget_profile_value is not None else None
+    budget_rationale = str(budget_rationale_value) if budget_rationale_value is not None else None
+
     validation_result = task_schema.validate_proposed_task(normalized_task)
     if not validation_result.is_valid:
         return _rejected_outcome(
@@ -366,6 +393,8 @@ def _evaluate_response(response_text: str) -> _AttemptOutcome:
         normalized_task=normalized_task,
         task=task_schema.task_without_metadata(normalized_task),
         task_reason=reason_value,
+        stage_budget_profile=stage_budget_profile,
+        budget_rationale=budget_rationale,
     )
 
 
@@ -387,6 +416,8 @@ def _rejected_outcome(
         normalized_task=normalized_task,
         task=None,
         task_reason=None,
+        stage_budget_profile=None,
+        budget_rationale=None,
     )
 
 
@@ -414,6 +445,8 @@ def _proposal_event(
         "normalized_task": outcome.normalized_task,
         "accepted_task": outcome.task,
         "task_reason": outcome.task_reason,
+        "stage_budget_profile": outcome.stage_budget_profile,
+        "budget_rationale": outcome.budget_rationale,
     }
 
 

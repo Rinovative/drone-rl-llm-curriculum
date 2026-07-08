@@ -23,6 +23,8 @@ TASK_TYPE_TRAJECTORY = "trajectory"
 
 SHAPE_HOVER = "hover"
 SHAPE_CIRCLE = "circle"
+SHAPE_ELLIPSE = "ellipse"
+SHAPE_FIGURE_EIGHT = "figure_eight"
 SHAPE_LINE = "line"
 SHAPE_VERTICAL = "vertical"
 SHAPE_POLYLINE = "polyline"
@@ -37,6 +39,8 @@ SUPPORTED_TRAJECTORY_SHAPES: tuple[str, ...] = (
     SHAPE_SHORT_SLOW_LINE,
     SHAPE_HOVER,
     SHAPE_CIRCLE,
+    SHAPE_ELLIPSE,
+    SHAPE_FIGURE_EIGHT,
     SHAPE_LINE,
     SHAPE_VERTICAL,
     SHAPE_POLYLINE,
@@ -49,6 +53,8 @@ FIELD_SAMPLE_RATE_HZ = "sample_rate_hz"
 FIELD_POSITION = "position"
 FIELD_CENTER = "center"
 FIELD_RADIUS = "radius"
+FIELD_RADIUS_X = "radius_x"
+FIELD_RADIUS_Y = "radius_y"
 FIELD_HEIGHT = "height"
 FIELD_CLOCKWISE = "clockwise"
 FIELD_START = "start"
@@ -76,6 +82,8 @@ __all__ = [
     "FIELD_POINTS",
     "FIELD_POSITION",
     "FIELD_RADIUS",
+    "FIELD_RADIUS_X",
+    "FIELD_RADIUS_Y",
     "FIELD_SAMPLE_RATE_HZ",
     "FIELD_SHAPE",
     "FIELD_START",
@@ -85,6 +93,8 @@ __all__ = [
     "FIELD_TASK_TYPE",
     "FIELD_XY",
     "SHAPE_CIRCLE",
+    "SHAPE_ELLIPSE",
+    "SHAPE_FIGURE_EIGHT",
     "SHAPE_HOVER",
     "SHAPE_HOVER_STABILIZATION",
     "SHAPE_LINE",

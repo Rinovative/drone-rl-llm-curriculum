@@ -30,7 +30,7 @@ import sys
 import warnings as py_warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -38,6 +38,9 @@ from src import envs, evaluation, utils
 from src.experiments import experiments_config as config_loader
 
 from . import experiments_training_ppo_config as ppo_config
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking_smoke.yaml")
 DEFAULT_TASK_CONFIG_PATH = Path("configs/training/ppo_tracking_tasks.yaml")
@@ -76,6 +79,10 @@ class PPOTrackingSmokeSettings:
         Zero-based task index selected from the task config.
     task_shape
         Optional task-shape selector matched against the configured task list.
+    task_distribution_config_path
+        Optional YAML config describing a fixed or randomized task distribution.
+    task_distribution_settings
+        Optional preloaded task-distribution settings used by curriculum callers.
     run_name
         Optional canonical storage/runs run name for model, metrics, and W&B artifacts.
     total_timesteps
@@ -128,6 +135,8 @@ class PPOTrackingSmokeSettings:
         Optional W&B output directory. Defaults to the run-specific wandb directory.
     initial_model_path
         Optional Stable-Baselines3 PPO model zip used to initialize this run.
+    run_metadata
+        Optional caller-owned metadata copied into metrics, manifests, and W&B config.
 
     """
 
@@ -135,6 +144,8 @@ class PPOTrackingSmokeSettings:
     task_config_path: Path = DEFAULT_TASK_CONFIG_PATH
     task_index: int = DEFAULT_TASK_INDEX
     task_shape: str | None = None
+    task_distribution_config_path: Path | None = None
+    task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None
     run_name: str | None = None
     total_timesteps: int = DEFAULT_TOTAL_TIMESTEPS
     num_envs: int = DEFAULT_NUM_ENVS
@@ -161,6 +172,7 @@ class PPOTrackingSmokeSettings:
     wandb_tags: tuple[str, ...] = ()
     wandb_dir: Path | None = None
     initial_model_path: Path | None = None
+    run_metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Validate PPO smoke-run settings."""
@@ -170,6 +182,15 @@ class PPOTrackingSmokeSettings:
         if self.task_shape is not None and not self.task_shape.strip():
             message = "task_shape must be non-empty when provided"
             raise ValueError(message)
+        if self.task_distribution_settings is not None and not isinstance(
+            self.task_distribution_settings,
+            envs.task_distribution.TaskDistributionSettings,
+        ):
+            message = "task_distribution_settings must be a TaskDistributionSettings instance"
+            raise TypeError(message)
+        if not isinstance(self.run_metadata, dict):
+            message = "run_metadata must be a dictionary"
+            raise TypeError(message)
         if self.run_name is not None:
             utils.artifacts.get_run_dir(self.run_name)
         if self.total_timesteps <= 0:
@@ -381,10 +402,17 @@ def _make_seeded_ppo_tracking_env(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
+    env_rank: int = 0,
 ) -> Any:
     """Build one PPO-facing tracking environment and apply a deterministic seed."""
+    env_task: dict[str, Any] | envs.task_distribution.TaskDistributionSampler
+    if task_distribution_settings is None:
+        env_task = dict(task)
+    else:
+        env_task = envs.task_distribution.TaskDistributionSampler(task_distribution_settings, env_rank=env_rank)
     real_env = envs.tracking_env.make_trajectory_tracking_env(
-        dict(task),
+        env_task,
         gui=False,
         record=False,
         action_interface=action_interface,
@@ -417,6 +445,8 @@ def _make_ppo_training_env_factory(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
+    env_rank: int = 0,
 ) -> Any:
     """Return a lazy factory for one seeded PPO training environment."""
     task_payload = dict(task)
@@ -431,6 +461,8 @@ def _make_ppo_training_env_factory(
             rpm_delta_scale=rpm_delta_scale,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            task_distribution_settings=task_distribution_settings,
+            env_rank=env_rank,
         )
 
     return make_env
@@ -475,22 +507,26 @@ def _make_ppo_training_vec_env(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
 ) -> Any:
     """Build the vectorized PPO training environment with lazy per-rank factories."""
     resolved_num_envs = _positive_int_setting(num_envs, "num_envs")
     dummy_vec_env_cls, subproc_vec_env_cls = _vec_env_classes()
-    env_factories = [
-        _make_ppo_training_env_factory(
-            task=task,
-            normalize_actions=normalize_actions,
-            seed=_rank_seed(seed, env_rank),
-            action_interface=action_interface,
-            rpm_delta_scale=rpm_delta_scale,
-            include_dynamics_observation=include_dynamics_observation,
-            include_previous_action=include_previous_action,
-        )
-        for env_rank in range(resolved_num_envs)
-    ]
+    env_factories = []
+    for env_rank in range(resolved_num_envs):
+        factory_kwargs: dict[str, Any] = {
+            "task": task,
+            "normalize_actions": normalize_actions,
+            "seed": _rank_seed(seed, env_rank),
+            "action_interface": action_interface,
+            "rpm_delta_scale": rpm_delta_scale,
+            "include_dynamics_observation": include_dynamics_observation,
+            "include_previous_action": include_previous_action,
+        }
+        if task_distribution_settings is not None:
+            factory_kwargs["task_distribution_settings"] = task_distribution_settings
+            factory_kwargs["env_rank"] = env_rank
+        env_factories.append(_make_ppo_training_env_factory(**factory_kwargs))
     vec_env = dummy_vec_env_cls(env_factories) if resolved_num_envs == 1 else subproc_vec_env_cls(env_factories, start_method="spawn")
     seed_vec_env = getattr(vec_env, "seed", None)
     if callable(seed_vec_env):
@@ -548,6 +584,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         default_task_index=active_settings.task_index,
         task_shape=active_settings.task_shape,
     )
+    task_distribution_settings = _resolved_task_distribution_settings(active_settings, task)
+    task_distribution_metadata = _task_distribution_metadata(task_distribution_settings)
     resolved_task_shape = str(task.get("shape", "unknown"))
     training_run_name = _run_name(active_settings, resolved_task_shape)
     timesteps_label = _timesteps_label(active_settings.total_timesteps)
@@ -617,6 +655,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             rpm_delta_scale=active_settings.rpm_delta_scale,
             include_dynamics_observation=active_settings.include_dynamics_observation,
             include_previous_action=active_settings.include_previous_action,
+            task_distribution_settings=task_distribution_settings,
         )
         try:
             if active_settings.initial_model_path is None:
@@ -652,6 +691,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
                     diagnostics_dir,
                     selected_task_index,
                     task,
+                    task_distribution_metadata,
                 ),
             )
             learn_kwargs: dict[str, Any] = {
@@ -728,6 +768,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "task_config_snapshot_path_relative": config_snapshots.get("task_config_snapshot_path_relative"),
             "task_source": task_source,
             "task_shape_requested": active_settings.task_shape,
+            **task_distribution_metadata,
             "total_timesteps": active_settings.total_timesteps,
             "num_envs": active_settings.num_envs,
             "action_interface": active_settings.action_interface,
@@ -768,6 +809,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "initial_model_path": str(active_settings.initial_model_path) if active_settings.initial_model_path is not None else None,
             "model_transfer_enabled": active_settings.initial_model_path is not None,
             "model_transfer_source": str(active_settings.initial_model_path) if active_settings.initial_model_path is not None else None,
+            "run_metadata": dict(active_settings.run_metadata),
+            **dict(active_settings.run_metadata),
             "wandb": _wandb_run_metadata(wandb_settings, wandb_run),
             **eval_metrics,
             **diagnostic_artifact_fields,
@@ -804,6 +847,7 @@ def run_ppo_tracking_smoke_from_config(
     task_config_path: str | Path | None = None,
     task_index: int | None = None,
     task_shape: str | None = None,
+    task_distribution_config_path: str | Path | None = None,
     run_name: str | None = None,
     total_timesteps: int | None = None,
     num_envs: int | None = None,
@@ -822,6 +866,7 @@ def run_ppo_tracking_smoke_from_config(
     normalize_actions: bool | None = None,
     action_interface: str | None = None,
     initial_model_path: str | Path | None = None,
+    run_metadata: Mapping[str, Any] | None = None,
 ) -> PPOTrackingSmokeResult:
     """
     Load settings, apply CLI-style overrides, and run PPO smoke training.
@@ -836,6 +881,8 @@ def run_ppo_tracking_smoke_from_config(
         Optional task-index override.
     task_shape
         Optional configured task-shape override.
+    task_distribution_config_path
+        Optional task-distribution config path override.
     run_name
         Optional storage/runs/<run_name> root for generated artifacts.
     total_timesteps
@@ -872,6 +919,8 @@ def run_ppo_tracking_smoke_from_config(
         Optional action-interface override.
     initial_model_path
         Optional Stable-Baselines3 PPO model zip used to initialize training.
+    run_metadata
+        Optional caller-owned metadata copied into metrics, manifests, and W&B config.
 
     Returns
     -------
@@ -880,10 +929,17 @@ def run_ppo_tracking_smoke_from_config(
 
     """
     settings = load_ppo_tracking_settings(config_path)
+    resolved_task_distribution_config_path = settings.task_distribution_config_path
+    resolved_task_distribution_settings = settings.task_distribution_settings
+    if task_distribution_config_path is not None:
+        resolved_task_distribution_config_path = Path(task_distribution_config_path)
+        resolved_task_distribution_settings = envs.task_distribution.load_task_distribution_settings(resolved_task_distribution_config_path)
     overridden = PPOTrackingSmokeSettings(
         task_config_path=settings.task_config_path if task_config_path is None else Path(task_config_path),
         task_index=settings.task_index if task_index is None else task_index,
         task_shape=settings.task_shape if task_shape is None else task_shape,
+        task_distribution_config_path=resolved_task_distribution_config_path,
+        task_distribution_settings=resolved_task_distribution_settings,
         run_name=settings.run_name if run_name is None else run_name,
         total_timesteps=settings.total_timesteps if total_timesteps is None else total_timesteps,
         num_envs=settings.num_envs if num_envs is None else num_envs,
@@ -911,6 +967,7 @@ def run_ppo_tracking_smoke_from_config(
         wandb_tags=settings.wandb_tags if wandb_tags is None else wandb_tags,
         wandb_dir=settings.wandb_dir if wandb_dir is None else Path(wandb_dir),
         initial_model_path=settings.initial_model_path if initial_model_path is None else Path(initial_model_path),
+        run_metadata=settings.run_metadata if run_metadata is None else dict(run_metadata),
     )
     return run_ppo_tracking_smoke(overridden)
 
@@ -922,11 +979,15 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
     model_dir_value = config.get("model_dir")
     wandb_dir_value = config.get("wandb_dir")
     initial_model_path_value = config.get("initial_model_path")
+    task_distribution_config_path_value = config.get("task_distribution_config_path")
+    task_distribution_settings = _load_configured_task_distribution_settings(config, task_distribution_config_path_value)
     settings_kwargs: dict[str, Any] = {
         "training_config_path": training_config_path,
         "task_config_path": Path(config.get("task_config_path", DEFAULT_TASK_CONFIG_PATH)),
         "task_index": int(config.get("task_index", DEFAULT_TASK_INDEX)),
         "task_shape": config.get("task_shape") or None,
+        "task_distribution_config_path": Path(task_distribution_config_path_value) if task_distribution_config_path_value is not None else None,
+        "task_distribution_settings": task_distribution_settings,
         "run_name": config.get("run_name") or None,
         "total_timesteps": int(config.get("total_timesteps", DEFAULT_TOTAL_TIMESTEPS)),
         "num_envs": config.get("num_envs", DEFAULT_NUM_ENVS),
@@ -963,6 +1024,70 @@ def _load_task(task_config_path: Path, task_index: int) -> dict[str, Any]:
     """Load and return a copied task from a task config path."""
     task, _, _, _ = _select_task(task_config_path=task_config_path, default_task_index=task_index, task_shape=None)
     return task
+
+
+def _load_configured_task_distribution_settings(
+    config: Mapping[str, Any],
+    task_distribution_config_path_value: Any,
+) -> envs.task_distribution.TaskDistributionSettings | None:
+    """Load optional task-distribution settings from training config."""
+    if task_distribution_config_path_value is not None:
+        return envs.task_distribution.load_task_distribution_settings(Path(task_distribution_config_path_value))
+    if envs.task_distribution.DISTRIBUTION_CONFIG_KEY in config:
+        return envs.task_distribution.load_task_distribution_settings(config)
+    return None
+
+
+def _resolved_task_distribution_settings(
+    settings: PPOTrackingSmokeSettings,
+    task: Mapping[str, Any],
+) -> envs.task_distribution.TaskDistributionSettings | None:
+    """Return explicit distribution settings or a valid fixed-task distribution."""
+    if settings.task_distribution_settings is not None:
+        return settings.task_distribution_settings
+    try:
+        return envs.task_distribution.normalize_fixed_task_to_distribution(
+            task,
+            seed=settings.seed,
+            name="fixed_task",
+            config_path=settings.task_config_path,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _task_distribution_metadata(settings: envs.task_distribution.TaskDistributionSettings | None) -> dict[str, Any]:
+    """Return compact metadata for task distribution settings."""
+    if settings is None:
+        return {
+            "task_distribution_enabled": False,
+            "task_distribution_mode": None,
+            "task_distribution_strength": 0.0,
+            "task_distribution_sample_on_reset": False,
+            "task_distribution_seed": None,
+            "task_distribution_config_path": None,
+            "task_distribution_supported_families": list(envs.task_distribution.supported_task_families()),
+            "task_distribution_family_weights": {},
+            "task_distribution_name": None,
+        }
+    return settings.to_metadata()
+
+
+def _task_distribution_manifest_fields(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """Select task-distribution fields for metrics, manifests, and W&B config."""
+    keys = (
+        "task_distribution_enabled",
+        "task_distribution_mode",
+        "task_distribution_strength",
+        "task_distribution_sample_on_reset",
+        "task_distribution_seed",
+        "task_distribution_config_path",
+        "task_distribution_supported_families",
+        "task_distribution_family_weights",
+        "task_distribution_name",
+        "task_distribution_base_task_shape",
+    )
+    return {key: metrics.get(key) for key in keys if key in metrics}
 
 
 def _select_task(
@@ -1221,6 +1346,7 @@ def _build_manifest(
         "task_shape": str(task.get("shape", "unknown")),
         "training_task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": settings.task_shape,
+        **_task_distribution_manifest_fields(metrics),
         "total_timesteps": settings.total_timesteps,
         "num_envs": metrics.get("num_envs", settings.num_envs),
         "action_interface": metrics.get("action_interface", settings.action_interface),
@@ -1260,6 +1386,7 @@ def _build_manifest(
         "diagnostics_dir": metrics.get("diagnostics_dir"),
         "diagnostics_dir_relative": utils.artifacts.path_relative_to(metrics.get("diagnostics_dir"), _manifest_relative_base(settings, run_name)),
         "warnings": list(metrics.get("warnings", [])),
+        "run_metadata": dict(metrics.get("run_metadata", {})),
         "wandb": metrics.get("wandb", {}),
         "diagnostics": diagnostics,
         **diagnostics,
@@ -1304,6 +1431,7 @@ def _build_run_manifest(
             "task_shape_requested": settings.task_shape,
             "task_index": training_manifest["task_index"],
             "task_source": training_manifest["task_source"],
+            **_task_distribution_manifest_fields(metrics),
             "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
             "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
             "num_envs": metrics.get("num_envs", settings.num_envs),
@@ -1324,6 +1452,7 @@ def _build_run_manifest(
                 settings.ppo_config.effective_rollout_steps(settings.num_envs),
             ),
         },
+        **_task_distribution_manifest_fields(metrics),
         "total_timesteps": settings.total_timesteps,
         "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
         "num_envs": metrics.get("num_envs", settings.num_envs),
@@ -1350,6 +1479,7 @@ def _build_run_manifest(
         "model_transfer_enabled": metrics.get("model_transfer_enabled", False),
         "model_transfer_source": metrics.get("model_transfer_source"),
         "wandb": metrics.get("wandb", {}),
+        "run_metadata": dict(metrics.get("run_metadata", {})),
         "warnings": list(metrics.get("warnings", [])),
         "evaluation_index": _evaluation_index_manifest(run_name),
     }
@@ -1403,6 +1533,8 @@ def _training_config_snapshot_payload(settings: PPOTrackingSmokeSettings) -> dic
         "task_config_path": str(settings.task_config_path),
         "task_index": settings.task_index,
         "task_shape": settings.task_shape,
+        "task_distribution_config_path": None if settings.task_distribution_config_path is None else str(settings.task_distribution_config_path),
+        "task_distribution": None if settings.task_distribution_settings is None else settings.task_distribution_settings.to_metadata(),
         "run_name": settings.run_name,
         "total_timesteps": settings.total_timesteps,
         "num_envs": settings.num_envs,
@@ -1421,6 +1553,7 @@ def _training_config_snapshot_payload(settings: PPOTrackingSmokeSettings) -> dic
         "wandb_group": settings.wandb_group,
         "wandb_name": settings.wandb_name,
         "wandb_tags": list(settings.wandb_tags),
+        "run_metadata": dict(settings.run_metadata),
     }
 
 
@@ -1583,6 +1716,7 @@ def _wandb_config(
     diagnostics_dir: Path,
     selected_task_index: int,
     task: dict[str, Any],
+    task_distribution_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a compact W&B config payload for PPO smoke training."""
     return {
@@ -1593,6 +1727,7 @@ def _wandb_config(
         "task_index": selected_task_index,
         "task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": settings.task_shape,
+        **dict(task_distribution_metadata or {}),
         "total_timesteps": settings.total_timesteps,
         "num_envs": settings.num_envs,
         "action_interface": settings.action_interface,
@@ -1616,6 +1751,8 @@ def _wandb_config(
         "initial_model_path": str(settings.initial_model_path) if settings.initial_model_path is not None else None,
         "model_transfer_enabled": settings.initial_model_path is not None,
         "model_transfer_source": str(settings.initial_model_path) if settings.initial_model_path is not None else None,
+        "run_metadata": dict(settings.run_metadata),
+        **dict(settings.run_metadata),
         "model_path": str(model_path),
         "metrics_path": str(metrics_path),
         "manifest_path": str(manifest_path),

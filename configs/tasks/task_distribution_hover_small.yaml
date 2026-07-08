@@ -1,0 +1,28 @@
+name: hover_small
+validation_limits:
+  arena_xy_limit: 2.0
+  min_height: 0.2
+  max_height: 2.0
+  max_speed_m_s: 2.0
+  max_acceleration_m_s2: 5.0
+  min_duration_sec: 1.0
+  max_step_distance_m: 0.5
+task_distribution:
+  enabled: true
+  mode: randomized
+  seed: 0
+  strength: 0.25
+  sample_on_reset: true
+  base_task:
+    task_type: trajectory
+    shape: hover_stabilization
+    position: [0.0, 0.0, 1.0]
+    duration_sec: 3.0
+    sample_rate_hz: 10.0
+  family_weights:
+    hover_stabilization: 1.0
+  variations:
+    hover_stabilization:
+      xy_radius_m: 0.20
+      z_range_m: [0.8, 1.2]
+      duration_range_sec: [2.0, 5.0]

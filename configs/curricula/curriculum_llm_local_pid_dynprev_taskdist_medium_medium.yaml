@@ -1,0 +1,55 @@
+curriculum_name: curriculum_llm_local_pid_dynprev_taskdist_medium_medium
+base_training_config: configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml
+seed: 0
+wandb_mode: auto
+normalize_actions: true
+max_stages: 10
+stage_defaults:
+  total_timesteps: 30000
+  eval_steps: 240
+llm_stage_budget:
+  enabled: true
+  total_budget_cap_timesteps: 350000
+  default_profile: normal
+  min_stage_timesteps: 20000
+  max_stage_timesteps: 50000
+  profiles:
+    short:
+      total_timesteps: 20000
+    normal:
+      total_timesteps: 30000
+    recovery:
+      total_timesteps: 40000
+    extend:
+      total_timesteps: 50000
+bootstrap:
+  enabled: true
+  stage_name: line
+  task_shape: line
+  stage_budget_profile: normal
+  budget_rationale: Deterministic bootstrap needs a normal diagnostic budget before LLM adaptation.
+  total_timesteps: 30000
+  eval_steps: 240
+  notes: Bootstrap with a deterministic line while the base training config enables medium task-distribution sampling.
+  task:
+    task_type: trajectory
+    shape: line
+    duration_sec: 4.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [0.6, 0.0, 1.0]
+llm:
+  provider: openai_compatible
+  api_base: http://127.0.0.1:18080/v1
+  model: qwen2.5-coder-32b-instruct-q4_k_m.gguf
+  api_key_env: LLAMA_CPP_API_KEY
+  api_key: anything
+  temperature: 0.1
+  max_tokens: 900
+  timeout_sec: 60.0
+  max_repair_attempts: 1
+  skip_invalid_proposals: false
+  recent_context_limit: 3

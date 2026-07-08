@@ -5,7 +5,7 @@ validation_tasks.py
 Validate simple trajectory tasks before they can enter training or evaluation.
 
 Responsibilities:
-  - Validate minimal hover, curriculum line, circle, vertical, and polyline task dictionaries
+  - Validate minimal hover, curriculum line, circle, ellipse, figure-eight, vertical, and polyline task dictionaries
   - Check sampled trajectories against deterministic feasibility limits
   - Return structured validation results with diagnostic messages
 
@@ -36,6 +36,8 @@ XYZ_DIMENSIONS = 3
 DEFAULT_START_HOLD_SEC = 1.0
 START_HOLD_DEFAULT_SHAPES = (
     validation.contracts.SHAPE_CIRCLE,
+    validation.contracts.SHAPE_ELLIPSE,
+    validation.contracts.SHAPE_FIGURE_EIGHT,
     validation.contracts.SHAPE_LINE,
     validation.contracts.SHAPE_POLYLINE,
     validation.contracts.SHAPE_SHORT_SLOW_LINE,
@@ -142,6 +144,10 @@ def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = Non
         return _validate_built_task(_build_hover_trajectory(task), active_limits, task)
     if shape == validation.contracts.SHAPE_CIRCLE:
         return _validate_built_task(_build_circle_trajectory(task), active_limits, task)
+    if shape == validation.contracts.SHAPE_ELLIPSE:
+        return _validate_built_task(_build_ellipse_trajectory(task), active_limits, task)
+    if shape == validation.contracts.SHAPE_FIGURE_EIGHT:
+        return _validate_built_task(_build_figure_eight_trajectory(task), active_limits, task)
     if shape in {validation.contracts.SHAPE_LINE, validation.contracts.SHAPE_SHORT_SLOW_LINE}:
         return _validate_built_task(_build_line_trajectory(task), active_limits, task)
     if shape == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
@@ -251,6 +257,54 @@ def _build_circle_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.prim
         clockwise = bool(task.get(validation.contracts.FIELD_CLOCKWISE, False))
         trajectory = trajectories.primitives.make_circle_trajectory(
             radius=radius,
+            height=height,
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+            center=center,
+            clockwise=clockwise,
+        )
+    except (TypeError, ValueError) as exc:
+        return None, (str(exc),)
+    return trajectory, ()
+
+
+def _build_ellipse_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
+    """Build an ellipse trajectory from a task mapping, returning messages on failure."""
+    try:
+        duration_sec = _require_float(task, validation.contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        radius_x = _require_float(task, validation.contracts.FIELD_RADIUS_X)
+        radius_y = _require_float(task, validation.contracts.FIELD_RADIUS_Y)
+        height = _require_float(task, validation.contracts.FIELD_HEIGHT)
+        center = _optional_sequence(task, validation.contracts.FIELD_CENTER, default=(0.0, 0.0))
+        clockwise = bool(task.get(validation.contracts.FIELD_CLOCKWISE, False))
+        trajectory = trajectories.primitives.make_ellipse_trajectory(
+            radius_x=radius_x,
+            radius_y=radius_y,
+            height=height,
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+            center=center,
+            clockwise=clockwise,
+        )
+    except (TypeError, ValueError) as exc:
+        return None, (str(exc),)
+    return trajectory, ()
+
+
+def _build_figure_eight_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
+    """Build a figure-eight trajectory from a task mapping, returning messages on failure."""
+    try:
+        duration_sec = _require_float(task, validation.contracts.FIELD_DURATION_SEC)
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        radius_x = _require_float(task, validation.contracts.FIELD_RADIUS_X)
+        radius_y = _require_float(task, validation.contracts.FIELD_RADIUS_Y)
+        height = _require_float(task, validation.contracts.FIELD_HEIGHT)
+        center = _optional_sequence(task, validation.contracts.FIELD_CENTER, default=(0.0, 0.0))
+        clockwise = bool(task.get(validation.contracts.FIELD_CLOCKWISE, False))
+        trajectory = trajectories.primitives.make_figure_eight_trajectory(
+            radius_x=radius_x,
+            radius_y=radius_y,
             height=height,
             duration_sec=duration_sec,
             sample_rate_hz=sample_rate_hz,

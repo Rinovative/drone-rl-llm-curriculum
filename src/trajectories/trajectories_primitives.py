@@ -7,7 +7,8 @@ Generate basic deterministic reference trajectories for drone tracking tasks.
 Responsibilities:
   - Represent sampled reference trajectories as time and position arrays
   - Generate hover trajectories at a fixed XYZ position
-  - Generate horizontal circle trajectories at a fixed height
+  - Generate horizontal circle and ellipse trajectories at a fixed height
+  - Generate smooth figure-eight trajectories at a fixed height
   - Generate line trajectories between two XYZ positions
   - Generate vertical and polyline trajectories for foundation validation
 
@@ -138,6 +139,136 @@ def make_circle_trajectory(
         (
             center_array[0] + radius * np.cos(angles),
             center_array[1] + radius * np.sin(angles),
+            np.full(times.shape, height, dtype=float),
+        )
+    )
+    return Trajectory(times=times, positions=positions)
+
+
+def make_ellipse_trajectory(
+    radius_x: float,
+    radius_y: float,
+    height: float,
+    duration_sec: float,
+    sample_rate_hz: float,
+    center: Sequence[float] = (0.0, 0.0),
+    clockwise: bool = False,
+    phase_rad: float = 0.0,
+) -> Trajectory:
+    """
+    Generate a horizontal elliptical trajectory at fixed height.
+
+    Parameters
+    ----------
+    radius_x
+        Ellipse semi-axis in the X direction in meters.
+    radius_y
+        Ellipse semi-axis in the Y direction in meters.
+    height
+        Fixed Z height in meters.
+    duration_sec
+        Total trajectory duration in seconds.
+    sample_rate_hz
+        Number of trajectory samples per second.
+    center
+        XY center of the ellipse in meters.
+    clockwise
+        Whether samples should move clockwise when viewed from above.
+    phase_rad
+        Initial angular phase in radians.
+
+    Returns
+    -------
+    Trajectory
+        Sampled ellipse trajectory.
+
+    Raises
+    ------
+    ValueError
+        If any trajectory parameter is invalid.
+
+    """
+    _ensure_positive(radius_x, name="radius_x")
+    _ensure_positive(radius_y, name="radius_y")
+    _ensure_finite(height, name="height")
+    _ensure_finite(phase_rad, name="phase_rad")
+    center_array = _as_float_array(center, expected_size=2, name="center")
+    times = _make_times(duration_sec=duration_sec, sample_rate_hz=sample_rate_hz)
+
+    direction = -1.0 if clockwise else 1.0
+    angles = phase_rad + direction * 2.0 * pi * times / duration_sec
+    positions = np.column_stack(
+        (
+            center_array[0] + radius_x * np.cos(angles),
+            center_array[1] + radius_y * np.sin(angles),
+            np.full(times.shape, height, dtype=float),
+        )
+    )
+    return Trajectory(times=times, positions=positions)
+
+
+def make_figure_eight_trajectory(
+    radius_x: float,
+    radius_y: float,
+    height: float,
+    duration_sec: float,
+    sample_rate_hz: float,
+    center: Sequence[float] = (0.0, 0.0),
+    clockwise: bool = False,
+    phase_rad: float = 0.0,
+) -> Trajectory:
+    """
+    Generate a smooth horizontal figure-eight trajectory at fixed height.
+
+    Parameters
+    ----------
+    radius_x
+        Horizontal scale of the figure-eight in meters.
+    radius_y
+        Vertical scale of the figure-eight in meters.
+    height
+        Fixed Z height in meters.
+    duration_sec
+        Total trajectory duration in seconds.
+    sample_rate_hz
+        Number of trajectory samples per second.
+    center
+        XY crossing point of the figure-eight in meters.
+    clockwise
+        Whether to reverse traversal direction.
+    phase_rad
+        Initial phase in radians.
+
+    Returns
+    -------
+    Trajectory
+        Sampled figure-eight trajectory.
+
+    Raises
+    ------
+    ValueError
+        If any trajectory parameter is invalid.
+
+    Notes
+    -----
+    The path uses a Gerono lemniscate, ``x = a sin(t)`` and
+    ``y = b sin(t) cos(t)``, which is smooth and bounded.
+
+    """
+    _ensure_positive(radius_x, name="radius_x")
+    _ensure_positive(radius_y, name="radius_y")
+    _ensure_finite(height, name="height")
+    _ensure_finite(phase_rad, name="phase_rad")
+    center_array = _as_float_array(center, expected_size=2, name="center")
+    times = _make_times(duration_sec=duration_sec, sample_rate_hz=sample_rate_hz)
+
+    direction = -1.0 if clockwise else 1.0
+    angles = phase_rad + direction * 2.0 * pi * times / duration_sec
+    sin_angles = np.sin(angles)
+    positions = np.column_stack(
+        (
+            center_array[0] + radius_x * sin_angles,
+            center_array[1] + radius_y * sin_angles * np.cos(angles),
             np.full(times.shape, height, dtype=float),
         )
     )

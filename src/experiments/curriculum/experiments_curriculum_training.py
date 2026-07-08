@@ -73,6 +73,16 @@ SUMMARY_METRIC_KEYS = (
     "curriculum_readiness_level",
     "curriculum_recommended_next_tasks",
     "curriculum_avoid_next_tasks",
+    "task_distribution_enabled",
+    "task_distribution_mode",
+    "task_distribution_strength",
+    "task_distribution_sample_on_reset",
+    "task_distribution_seed",
+    "task_distribution_config_path",
+    "task_distribution_supported_families",
+    "task_distribution_family_weights",
+    "task_distribution_name",
+    "task_distribution_base_task_shape",
 )
 
 
@@ -518,6 +528,15 @@ def _build_curriculum_summary(
         "observation_dim": final_stage.get("observation_dim"),
         "observation_components": final_stage.get("observation_components"),
         "policy_kwargs": final_stage.get("policy_kwargs"),
+        "task_distribution_enabled": final_stage.get("task_distribution_enabled"),
+        "task_distribution_mode": final_stage.get("task_distribution_mode"),
+        "task_distribution_strength": final_stage.get("task_distribution_strength"),
+        "task_distribution_sample_on_reset": final_stage.get("task_distribution_sample_on_reset"),
+        "task_distribution_seed": final_stage.get("task_distribution_seed"),
+        "task_distribution_config_path": final_stage.get("task_distribution_config_path"),
+        "task_distribution_supported_families": final_stage.get("task_distribution_supported_families"),
+        "task_distribution_family_weights": final_stage.get("task_distribution_family_weights"),
+        "task_distribution_name": final_stage.get("task_distribution_name"),
         "final_stage_run_name": final_stage["run_name"],
         "final_model_path": final_stage["model_path"],
         "final_stage": {

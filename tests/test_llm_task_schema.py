@@ -75,6 +75,34 @@ def _valid_tasks_by_shape() -> list[dict[str, object]]:
         },
         {
             contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_ELLIPSE,
+            contracts.FIELD_DURATION_SEC: 12.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_RADIUS_X: 0.35,
+            contracts.FIELD_RADIUS_Y: 0.20,
+            contracts.FIELD_HEIGHT: 1.0,
+            contracts.FIELD_CENTER: [0.0, 0.0],
+            contracts.FIELD_CLOCKWISE: False,
+            contracts.FIELD_START_HOLD_ENABLED: True,
+            contracts.FIELD_START_HOLD_SEC: 1.0,
+            contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
+        },
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+            contracts.FIELD_SHAPE: contracts.SHAPE_FIGURE_EIGHT,
+            contracts.FIELD_DURATION_SEC: 14.0,
+            contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            contracts.FIELD_RADIUS_X: 0.30,
+            contracts.FIELD_RADIUS_Y: 0.18,
+            contracts.FIELD_HEIGHT: 1.0,
+            contracts.FIELD_CENTER: [0.0, 0.0],
+            contracts.FIELD_CLOCKWISE: False,
+            contracts.FIELD_START_HOLD_ENABLED: True,
+            contracts.FIELD_START_HOLD_SEC: 1.0,
+            contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
+        },
+        {
+            contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
             contracts.FIELD_SHAPE: contracts.SHAPE_LINE,
             contracts.FIELD_DURATION_SEC: 3.0,
             contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
@@ -138,6 +166,8 @@ def test_schema_includes_curriculum_specific_fields_and_shapes() -> None:
     for field in (
         contracts.FIELD_HOLD_DURATION_SEC,
         contracts.FIELD_MOVE_DURATION_SEC,
+        contracts.FIELD_RADIUS_X,
+        contracts.FIELD_RADIUS_Y,
         contracts.FIELD_START_HOLD_ENABLED,
         contracts.FIELD_START_HOLD_SEC,
         contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
@@ -225,6 +255,40 @@ def test_all_known_shape_specific_keys_are_accepted_in_valid_tasks() -> None:
         assert result.is_valid, result.messages
 
 
+def test_budget_profile_metadata_is_preserved_but_not_passed_to_validation() -> None:
+    """Verify bounded budget profile metadata is schema-only and not part of task validation."""
+    raw_task = _valid_tasks_by_shape()[0]
+    raw_task[llm.task_schema.STAGE_BUDGET_PROFILE_FIELD] = "recovery"
+    raw_task[llm.task_schema.BUDGET_RATIONALE_FIELD] = "Previous stage was unstable but promising."
+
+    normalized = llm.task_schema.normalize_proposed_task(raw_task)
+    validation_task = llm.task_schema.task_without_metadata(normalized)
+    result = llm.task_schema.validate_proposed_task(raw_task)
+
+    assert normalized[llm.task_schema.STAGE_BUDGET_PROFILE_FIELD] == "recovery"
+    assert llm.task_schema.STAGE_BUDGET_PROFILE_FIELD not in validation_task
+    assert llm.task_schema.BUDGET_RATIONALE_FIELD not in validation_task
+    assert result.is_valid
+
+
+def test_unknown_budget_profile_is_rejected() -> None:
+    """Verify arbitrary LLM budget profiles are rejected before validation."""
+    raw_task = _valid_tasks_by_shape()[0]
+    raw_task[llm.task_schema.STAGE_BUDGET_PROFILE_FIELD] = "full_medium_run"
+
+    with pytest.raises(ValueError, match="stage_budget_profile"):
+        llm.task_schema.normalize_proposed_task(raw_task)
+
+
+def test_raw_timestep_budget_is_rejected() -> None:
+    """Verify LLM proposals cannot request arbitrary raw timestep counts."""
+    raw_task = _valid_tasks_by_shape()[0]
+    raw_task["total_timesteps"] = 999999
+
+    with pytest.raises(ValueError, match="unsupported keys"):
+        llm.task_schema.normalize_proposed_task(raw_task)
+
+
 def test_reason_metadata_is_preserved_but_not_passed_to_validation() -> None:
     """Verify optional reason metadata does not break deterministic validation."""
     raw_task = _valid_tasks_by_shape()[0]
@@ -237,6 +301,44 @@ def test_reason_metadata_is_preserved_but_not_passed_to_validation() -> None:
     assert normalized[llm.task_schema.REASON_FIELD] == "Next task keeps the drone hovering."
     assert llm.task_schema.REASON_FIELD not in validation_task
     assert result.is_valid
+
+
+def test_task_schema_accepts_known_task_distribution_reference() -> None:
+    """Verify constrained task-distribution references validate through the schema."""
+    proposal = {
+        "proposal_kind": "task_distribution",
+        "task_distribution_id": "tracking_small",
+        "reason": "Stay on the conservative mixed distribution.",
+    }
+
+    normalized = llm.task_schema.normalize_proposed_task(proposal)
+    result = llm.task_schema.validate_proposed_task(proposal)
+
+    assert normalized["task_distribution_config_path"] == "configs/tasks/task_distribution_tracking_small.yaml"
+    assert result.is_valid
+
+
+def test_task_schema_rejects_unknown_task_distribution_reference() -> None:
+    """Verify LLM proposals cannot invent arbitrary distribution ids."""
+    proposal = {"proposal_kind": "task_distribution", "task_distribution_id": "spiral_freeform"}
+
+    with pytest.raises(ValueError, match="task_distribution_id"):
+        llm.task_schema.normalize_proposed_task(proposal)
+
+
+def test_prompt_contract_mentions_task_distributions_and_supported_families() -> None:
+    """Verify LLM prompts expose constrained task-distribution guidance."""
+    prompt_contract = llm.task_schema.build_task_prompt_contract()
+
+    assert "task distribution" in prompt_contract
+    assert "tracking_small" in prompt_contract
+    assert "tracking_medium" in prompt_contract
+    assert "PID" in prompt_contract
+    assert "stage_budget_profile" in prompt_contract
+    assert "short" in prompt_contract
+    assert "extend" in prompt_contract
+    for family in ("hover_stabilization", "line", "circle"):
+        assert family in prompt_contract
 
 
 def test_task_schema_imports_through_package_alias() -> None:

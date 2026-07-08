@@ -9,6 +9,8 @@ import pytest
 
 from src import trajectories
 
+FIGURE_EIGHT_RADIUS_Y = 0.2
+
 
 def test_hover_trajectory_keeps_constant_position() -> None:
     """Verify hover trajectories repeat the requested XYZ position."""
@@ -41,6 +43,47 @@ def test_circle_trajectory_uses_radius_height_and_center() -> None:
     assert trajectory.positions.shape == (33, 3)
     np.testing.assert_allclose(radii, 0.75, atol=1e-12)
     np.testing.assert_allclose(trajectory.positions[:, 2], 1.2)
+
+
+def test_ellipse_trajectory_uses_axis_radii_height_and_center() -> None:
+    """Verify ellipse trajectories respect both horizontal semi-axes."""
+    trajectory = trajectories.primitives.make_ellipse_trajectory(
+        radius_x=0.6,
+        radius_y=0.25,
+        height=1.1,
+        duration_sec=6.0,
+        sample_rate_hz=10.0,
+        center=(0.1, -0.2),
+    )
+
+    offsets = trajectory.positions[:, :2] - np.array([0.1, -0.2])
+
+    assert trajectory.times.shape == (61,)
+    assert trajectory.positions.shape == (61, 3)
+    assert np.max(np.abs(offsets[:, 0])) == pytest.approx(0.6)
+    assert np.max(np.abs(offsets[:, 1])) == pytest.approx(0.25, abs=1e-2)
+    np.testing.assert_allclose(trajectory.positions[:, 2], 1.1)
+
+
+def test_figure_eight_trajectory_crosses_center_and_stays_bounded() -> None:
+    """Verify figure-eight trajectories are bounded around the configured center."""
+    trajectory = trajectories.primitives.make_figure_eight_trajectory(
+        radius_x=0.4,
+        radius_y=FIGURE_EIGHT_RADIUS_Y,
+        height=1.0,
+        duration_sec=8.0,
+        sample_rate_hz=10.0,
+        center=(0.1, -0.2),
+    )
+
+    offsets = trajectory.positions[:, :2] - np.array([0.1, -0.2])
+
+    assert trajectory.times.shape == (81,)
+    assert trajectory.positions.shape == (81, 3)
+    assert np.max(np.abs(offsets[:, 0])) == pytest.approx(0.4)
+    assert np.max(np.abs(offsets[:, 1])) <= FIGURE_EIGHT_RADIUS_Y
+    np.testing.assert_allclose(trajectory.positions[0], np.array([0.1, -0.2, 1.0]))
+    np.testing.assert_allclose(trajectory.positions[-1], np.array([0.1, -0.2, 1.0]), atol=1e-12)
 
 
 def test_line_trajectory_has_correct_shape_and_points() -> None:
