@@ -167,6 +167,12 @@ bash scripts/docker_build.sh
 bash scripts/docker_dev.sh
 ```
 
+Docker and job helpers default `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, and `TORCH_NUM_THREADS` to `1` to avoid CPU thread-pool oversubscription when PPO uses `num_envs > 1`. Override them from the host before launching when needed:
+
+```bash
+OMP_NUM_THREADS=2 TORCH_NUM_THREADS=2 bash scripts/docker_dev.sh
+```
+
 5. Attach with Visual Studio Code:
 
 ```text

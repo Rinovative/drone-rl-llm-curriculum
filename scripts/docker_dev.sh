@@ -57,6 +57,14 @@ if [ -n "${WANDB_API_KEY_VALUE}" ]; then
   WANDB_ENV_ARGS+=("-e" "WANDB_API_KEY=${WANDB_API_KEY_VALUE}")
 fi
 
+THREAD_ENV_ARGS=(
+  "-e" "OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}"
+  "-e" "MKL_NUM_THREADS=${MKL_NUM_THREADS:-1}"
+  "-e" "OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}"
+  "-e" "NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-1}"
+  "-e" "TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-1}"
+)
+
 docker run -d --rm \
   --name "${CONTAINER_NAME}" \
   --gpus all \
@@ -70,6 +78,7 @@ docker run -d --rm \
   -e DOCKER_LOGS_DIR=/workspace/storage/docker_logs \
   -e TMP_DIR=/workspace/storage/tmp \
   "${WANDB_ENV_ARGS[@]}" \
+  "${THREAD_ENV_ARGS[@]}" \
   -e PYTHONPATH=/workspace/repo \
   -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
   -v "${DOCKER_HOME}/passwd:/etc/passwd:ro" \

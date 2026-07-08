@@ -66,6 +66,14 @@ CANONICAL_CLI_MODULE_PATHS = [
     "src.experiments.cli.experiments_cli_mvp",
 ]
 
+THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "TORCH_NUM_THREADS",
+)
+
 
 def test_experiments_package_exposes_only_static_subpackages() -> None:
     """Verify the root package does not expose old compatibility aliases."""
@@ -82,6 +90,21 @@ def test_docker_job_usage_points_at_canonical_train_tracking_cli() -> None:
 
     assert "src/experiments/cli/experiments_cli_train_tracking.py" in script
     assert "src/experiments/cli_train_tracking.py" not in script
+
+
+def test_docker_paths_set_overridable_cpu_thread_defaults() -> None:
+    """Verify Docker entry paths set safe CPU thread defaults without requiring Docker."""
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    dev_script = Path("scripts/docker_dev.sh").read_text(encoding="utf-8")
+    run_script = Path("scripts/_docker_run.sh").read_text(encoding="utf-8")
+
+    assert '"${THREAD_ENV_ARGS[@]}"' in dev_script
+    assert '"${THREAD_ENV_ARGS[@]}"' in run_script
+
+    for env_var in THREAD_ENV_VARS:
+        assert f"ENV {env_var}=1" in dockerfile
+        assert f'"{env_var}=${{{env_var}:-1}}"' in dev_script
+        assert f'"{env_var}=${{{env_var}:-1}}"' in run_script
 
 
 @pytest.mark.parametrize(("module_path", "symbol"), CANONICAL_MODULE_SYMBOLS)
