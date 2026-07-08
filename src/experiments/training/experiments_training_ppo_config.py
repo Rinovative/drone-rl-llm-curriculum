@@ -23,7 +23,7 @@ Boundaries:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from math import isfinite
 from typing import Any
 
@@ -41,7 +41,11 @@ PPO_CONFIG_KEYS = (
     "vf_coef",
     "max_grad_norm",
     "target_kl",
+    "policy_kwargs",
 )
+
+SUPPORTED_POLICY_KWARGS_KEYS = ("net_arch",)
+NET_ARCH_POLICY_KEYS = ("pi", "vf")
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,8 @@ class PPOConfig:
         Positive gradient clipping norm.
     target_kl
         Optional positive target KL early-stopping threshold.
+    policy_kwargs
+        Optional explicit SB3 policy keyword arguments. Only ``net_arch`` is supported.
 
     """
 
@@ -94,6 +100,7 @@ class PPOConfig:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     target_kl: float | None = 0.03
+    policy_kwargs: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Normalize scalar values and validate the PPO hyperparameter contract."""
@@ -110,6 +117,7 @@ class PPOConfig:
         object.__setattr__(self, "vf_coef", _nonnegative_float(self.vf_coef, "ppo.vf_coef"))
         object.__setattr__(self, "max_grad_norm", _positive_float(self.max_grad_norm, "ppo.max_grad_norm"))
         object.__setattr__(self, "target_kl", _optional_positive_float(self.target_kl, "ppo.target_kl"))
+        object.__setattr__(self, "policy_kwargs", _validate_policy_kwargs(self.policy_kwargs))
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any] | None, *, section_name: str = "ppo") -> PPOConfig:
@@ -144,7 +152,24 @@ class PPOConfig:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable resolved PPO config."""
-        return asdict(self)
+        payload: dict[str, Any] = {
+            "policy": self.policy,
+            "device": self.device,
+            "learning_rate": self.learning_rate,
+            "gamma": self.gamma,
+            "gae_lambda": self.gae_lambda,
+            "n_steps": self.n_steps,
+            "batch_size": self.batch_size,
+            "n_epochs": self.n_epochs,
+            "clip_range": self.clip_range,
+            "ent_coef": self.ent_coef,
+            "vf_coef": self.vf_coef,
+            "max_grad_norm": self.max_grad_norm,
+            "target_kl": self.target_kl,
+        }
+        if self.policy_kwargs is not None:
+            payload["policy_kwargs"] = _copy_policy_kwargs(self.policy_kwargs)
+        return payload
 
     def to_sb3_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments accepted by ``stable_baselines3.PPO``."""
@@ -206,6 +231,59 @@ class PPOConfig:
         if self.batch_size > effective_rollout_steps:
             message = "ppo.batch_size must be less than or equal to ppo.n_steps * num_envs"
             raise ValueError(message)
+
+
+def _validate_policy_kwargs(value: Any) -> dict[str, Any] | None:
+    """Validate supported SB3 policy kwargs and return a JSON-safe copy."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        message = "ppo.policy_kwargs must be a mapping"
+        raise ValueError(message)  # noqa: TRY004 - public config errors are reported as ValueError.
+    values = dict(value)
+    unknown_keys = sorted(set(values) - set(SUPPORTED_POLICY_KWARGS_KEYS))
+    if unknown_keys:
+        message = f"ppo.policy_kwargs contains unsupported keys: {', '.join(unknown_keys)}"
+        raise ValueError(message)
+    if "net_arch" not in values:
+        message = "ppo.policy_kwargs must define net_arch when provided"
+        raise ValueError(message)
+    return {"net_arch": _validate_net_arch(values["net_arch"], "ppo.policy_kwargs.net_arch")}
+
+
+def _validate_net_arch(value: Any, field_name: str) -> list[int] | dict[str, list[int]]:
+    """Validate an SB3 MLP network architecture contract."""
+    if isinstance(value, Mapping):
+        values = dict(value)
+        unknown_keys = sorted(set(values) - set(NET_ARCH_POLICY_KEYS))
+        if unknown_keys:
+            message = f"{field_name} contains unsupported keys: {', '.join(unknown_keys)}"
+            raise ValueError(message)
+        missing_keys = [key for key in NET_ARCH_POLICY_KEYS if key not in values]
+        if missing_keys:
+            message = f"{field_name} must define pi and vf lists"
+            raise ValueError(message)
+        return {key: _positive_int_list(values[key], f"{field_name}.{key}") for key in NET_ARCH_POLICY_KEYS}
+    return _positive_int_list(value, field_name)
+
+
+def _positive_int_list(value: Any, field_name: str) -> list[int]:
+    """Validate a non-empty list of positive integer layer widths."""
+    if isinstance(value, (str, bytes)) or not isinstance(value, list):
+        message = f"{field_name} must be a non-empty list of positive integers"
+        raise ValueError(message)  # noqa: TRY004 - public config errors are reported as ValueError.
+    if not value:
+        message = f"{field_name} must be a non-empty list of positive integers"
+        raise ValueError(message)
+    return [_positive_int(item, f"{field_name}[]") for item in value]
+
+
+def _copy_policy_kwargs(value: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep-enough JSON-safe copy of validated policy kwargs."""
+    net_arch = value["net_arch"]
+    if isinstance(net_arch, dict):
+        return {"net_arch": {key: list(layers) for key, layers in net_arch.items()}}
+    return {"net_arch": list(net_arch)}
 
 
 def load_ppo_config_from_mapping(config: Mapping[str, Any]) -> PPOConfig:

@@ -490,6 +490,25 @@ def _make_trace_record(
         "normalized_action": _array_to_jsonable(info.get("normalized_action", action)),
         "real_action": _array_to_jsonable(info.get("real_action", info.get("applied_action", action))),
         "actions_normalized": bool(info.get("action_normalized", False)),
+        "action_interface": str(info.get("action_interface", "")),
+        "real_action_type": str(info.get("real_action_type", "")),
+        "ppo_action_dim": _int(info.get("ppo_action_dim")),
+        "hover_rpm": _json_ready(info.get("hover_rpm")),
+        "rpm_delta_scale": _json_ready(info.get("rpm_delta_scale")),
+        "rpm_min": _json_ready(info.get("rpm_min")),
+        "rpm_max": _json_ready(info.get("rpm_max")),
+        "rpm_command_space_low": _array_to_jsonable(info.get("rpm_command_space_low", [])),
+        "rpm_command_space_high": _array_to_jsonable(info.get("rpm_command_space_high", [])),
+        "rpm_clipped": bool(info.get("rpm_clipped", False)),
+        "rpm_saturation_mask": _array_to_jsonable(info.get("rpm_saturation_mask", [])),
+        "real_motor_rpms": _array_to_jsonable(info.get("real_motor_rpms", [])),
+        "action_clipped": bool(info.get("action_clipped", False)),
+        "include_dynamics_observation": bool(info.get("include_dynamics_observation", False)),
+        "include_previous_action": bool(info.get("include_previous_action", False)),
+        "observation_dim": _int(info.get("observation_dim")),
+        "observation_components": [dict(component) for component in info.get("observation_components", [])],
+        "previous_action": _array_to_jsonable(info.get("previous_action", [])),
+        "direct_control_limitations": list(info.get("direct_control_limitations", [])),
         "real_action_space_low": _array_to_jsonable(info.get("real_action_space_low", [])),
         "real_action_space_high": _array_to_jsonable(info.get("real_action_space_high", [])),
         "last_action": _array_to_jsonable(info.get("last_action", [])),
@@ -619,6 +638,7 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         "final_abs_y_error": float(axis_errors[-1, 1]),
         "final_abs_z_error": float(axis_errors[-1, 2]),
         "episode_count": len(episode_summaries),
+        **_trace_action_metadata(records),
         **_action_distribution_metrics(_array_field(records, "action"), action_space),
         **_prefixed_action_distribution_metrics(
             _array_field(records, "real_action"),
@@ -626,6 +646,37 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
             prefix="real_action",
         ),
     }
+
+
+def _trace_action_metadata(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Return action-interface metadata and direct-RPM clipping summaries."""
+    first = records[0]
+    metadata: dict[str, Any] = {
+        "action_interface": str(first.get("action_interface", "")),
+        "real_action_type": str(first.get("real_action_type", "")),
+        "ppo_action_dim": _int(first.get("ppo_action_dim")),
+        "include_dynamics_observation": bool(first.get("include_dynamics_observation", False)),
+        "include_previous_action": bool(first.get("include_previous_action", False)),
+        "observation_dim": _int(first.get("observation_dim")),
+        "observation_components": [dict(component) for component in first.get("observation_components", [])],
+        "direct_control_limitations": list(first.get("direct_control_limitations", [])),
+    }
+    for key in ("hover_rpm", "rpm_delta_scale", "rpm_min", "rpm_max", "rpm_command_space_low", "rpm_command_space_high"):
+        value = first.get(key)
+        if value is not None and value != []:
+            metadata[key] = _json_ready(value)
+    clipping_values = [bool(record.get("action_clipped", False)) or bool(record.get("rpm_clipped", False)) for record in records]
+    if any(clipping_values):
+        metadata["direct_rpm_clipping_fraction"] = float(np.mean(np.asarray(clipping_values, dtype=float)))
+    saturation_rows = []
+    for record in records:
+        saturation = np.asarray(record.get("rpm_saturation_mask", []), dtype=float).reshape(-1)
+        if saturation.size:
+            saturation_rows.append(saturation)
+    if saturation_rows:
+        saturation_array = np.vstack(saturation_rows)
+        metadata["direct_rpm_saturation_fraction"] = [float(value) for value in np.mean(saturation_array, axis=0)]
+    return metadata
 
 
 def _validate_trace_consistency(records: Sequence[Mapping[str, Any]]) -> None:

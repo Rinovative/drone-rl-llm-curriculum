@@ -26,7 +26,7 @@ import argparse
 import json
 from pathlib import Path
 
-from src import utils
+from src import envs, utils
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 
@@ -54,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--num-envs", type=int, default=None)
+    parser.add_argument(
+        "--action-interface",
+        choices=envs.actions.action_interface_values(),
+        default=None,
+        help="Override the config action interface for PPO tracking.",
+    )
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--model-dir", type=Path, default=None)
@@ -83,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         run_name=args.run_name,
         total_timesteps=args.total_timesteps,
         num_envs=args.num_envs,
+        action_interface=args.action_interface,
         eval_steps=args.eval_steps,
         output_dir=args.output_dir,
         model_dir=args.model_dir,

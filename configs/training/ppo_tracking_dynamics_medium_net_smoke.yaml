@@ -1,22 +1,22 @@
 task_config_path: configs/training/ppo_tracking_tasks.yaml
 task_index: 0
-run_name: direct_ppo_line_smoke_seed0
+run_name: direct_ppo_line_dynamics_medium_net_smoke_seed0
 num_envs: 1
-total_timesteps: 4096
-eval_steps: 120
+total_timesteps: 1024
+eval_steps: 60
 seed: 0
 check_env: true
 normalize_actions: true
 action_interface: pid_position
-include_dynamics_observation: false
-include_previous_action: false
+include_dynamics_observation: true
+include_previous_action: true
 ppo:
   policy: MlpPolicy
   device: cpu
   learning_rate: 0.0003
   gamma: 0.99
   gae_lambda: 0.95
-  n_steps: 256
+  n_steps: 128
   batch_size: 64
   n_epochs: 5
   clip_range: 0.2
@@ -24,12 +24,17 @@ ppo:
   vf_coef: 0.5
   max_grad_norm: 0.5
   target_kl: 0.03
+  policy_kwargs:
+    net_arch: [128, 128]
 wandb_mode: disabled
 wandb_project: drone-rl-llm-curriculum
 wandb_entity: null
-wandb_group: direct_ppo/line_smoke
-wandb_name: direct_ppo_line_smoke_seed0
+wandb_group: direct_ppo/line_dynamics_medium_net_smoke
+wandb_name: direct_ppo_line_dynamics_medium_net_smoke_seed0
 wandb_tags:
   - smoke
   - direct_ppo
   - line
+  - dynamics_observation
+  - previous_action
+  - medium_net

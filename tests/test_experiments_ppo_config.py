@@ -15,6 +15,9 @@ VECTOR_TEST_NUM_ENVS = 2
 VECTOR_TEST_BATCH_SIZE = 16
 VECTOR_TEST_OVERSIZED_BATCH_SIZE = 17
 VECTOR_TEST_EFFECTIVE_ROLLOUT_STEPS = 16
+POLICY_NET_ARCH = [128, 128]
+POLICY_PI_NET_ARCH = [128, 64]
+POLICY_VF_NET_ARCH = [64, 64]
 
 VALID_PPO_CONFIG = {
     "policy": "MlpPolicy",
@@ -39,6 +42,34 @@ def test_ppo_config_loads_nested_config_values() -> None:
 
     assert config.to_dict() == VALID_PPO_CONFIG
     assert config.to_sb3_kwargs() == VALID_PPO_CONFIG
+
+
+def test_ppo_config_omits_policy_kwargs_by_default() -> None:
+    """Verify omitted policy kwargs preserve the default SB3 policy architecture."""
+    config = ppo_config.PPOConfig()
+
+    assert config.policy_kwargs is None
+    assert "policy_kwargs" not in config.to_dict()
+    assert "policy_kwargs" not in config.to_sb3_kwargs()
+
+
+def test_ppo_config_accepts_list_net_arch_policy_kwargs() -> None:
+    """Verify a shared MLP net_arch list is accepted and passed to SB3."""
+    config = ppo_config.PPOConfig(policy_kwargs={"net_arch": POLICY_NET_ARCH})
+
+    assert config.policy_kwargs == {"net_arch": POLICY_NET_ARCH}
+    assert config.to_dict()["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
+    assert config.to_sb3_kwargs()["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
+
+
+def test_ppo_config_accepts_pi_vf_net_arch_policy_kwargs() -> None:
+    """Verify separate policy and value network architectures are accepted."""
+    config = ppo_config.PPOConfig(
+        policy_kwargs={"net_arch": {"pi": POLICY_PI_NET_ARCH, "vf": POLICY_VF_NET_ARCH}},
+    )
+
+    assert config.policy_kwargs == {"net_arch": {"pi": POLICY_PI_NET_ARCH, "vf": POLICY_VF_NET_ARCH}}
+    assert config.to_sb3_kwargs()["policy_kwargs"] == {"net_arch": {"pi": POLICY_PI_NET_ARCH, "vf": POLICY_VF_NET_ARCH}}
 
 
 @pytest.mark.parametrize(
@@ -91,6 +122,26 @@ def test_ppo_config_rejects_unknown_nested_keys() -> None:
     """Verify misspelled nested PPO keys fail instead of being ignored."""
     with pytest.raises(ValueError, match="unsupported keys: typo_learning_rate"):
         ppo_config.load_ppo_config_from_mapping({"ppo": {"typo_learning_rate": 0.001}})
+
+
+@pytest.mark.parametrize(
+    ("policy_kwargs", "match"),
+    [
+        (["not", "a", "mapping"], "ppo.policy_kwargs must be a mapping"),
+        ({}, "ppo.policy_kwargs must define net_arch"),
+        ({"activation_fn": "relu"}, "unsupported keys: activation_fn"),
+        ({"net_arch": []}, "ppo.policy_kwargs.net_arch must be a non-empty list"),
+        ({"net_arch": [128, 0]}, r"ppo.policy_kwargs.net_arch\[\]"),
+        ({"net_arch": [True]}, r"ppo.policy_kwargs.net_arch\[\]"),
+        ({"net_arch": {"pi": [64]}}, "must define pi and vf lists"),
+        ({"net_arch": {"pi": [64], "vf": [64], "qf": [64]}}, "unsupported keys: qf"),
+        ({"net_arch": {"pi": [64], "vf": []}}, r"ppo.policy_kwargs.net_arch.vf"),
+    ],
+)
+def test_ppo_config_rejects_invalid_policy_kwargs(policy_kwargs: object, match: str) -> None:
+    """Verify unsupported or malformed policy kwargs fail with clear errors."""
+    with pytest.raises(ValueError, match=match):
+        ppo_config.PPOConfig(policy_kwargs=policy_kwargs)  # type: ignore[arg-type]
 
 
 def test_ppo_config_validates_total_timesteps_against_configured_rollout() -> None:

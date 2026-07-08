@@ -37,6 +37,13 @@ VECTOR_TEST_EFFECTIVE_ROLLOUT_STEPS = 16
 SUBPROC_TEST_NUM_ENVS = 3
 SUBPROC_TEST_SEED = 11
 CLI_NUM_ENVS_OVERRIDE = 3
+BASE_OBSERVATION_DIM = 10
+PID_DYNAMICS_PREVIOUS_OBSERVATION_DIM = 22
+DIRECT_RPM_DYNAMICS_PREVIOUS_OBSERVATION_DIM = 23
+PID_ACTION_DIM = 3
+DIRECT_RPM_ACTION_DIM = 4
+DIRECT_RPM_DELTA_SCALE = 0.05
+POLICY_NET_ARCH = [128, 128]
 
 EXPECTED_PPO_CONFIG = {
     "policy": "MlpPolicy",
@@ -189,6 +196,10 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.output_dir is None
     assert settings.model_dir is None
     assert settings.normalize_actions is True
+    assert settings.action_interface == "pid_position"
+    assert settings.rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
+    assert settings.include_dynamics_observation is False
+    assert settings.include_previous_action is False
     assert settings.wandb_mode == "disabled"
     assert settings.wandb_project == utils.wandb.DEFAULT_WANDB_PROJECT
     assert settings.wandb_entity is None
@@ -235,6 +246,49 @@ def test_ppo_tracking_settings_reject_invalid_timesteps() -> None:
     """Verify invalid PPO timestep budgets are rejected."""
     with pytest.raises(ValueError, match="total_timesteps must be positive"):
         ppo_tracking.PPOTrackingSmokeSettings(total_timesteps=0)
+
+
+def test_ppo_tracking_settings_reject_invalid_action_interface() -> None:
+    """Verify action interfaces must use the canonical config contract."""
+    with pytest.raises(ValueError, match="action_interface must be one of"):
+        ppo_tracking.PPOTrackingSmokeSettings(action_interface="rpm")
+
+
+def test_ppo_tracking_direct_rpm_config_loads() -> None:
+    """Verify the direct-RPM smoke config resolves explicit action settings."""
+    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_direct_rpm_smoke.yaml")
+
+    assert settings.action_interface == "direct_rpm"
+    assert settings.normalize_actions is True
+    assert settings.rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
+    assert settings.include_dynamics_observation is True
+    assert settings.include_previous_action is True
+    assert settings.wandb_mode == "disabled"
+    assert settings.num_envs == 1
+
+
+def test_ppo_tracking_dynamics_smoke_config_loads() -> None:
+    """Verify the optional PID dynamics/previous-action smoke config resolves."""
+    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_dynamics_smoke.yaml")
+
+    assert settings.action_interface == "pid_position"
+    assert settings.include_dynamics_observation is True
+    assert settings.include_previous_action is True
+    assert settings.ppo_config.policy_kwargs is None
+    assert settings.wandb_mode == "disabled"
+    assert settings.num_envs == 1
+
+
+def test_ppo_tracking_dynamics_medium_net_smoke_config_loads() -> None:
+    """Verify the optional larger-network smoke config resolves policy kwargs."""
+    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_dynamics_medium_net_smoke.yaml")
+
+    assert settings.action_interface == "pid_position"
+    assert settings.include_dynamics_observation is True
+    assert settings.include_previous_action is True
+    assert settings.ppo_config.policy_kwargs == {"net_arch": POLICY_NET_ARCH}
+    assert settings.ppo_config.to_sb3_kwargs()["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
+    assert settings.wandb_mode == "disabled"
 
 
 @pytest.mark.parametrize("num_envs", [0, -1, 1.5, True])
@@ -442,9 +496,52 @@ def test_tracking_action_metadata_reports_pid_contract() -> None:
     assert metadata["action_space_low"] == [[-1.0, -1.0, -1.0]]
     assert metadata["action_space_high"] == [[1.0, 1.0, 1.0]]
     assert metadata["actions_normalized"] is True
+    assert metadata["action_interface"] == "pid_position"
+    assert metadata["ppo_action_dim"] == PID_ACTION_DIM
+    assert metadata["real_action_type"] == "pid_target_position"
+    assert metadata["include_dynamics_observation"] is False
+    assert metadata["include_previous_action"] is False
+    assert metadata["observation_dim"] == BASE_OBSERVATION_DIM
+    assert [component["name"] for component in metadata["observation_components"]] == [
+        "current_position",
+        "reference_position",
+        "position_error",
+        "trajectory_progress",
+    ]
     assert metadata["real_action_space_low"] != metadata["action_space_low"]
     assert metadata["base_action_type"] == "pid"
     assert "x/y/z movement" in metadata["base_action_semantics"]
+
+
+def test_tracking_action_metadata_reports_direct_rpm_contract() -> None:
+    """Verify direct-RPM metadata captures motor-level action details."""
+    task = ppo_tracking._load_task(  # noqa: SLF001
+        ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        ppo_tracking.DEFAULT_TASK_INDEX,
+    )
+    metadata = ppo_tracking.describe_tracking_env_action_metadata(
+        task,
+        action_interface="direct_rpm",
+        include_dynamics_observation=True,
+        include_previous_action=True,
+    )
+
+    assert metadata["action_space_shape"] == [1, 4]
+    assert metadata["action_space_low"] == [[-1.0, -1.0, -1.0, -1.0]]
+    assert metadata["action_space_high"] == [[1.0, 1.0, 1.0, 1.0]]
+    assert metadata["actions_normalized"] is True
+    assert metadata["action_interface"] == "direct_rpm"
+    assert metadata["ppo_action_dim"] == DIRECT_RPM_ACTION_DIM
+    assert metadata["real_action_type"] == "motor_rpm"
+    assert metadata["base_action_type"] == "rpm"
+    assert metadata["hover_rpm"] > 0.0
+    assert metadata["rpm_delta_scale"] == DIRECT_RPM_DELTA_SCALE
+    assert metadata["real_action_space_bounds"]["units"] == "rpm"
+    assert metadata["include_dynamics_observation"] is True
+    assert metadata["include_previous_action"] is True
+    assert metadata["observation_dim"] == DIRECT_RPM_DYNAMICS_PREVIOUS_OBSERVATION_DIM
+    assert metadata["observation_components"][-1] == {"name": "previous_action", "dim": DIRECT_RPM_ACTION_DIM}
+    assert metadata["direct_control_limitations"]
 
 
 def test_normalized_action_wrapper_maps_to_real_pid_bounds() -> None:
@@ -468,6 +565,31 @@ def test_normalized_action_wrapper_maps_to_real_pid_bounds() -> None:
         assert np.allclose(wrapped_env.real_to_normalized_action(midpoint), 0.0)
     finally:
         wrapped_env.close()
+
+
+def test_ppo_training_env_uses_direct_rpm_without_pid_normalization_wrapper() -> None:
+    """Verify direct RPM is already normalized and does not use the PID wrapper."""
+    task = ppo_tracking._load_task(  # noqa: SLF001
+        ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        ppo_tracking.DEFAULT_TASK_INDEX,
+    )
+    training_env = ppo_tracking._make_seeded_ppo_tracking_env(  # noqa: SLF001
+        task=task,
+        normalize_actions=True,
+        seed=0,
+        action_interface="direct_rpm",
+        include_dynamics_observation=True,
+        include_previous_action=True,
+    )
+    try:
+        assert training_env.action_interface == "direct_rpm"
+        assert not hasattr(training_env, "real_action_space")
+        assert training_env.action_space.shape == (1, 4)
+        assert np.allclose(training_env.action_space.low, -1.0)
+        assert np.allclose(training_env.action_space.high, 1.0)
+        assert training_env.base_env.ACT_TYPE.value == "rpm"
+    finally:
+        training_env.close()
 
 
 def test_ppo_training_env_uses_normalized_action_space_when_enabled() -> None:
@@ -516,10 +638,22 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
     factory_seeds: list[int] = []
     constructed_seeds: list[int] = []
 
-    def fake_factory(task: dict[str, Any], normalize_actions: bool, seed: int) -> object:
+    def fake_factory(
+        task: dict[str, Any],
+        normalize_actions: bool,
+        seed: int,
+        action_interface: str = "pid_position",
+        rpm_delta_scale: float = 0.05,
+        include_dynamics_observation: bool = False,
+        include_previous_action: bool = False,
+    ) -> object:
         """Return a lazy factory while recording derived seeds."""
         assert task == {"shape": "line"}
         assert normalize_actions is True
+        assert action_interface == "direct_rpm"
+        assert rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
+        assert include_dynamics_observation is True
+        assert include_previous_action is True
         factory_seeds.append(seed)
 
         def make_env() -> object:
@@ -537,6 +671,10 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
         num_envs=1,
         normalize_actions=True,
         seed=7,
+        action_interface="direct_rpm",
+        rpm_delta_scale=DIRECT_RPM_DELTA_SCALE,
+        include_dynamics_observation=True,
+        include_previous_action=True,
     )
 
     assert isinstance(vec_env, FakeVecMonitor)
@@ -580,10 +718,22 @@ def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.Mo
     factory_seeds: list[int] = []
     constructed_seeds: list[int] = []
 
-    def fake_factory(task: dict[str, Any], normalize_actions: bool, seed: int) -> object:
+    def fake_factory(
+        task: dict[str, Any],
+        normalize_actions: bool,
+        seed: int,
+        action_interface: str = "pid_position",
+        rpm_delta_scale: float = 0.05,
+        include_dynamics_observation: bool = False,
+        include_previous_action: bool = False,
+    ) -> object:
         """Return a lazy factory while recording derived seeds."""
         assert task == {"shape": "line"}
         assert normalize_actions is False
+        assert action_interface == "pid_position"
+        assert rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
+        assert include_dynamics_observation is False
+        assert include_previous_action is False
         factory_seeds.append(seed)
 
         def make_env() -> object:
@@ -843,6 +993,7 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
         vf_coef=0.42,
         max_grad_norm=0.9,
         target_kl=0.07,
+        policy_kwargs={"net_arch": POLICY_NET_ARCH},
     )
     captured_wandb_config: dict[str, Any] = {}
     captured_eval: dict[str, Any] = {}
@@ -886,7 +1037,23 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     monkeypatch.setattr(
         ppo_tracking,
         "_tracking_env_action_metadata",
-        lambda _env: {"actions_normalized": False},
+        lambda _env: {
+            "actions_normalized": False,
+            "action_interface": "pid_position",
+            "ppo_action_dim": PID_ACTION_DIM,
+            "real_action_type": "pid_target_position",
+            "real_action_space_bounds": {"low": [[-1.0, -1.0, -1.0]], "high": [[1.0, 1.0, 1.0]], "units": "meters"},
+            "include_dynamics_observation": False,
+            "include_previous_action": False,
+            "observation_dim": BASE_OBSERVATION_DIM,
+            "observation_components": [
+                {"name": "current_position", "dim": 3},
+                {"name": "reference_position", "dim": 3},
+                {"name": "position_error", "dim": 3},
+                {"name": "trajectory_progress", "dim": 1},
+            ],
+            "direct_control_limitations": [],
+        },
     )
     monkeypatch.setattr(ppo_tracking, "_movement_warnings", lambda **_kwargs: ())
 
@@ -934,8 +1101,18 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
             assert constructor_kwargs[key] == value
     assert constructor_kwargs["n_steps"] == CONFIGURED_TEST_PPO_N_STEPS
     assert constructor_kwargs["batch_size"] == CONFIGURED_TEST_PPO_BATCH_SIZE
+    assert constructor_kwargs["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
     assert result.metrics["ppo_config"] == configured_ppo.to_dict()
+    assert result.metrics["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
     assert result.metrics["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert result.metrics["action_interface"] == "pid_position"
+    assert result.metrics["ppo_action_dim"] == PID_ACTION_DIM
+    assert result.metrics["real_action_type"] == "pid_target_position"
+    assert result.metrics["include_dynamics_observation"] is False
+    assert result.metrics["include_previous_action"] is False
+    assert result.metrics["observation_dim"] == BASE_OBSERVATION_DIM
+    assert result.metrics["observation_components"][-1] == {"name": "trajectory_progress", "dim": 1}
+    assert result.metrics["direct_control_limitations"] == []
     assert result.metrics["vec_env_type"] == "SubprocVecEnv"
     assert result.metrics["vec_monitor_enabled"] is True
     assert result.metrics["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
@@ -953,6 +1130,13 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert Path(result.metrics["run_manifest_path"]) == tmp_path / "runs" / "configured_ppo" / "run_manifest.json"
     assert captured_wandb_config["ppo"] == configured_ppo.to_dict()
     assert captured_wandb_config["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert captured_wandb_config["action_interface"] == "pid_position"
+    assert captured_wandb_config["ppo_action_dim"] == PID_ACTION_DIM
+    assert captured_wandb_config["real_action_type"] == "pid_target_position"
+    assert captured_wandb_config["include_dynamics_observation"] is False
+    assert captured_wandb_config["include_previous_action"] is False
+    assert captured_wandb_config["observation_dim"] == BASE_OBSERVATION_DIM
+    assert captured_wandb_config["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
     assert captured_wandb_config["vec_env_type"] == "SubprocVecEnv"
     assert captured_wandb_config["vec_monitor_enabled"] is True
     assert captured_wandb_config["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
@@ -960,6 +1144,13 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert manifest["ppo_config"] == configured_ppo.to_dict()
     assert manifest["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert manifest["action_interface"] == "pid_position"
+    assert manifest["ppo_action_dim"] == PID_ACTION_DIM
+    assert manifest["real_action_type"] == "pid_target_position"
+    assert manifest["include_dynamics_observation"] is False
+    assert manifest["include_previous_action"] is False
+    assert manifest["observation_dim"] == BASE_OBSERVATION_DIM
+    assert manifest["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
     assert manifest["vec_env_type"] == "SubprocVecEnv"
     assert manifest["vec_monitor_enabled"] is True
     assert manifest["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
@@ -987,10 +1178,24 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert run_manifest["run_kind"] == "direct_ppo"
     assert run_manifest["curriculum_kind"] is None
     assert run_manifest["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert run_manifest["action_interface"] == "pid_position"
+    assert run_manifest["ppo_action_dim"] == PID_ACTION_DIM
+    assert run_manifest["real_action_type"] == "pid_target_position"
+    assert run_manifest["include_dynamics_observation"] is False
+    assert run_manifest["include_previous_action"] is False
+    assert run_manifest["observation_dim"] == BASE_OBSERVATION_DIM
+    assert run_manifest["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
     assert run_manifest["vec_env_type"] == "SubprocVecEnv"
     assert run_manifest["vec_monitor_enabled"] is True
     assert run_manifest["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert run_manifest["config"]["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert run_manifest["config"]["action_interface"] == "pid_position"
+    assert run_manifest["config"]["ppo_action_dim"] == PID_ACTION_DIM
+    assert run_manifest["config"]["real_action_type"] == "pid_target_position"
+    assert run_manifest["config"]["include_dynamics_observation"] is False
+    assert run_manifest["config"]["include_previous_action"] is False
+    assert run_manifest["config"]["observation_dim"] == BASE_OBSERVATION_DIM
+    assert run_manifest["config"]["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
     assert run_manifest["config"]["vec_env_type"] == "SubprocVecEnv"
     assert run_manifest["config"]["vec_monitor_enabled"] is True
     assert run_manifest["config"]["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
@@ -1011,15 +1216,27 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
 def test_cli_train_tracking_parser_accepts_task_shape_and_run_name() -> None:
     """Verify the training parser exposes task-specific run controls."""
     parser = cli_train_tracking.build_parser()
-    args = parser.parse_args(["--task-shape", "line", "--run-name", "ppo_line_smoke", "--num-envs", str(CLI_NUM_ENVS_OVERRIDE)])
+    args = parser.parse_args(
+        [
+            "--task-shape",
+            "line",
+            "--run-name",
+            "ppo_line_smoke",
+            "--num-envs",
+            str(CLI_NUM_ENVS_OVERRIDE),
+            "--action-interface",
+            "direct_rpm",
+        ]
+    )
 
     assert args.task_shape == "line"
     assert args.run_name == "ppo_line_smoke"
     assert args.num_envs == CLI_NUM_ENVS_OVERRIDE
+    assert args.action_interface == "direct_rpm"
 
 
-def test_cli_train_tracking_passes_num_envs_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify the CLI forwards --num-envs to the training helper."""
+def test_cli_train_tracking_passes_num_envs_and_action_interface_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify the CLI forwards --num-envs and --action-interface to the training helper."""
     captured: dict[str, Any] = {}
 
     def fake_run_from_config(**kwargs: Any) -> ppo_tracking.PPOTrackingSmokeResult:
@@ -1034,10 +1251,20 @@ def test_cli_train_tracking_passes_num_envs_override(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(cli_train_tracking.ppo_tracking, "run_ppo_tracking_smoke_from_config", fake_run_from_config)
 
-    status = cli_train_tracking.main(["--config", "configs/training/ppo_tracking_smoke.yaml", "--num-envs", str(CLI_NUM_ENVS_OVERRIDE)])
+    status = cli_train_tracking.main(
+        [
+            "--config",
+            "configs/training/ppo_tracking_smoke.yaml",
+            "--num-envs",
+            str(CLI_NUM_ENVS_OVERRIDE),
+            "--action-interface",
+            "direct_rpm",
+        ]
+    )
 
     assert status == 0
     assert captured["num_envs"] == CLI_NUM_ENVS_OVERRIDE
+    assert captured["action_interface"] == "direct_rpm"
 
 
 def test_cli_train_tracking_help_works() -> None:
@@ -1054,6 +1281,7 @@ def test_cli_train_tracking_help_works() -> None:
     assert "--run-name" in completed.stdout
     assert "--total-timesteps" in completed.stdout
     assert "--num-envs" in completed.stdout
+    assert "--action-interface" in completed.stdout
     assert "--eval-steps" in completed.stdout
     assert "--artifact-layout" not in completed.stdout
     assert "--wandb-mode" in completed.stdout

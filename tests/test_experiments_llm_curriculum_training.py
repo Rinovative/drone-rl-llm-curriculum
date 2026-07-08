@@ -21,6 +21,8 @@ TRAINING_STAGE_COUNT = 2
 CLI_SEED_OVERRIDE = 3
 CLI_MAX_STAGES = 2
 CLI_MAX_REPAIR_ATTEMPTS = 1
+EXPECTED_PID_ACTION_DIM = 3
+EXPECTED_BASE_OBSERVATION_DIM = 10
 
 
 def test_llm_curriculum_config_loads_and_validates() -> None:
@@ -115,6 +117,22 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
         metrics = {
             "seed": kwargs["seed"],
             "diagnostics_dir": str(tmp_path / run_name / "diagnostics"),
+            "action_interface": "pid_position",
+            "ppo_action_dim": EXPECTED_PID_ACTION_DIM,
+            "real_action_type": "pid_target_position",
+            "real_action_space_bounds": {"low": [[-1.0, -1.0, -1.0]], "high": [[1.0, 1.0, 1.0]], "units": "meters"},
+            "rpm_delta_scale": None,
+            "include_dynamics_observation": False,
+            "include_previous_action": False,
+            "observation_dim": EXPECTED_BASE_OBSERVATION_DIM,
+            "observation_components": [
+                {"name": "current_position", "dim": 3},
+                {"name": "reference_position", "dim": 3},
+                {"name": "position_error", "dim": 3},
+                {"name": "trajectory_progress", "dim": 1},
+            ],
+            "policy_kwargs": None,
+            "direct_control_limitations": [],
             "mean_position_error_m": 0.1,
             "mean_position_error_tracking_m": 0.1,
             "final_position_error_m": 0.2,
@@ -147,7 +165,16 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
     assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
     assert calls[0]["wandb_group"] == "curriculum/curriculum_llm_unit"
+    assert calls[0]["config_path"] == Path("configs/training/ppo_tracking_smoke.yaml")
+    assert "action_interface" not in calls[0]
     assert summary["model_transfer_enabled"] is True
+    assert summary["action_interface"] == "pid_position"
+    assert summary["ppo_action_dim"] == EXPECTED_PID_ACTION_DIM
+    assert summary["real_action_type"] == "pid_target_position"
+    assert summary["include_dynamics_observation"] is False
+    assert summary["include_previous_action"] is False
+    assert summary["observation_dim"] == EXPECTED_BASE_OBSERVATION_DIM
+    assert summary["policy_kwargs"] is None
     assert summary["final_stage_run_name"] == "curriculum_llm_unit_stage02_nearby_target_hover_seed7"
     assert summary["final_model_path"] == summary["stages"][1]["model_path"]
     assert summary["stages"][1]["task"] == {

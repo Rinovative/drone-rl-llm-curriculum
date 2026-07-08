@@ -7,6 +7,9 @@ eval_steps: 360
 seed: 0
 check_env: true
 normalize_actions: true
+action_interface: pid_position
+include_dynamics_observation: false
+include_previous_action: false
 ppo:
   policy: MlpPolicy
   device: cpu

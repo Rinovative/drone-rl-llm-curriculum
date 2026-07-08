@@ -48,6 +48,9 @@ DEFAULT_EVAL_STEPS = 120
 DEFAULT_SEED = 0
 DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS = 120
 DEFAULT_NORMALIZE_ACTIONS = True
+DEFAULT_ACTION_INTERFACE = envs.actions.DEFAULT_ACTION_INTERFACE.value
+DEFAULT_INCLUDE_DYNAMICS_OBSERVATION = envs.actions.DEFAULT_INCLUDE_DYNAMICS_OBSERVATION
+DEFAULT_INCLUDE_PREVIOUS_ACTION = envs.actions.DEFAULT_INCLUDE_PREVIOUS_ACTION
 _MOVEMENT_WARNING_SPAN_THRESHOLD_M = 0.05
 _POSITION_BOUNDS_MAX_NDIM = 2
 _XY_TRACKING_RATIO_MIN_REFERENCE_SPAN_M = 1.0e-9
@@ -100,7 +103,15 @@ class PPOTrackingSmokeSettings:
     check_env
         Whether to run the Stable-Baselines3 environment checker before training.
     normalize_actions
-        Whether PPO should see a symmetric normalized action space mapped to real PID bounds.
+        Whether PID-position PPO should see a symmetric normalized action space mapped to real PID bounds.
+    action_interface
+        Explicit action interface, either ``pid_position`` or ``direct_rpm``.
+    rpm_delta_scale
+        Fractional RPM delta around hover used by ``direct_rpm``.
+    include_dynamics_observation
+        Whether tracking observations append velocity, attitude, and angular velocity.
+    include_previous_action
+        Whether tracking observations append the previous PPO-facing action.
     wandb_mode
         Optional W&B mode. Auto mode uses online credentials when available and offline otherwise.
     wandb_project
@@ -138,6 +149,10 @@ class PPOTrackingSmokeSettings:
     metrics_filename: str | None = None
     check_env: bool = True
     normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS
+    action_interface: str = DEFAULT_ACTION_INTERFACE
+    rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE
+    include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION
+    include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION
     wandb_mode: str = utils.wandb.WANDB_MODE_AUTO
     wandb_project: str = utils.wandb.DEFAULT_WANDB_PROJECT
     wandb_entity: str | None = None
@@ -181,6 +196,19 @@ class PPOTrackingSmokeSettings:
         if not isinstance(self.normalize_actions, bool):
             message = "normalize_actions must be a boolean"
             raise TypeError(message)
+        action_config = envs.actions.ActionInterfaceConfig(
+            action_interface=self.action_interface,
+            rpm_delta_scale=self.rpm_delta_scale,
+            include_dynamics_observation=self.include_dynamics_observation,
+            include_previous_action=self.include_previous_action,
+        )
+        object.__setattr__(self, "action_interface", action_config.parsed_action_interface.value)
+        object.__setattr__(self, "rpm_delta_scale", action_config.rpm_delta_scale)
+        object.__setattr__(self, "include_dynamics_observation", action_config.include_dynamics_observation)
+        object.__setattr__(self, "include_previous_action", action_config.include_previous_action)
+        if action_config.parsed_action_interface == envs.actions.ActionInterface.DIRECT_RPM and not self.normalize_actions:
+            message = "direct_rpm requires normalize_actions true because PPO actions are normalized motor commands"
+            raise ValueError(message)
         if self.wandb_mode not in utils.wandb.WANDB_MODES:
             message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
             raise ValueError(message)
@@ -288,7 +316,14 @@ def detect_ppo_runtime_info() -> dict[str, Any]:
     }
 
 
-def describe_tracking_env_action_metadata(task: dict[str, Any], normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS) -> dict[str, Any]:
+def describe_tracking_env_action_metadata(
+    task: dict[str, Any],
+    normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS,
+    action_interface: str = DEFAULT_ACTION_INTERFACE,
+    rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
+    include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+) -> dict[str, Any]:
     """
     Build TrajectoryTrackingEnv and return action-space metadata for diagnostics.
 
@@ -298,6 +333,14 @@ def describe_tracking_env_action_metadata(task: dict[str, Any], normalize_action
         Valid trajectory task mapping used to construct the tracking environment.
     normalize_actions
         Whether to describe the PPO-facing normalized wrapper instead of the real environment.
+    action_interface
+        Explicit action interface, either ``pid_position`` or ``direct_rpm``.
+    rpm_delta_scale
+        Fractional RPM delta around hover used by ``direct_rpm``.
+    include_dynamics_observation
+        Whether observations append velocity, attitude, and angular velocity.
+    include_previous_action
+        Whether observations append the previous PPO-facing action.
 
     Returns
     -------
@@ -309,6 +352,10 @@ def describe_tracking_env_action_metadata(task: dict[str, Any], normalize_action
         task=task,
         normalize_actions=normalize_actions,
         seed=DEFAULT_SEED,
+        action_interface=action_interface,
+        rpm_delta_scale=rpm_delta_scale,
+        include_dynamics_observation=include_dynamics_observation,
+        include_previous_action=include_previous_action,
     )
     try:
         return _tracking_env_action_metadata(tracking_env)
@@ -316,17 +363,36 @@ def describe_tracking_env_action_metadata(task: dict[str, Any], normalize_action
         tracking_env.close()
 
 
-def _ppo_training_env(tracking_env: Any, normalize_actions: bool) -> Any:
+def _ppo_training_env(tracking_env: Any, normalize_actions: bool, action_interface: str = DEFAULT_ACTION_INTERFACE) -> Any:
     """Return the environment interface PPO should train against."""
+    parsed_interface = envs.actions.parse_action_interface(action_interface)
+    if parsed_interface == envs.actions.ActionInterface.DIRECT_RPM:
+        return tracking_env
     if not normalize_actions:
         return tracking_env
     return envs.tracking_env.make_normalized_action_env(tracking_env)
 
 
-def _make_seeded_ppo_tracking_env(task: dict[str, Any], normalize_actions: bool, seed: int) -> Any:
+def _make_seeded_ppo_tracking_env(
+    task: dict[str, Any],
+    normalize_actions: bool,
+    seed: int,
+    action_interface: str = DEFAULT_ACTION_INTERFACE,
+    rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
+    include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+) -> Any:
     """Build one PPO-facing tracking environment and apply a deterministic seed."""
-    real_env = envs.tracking_env.make_trajectory_tracking_env(dict(task), gui=False, record=False)
-    tracking_env = _ppo_training_env(real_env, normalize_actions=normalize_actions)
+    real_env = envs.tracking_env.make_trajectory_tracking_env(
+        dict(task),
+        gui=False,
+        record=False,
+        action_interface=action_interface,
+        rpm_delta_scale=rpm_delta_scale,
+        include_dynamics_observation=include_dynamics_observation,
+        include_previous_action=include_previous_action,
+    )
+    tracking_env = _ppo_training_env(real_env, normalize_actions=normalize_actions, action_interface=action_interface)
     _seed_tracking_env(tracking_env, seed)
     return tracking_env
 
@@ -343,7 +409,15 @@ def _seed_tracking_env(tracking_env: Any, seed: int) -> None:
         reset(seed=seed)
 
 
-def _make_ppo_training_env_factory(task: dict[str, Any], normalize_actions: bool, seed: int) -> Any:
+def _make_ppo_training_env_factory(
+    task: dict[str, Any],
+    normalize_actions: bool,
+    seed: int,
+    action_interface: str = DEFAULT_ACTION_INTERFACE,
+    rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
+    include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+) -> Any:
     """Return a lazy factory for one seeded PPO training environment."""
     task_payload = dict(task)
 
@@ -353,6 +427,10 @@ def _make_ppo_training_env_factory(task: dict[str, Any], normalize_actions: bool
             task=task_payload,
             normalize_actions=normalize_actions,
             seed=seed,
+            action_interface=action_interface,
+            rpm_delta_scale=rpm_delta_scale,
+            include_dynamics_observation=include_dynamics_observation,
+            include_previous_action=include_previous_action,
         )
 
     return make_env
@@ -388,7 +466,16 @@ def _rank_seed(base_seed: int, env_rank: int) -> int:
     return int(base_seed) + int(env_rank)
 
 
-def _make_ppo_training_vec_env(task: dict[str, Any], num_envs: int, normalize_actions: bool, seed: int) -> Any:
+def _make_ppo_training_vec_env(
+    task: dict[str, Any],
+    num_envs: int,
+    normalize_actions: bool,
+    seed: int,
+    action_interface: str = DEFAULT_ACTION_INTERFACE,
+    rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
+    include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+) -> Any:
     """Build the vectorized PPO training environment with lazy per-rank factories."""
     resolved_num_envs = _positive_int_setting(num_envs, "num_envs")
     dummy_vec_env_cls, subproc_vec_env_cls = _vec_env_classes()
@@ -397,6 +484,10 @@ def _make_ppo_training_vec_env(task: dict[str, Any], num_envs: int, normalize_ac
             task=task,
             normalize_actions=normalize_actions,
             seed=_rank_seed(seed, env_rank),
+            action_interface=action_interface,
+            rpm_delta_scale=rpm_delta_scale,
+            include_dynamics_observation=include_dynamics_observation,
+            include_previous_action=include_previous_action,
         )
         for env_rank in range(resolved_num_envs)
     ]
@@ -478,12 +569,30 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             task_source=task_source,
         )
 
-    warnings = [*selection_warnings, *(_check_tracking_env(task, active_settings.normalize_actions) if active_settings.check_env else ())]
+    warnings = [
+        *selection_warnings,
+        *(
+            _check_tracking_env(
+                task,
+                normalize_actions=active_settings.normalize_actions,
+                action_interface=active_settings.action_interface,
+                rpm_delta_scale=active_settings.rpm_delta_scale,
+                include_dynamics_observation=active_settings.include_dynamics_observation,
+                include_previous_action=active_settings.include_previous_action,
+            )
+            if active_settings.check_env
+            else ()
+        ),
+    ]
     diagnostic_steps = min(active_settings.eval_steps, DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS)
     simple_liftoff_diagnostics = run_liftoff_diagnostics(
         task=task,
         max_steps=diagnostic_steps,
         seed=active_settings.seed,
+        action_interface=active_settings.action_interface,
+        rpm_delta_scale=active_settings.rpm_delta_scale,
+        include_dynamics_observation=active_settings.include_dynamics_observation,
+        include_previous_action=active_settings.include_previous_action,
     )
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -504,6 +613,10 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             num_envs=active_settings.num_envs,
             normalize_actions=active_settings.normalize_actions,
             seed=active_settings.seed,
+            action_interface=active_settings.action_interface,
+            rpm_delta_scale=active_settings.rpm_delta_scale,
+            include_dynamics_observation=active_settings.include_dynamics_observation,
+            include_previous_action=active_settings.include_previous_action,
         )
         try:
             if active_settings.initial_model_path is None:
@@ -556,6 +669,10 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
                 task=task,
                 normalize_actions=active_settings.normalize_actions,
                 seed=active_settings.seed,
+                action_interface=active_settings.action_interface,
+                rpm_delta_scale=active_settings.rpm_delta_scale,
+                include_dynamics_observation=active_settings.include_dynamics_observation,
+                include_previous_action=active_settings.include_previous_action,
             )
             try:
                 action_metadata = _tracking_env_action_metadata(eval_env)
@@ -580,6 +697,10 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             seed=active_settings.seed,
             model=model,
             include_simple_policies=False,
+            action_interface=active_settings.action_interface,
+            rpm_delta_scale=active_settings.rpm_delta_scale,
+            include_dynamics_observation=active_settings.include_dynamics_observation,
+            include_previous_action=active_settings.include_previous_action,
         )
         liftoff_diagnostics = {
             **simple_liftoff_diagnostics,
@@ -609,10 +730,23 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "task_shape_requested": active_settings.task_shape,
             "total_timesteps": active_settings.total_timesteps,
             "num_envs": active_settings.num_envs,
+            "action_interface": active_settings.action_interface,
+            "ppo_action_dim": action_metadata.get("ppo_action_dim"),
+            "real_action_type": action_metadata.get("real_action_type"),
+            "real_action_space_bounds": action_metadata.get("real_action_space_bounds"),
+            "rpm_delta_scale": active_settings.rpm_delta_scale
+            if active_settings.action_interface == envs.actions.ActionInterface.DIRECT_RPM.value
+            else None,
+            "include_dynamics_observation": active_settings.include_dynamics_observation,
+            "include_previous_action": active_settings.include_previous_action,
+            "observation_dim": action_metadata.get("observation_dim"),
+            "observation_components": action_metadata.get("observation_components"),
+            "direct_control_limitations": envs.actions.direct_control_limitations(active_settings.action_interface),
             "vec_env_type": vec_env_type,
             "vec_monitor_enabled": VEC_MONITOR_ENABLED,
             "effective_rollout_steps": effective_rollout_steps,
             "ppo_config": active_settings.ppo_config.to_dict(),
+            "policy_kwargs": active_settings.ppo_config.to_dict().get("policy_kwargs"),
             "timesteps_label": timesteps_label,
             "eval_steps": active_settings.eval_steps,
             "seed": active_settings.seed,
@@ -686,6 +820,7 @@ def run_ppo_tracking_smoke_from_config(
     wandb_tags: tuple[str, ...] | None = None,
     wandb_dir: str | Path | None = None,
     normalize_actions: bool | None = None,
+    action_interface: str | None = None,
     initial_model_path: str | Path | None = None,
 ) -> PPOTrackingSmokeResult:
     """
@@ -733,6 +868,8 @@ def run_ppo_tracking_smoke_from_config(
         Optional W&B directory override.
     normalize_actions
         Optional PPO-facing normalized-action override.
+    action_interface
+        Optional action-interface override.
     initial_model_path
         Optional Stable-Baselines3 PPO model zip used to initialize training.
 
@@ -761,6 +898,10 @@ def run_ppo_tracking_smoke_from_config(
         metrics_filename=settings.metrics_filename,
         check_env=settings.check_env,
         normalize_actions=settings.normalize_actions if normalize_actions is None else normalize_actions,
+        action_interface=settings.action_interface if action_interface is None else action_interface,
+        rpm_delta_scale=settings.rpm_delta_scale,
+        include_dynamics_observation=settings.include_dynamics_observation,
+        include_previous_action=settings.include_previous_action,
         wandb_mode=settings.wandb_mode if wandb_mode is None else wandb_mode,
         training_config_path=settings.training_config_path,
         wandb_project=settings.wandb_project if wandb_project is None else wandb_project,
@@ -800,6 +941,10 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
         "metrics_filename": config.get("metrics_filename") or None,
         "check_env": bool(config.get("check_env", True)),
         "normalize_actions": bool(config.get("normalize_actions", DEFAULT_NORMALIZE_ACTIONS)),
+        "action_interface": str(config.get("action_interface") or DEFAULT_ACTION_INTERFACE),
+        "rpm_delta_scale": config.get("rpm_delta_scale", envs.actions.DEFAULT_RPM_DELTA_SCALE),
+        "include_dynamics_observation": bool(config.get("include_dynamics_observation", DEFAULT_INCLUDE_DYNAMICS_OBSERVATION)),
+        "include_previous_action": bool(config.get("include_previous_action", DEFAULT_INCLUDE_PREVIOUS_ACTION)),
         "wandb_mode": str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_AUTO),
         "wandb_project": str(config.get("wandb_project") or utils.wandb.DEFAULT_WANDB_PROJECT),
         "wandb_entity": config.get("wandb_entity") or None,
@@ -1078,6 +1223,16 @@ def _build_manifest(
         "task_shape_requested": settings.task_shape,
         "total_timesteps": settings.total_timesteps,
         "num_envs": metrics.get("num_envs", settings.num_envs),
+        "action_interface": metrics.get("action_interface", settings.action_interface),
+        "ppo_action_dim": metrics.get("ppo_action_dim"),
+        "real_action_type": metrics.get("real_action_type"),
+        "real_action_space_bounds": metrics.get("real_action_space_bounds"),
+        "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+        "include_dynamics_observation": metrics.get("include_dynamics_observation", settings.include_dynamics_observation),
+        "include_previous_action": metrics.get("include_previous_action", settings.include_previous_action),
+        "observation_dim": metrics.get("observation_dim"),
+        "observation_components": metrics.get("observation_components"),
+        "direct_control_limitations": list(metrics.get("direct_control_limitations", [])),
         "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
         "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
         "effective_rollout_steps": metrics.get(
@@ -1085,6 +1240,7 @@ def _build_manifest(
             settings.ppo_config.effective_rollout_steps(settings.num_envs),
         ),
         "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
+        "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
@@ -1149,7 +1305,18 @@ def _build_run_manifest(
             "task_index": training_manifest["task_index"],
             "task_source": training_manifest["task_source"],
             "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
+            "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
             "num_envs": metrics.get("num_envs", settings.num_envs),
+            "action_interface": metrics.get("action_interface", settings.action_interface),
+            "ppo_action_dim": metrics.get("ppo_action_dim"),
+            "real_action_type": metrics.get("real_action_type"),
+            "real_action_space_bounds": metrics.get("real_action_space_bounds"),
+            "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+            "include_dynamics_observation": metrics.get("include_dynamics_observation", settings.include_dynamics_observation),
+            "include_previous_action": metrics.get("include_previous_action", settings.include_previous_action),
+            "observation_dim": metrics.get("observation_dim"),
+            "observation_components": metrics.get("observation_components"),
+            "direct_control_limitations": list(metrics.get("direct_control_limitations", [])),
             "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
             "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
             "effective_rollout_steps": metrics.get(
@@ -1158,7 +1325,18 @@ def _build_run_manifest(
             ),
         },
         "total_timesteps": settings.total_timesteps,
+        "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
         "num_envs": metrics.get("num_envs", settings.num_envs),
+        "action_interface": metrics.get("action_interface", settings.action_interface),
+        "ppo_action_dim": metrics.get("ppo_action_dim"),
+        "real_action_type": metrics.get("real_action_type"),
+        "real_action_space_bounds": metrics.get("real_action_space_bounds"),
+        "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+        "include_dynamics_observation": metrics.get("include_dynamics_observation", settings.include_dynamics_observation),
+        "include_previous_action": metrics.get("include_previous_action", settings.include_previous_action),
+        "observation_dim": metrics.get("observation_dim"),
+        "observation_components": metrics.get("observation_components"),
+        "direct_control_limitations": list(metrics.get("direct_control_limitations", [])),
         "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
         "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
         "effective_rollout_steps": metrics.get(
@@ -1232,6 +1410,10 @@ def _training_config_snapshot_payload(settings: PPOTrackingSmokeSettings) -> dic
         "seed": settings.seed,
         "check_env": settings.check_env,
         "normalize_actions": settings.normalize_actions,
+        "action_interface": settings.action_interface,
+        "rpm_delta_scale": settings.rpm_delta_scale,
+        "include_dynamics_observation": settings.include_dynamics_observation,
+        "include_previous_action": settings.include_previous_action,
         "ppo": settings.ppo_config.to_dict(),
         "wandb_mode": settings.wandb_mode,
         "wandb_project": settings.wandb_project,
@@ -1305,6 +1487,19 @@ def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
         "real_action_max",
         "real_action_saturation_fraction",
         "actions_normalized",
+        "action_interface",
+        "ppo_action_dim",
+        "real_action_type",
+        "real_action_space_bounds",
+        "rpm_delta_scale",
+        "include_dynamics_observation",
+        "include_previous_action",
+        "observation_dim",
+        "observation_components",
+        "policy_kwargs",
+        "direct_control_limitations",
+        "direct_rpm_clipping_fraction",
+        "direct_rpm_saturation_fraction",
         "mean_abs_x_error",
         "mean_abs_y_error",
         "mean_abs_z_error",
@@ -1331,6 +1526,53 @@ def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
     return {key: metrics[key] for key in diagnostic_keys if key in metrics}
 
 
+def _settings_ppo_action_dim(settings: PPOTrackingSmokeSettings) -> int:
+    """Return the flattened PPO action dimension implied by settings."""
+    if settings.action_interface == envs.actions.ActionInterface.DIRECT_RPM.value:
+        return 4
+    return 3
+
+
+def _settings_real_action_type(settings: PPOTrackingSmokeSettings) -> str:
+    """Return the real action type implied by settings."""
+    if settings.action_interface == envs.actions.ActionInterface.DIRECT_RPM.value:
+        return "motor_rpm"
+    return "pid_target_position"
+
+
+def _settings_real_action_space_bounds(settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
+    """Return static real-action bounds when they are known before env construction."""
+    if settings.action_interface == envs.actions.ActionInterface.DIRECT_RPM.value:
+        return {"low": None, "high": None, "units": "rpm"}
+    return {"low": None, "high": None, "units": "meters"}
+
+
+def _settings_observation_components(settings: PPOTrackingSmokeSettings) -> list[dict[str, int | str]]:
+    """Return observation-component metadata implied by settings."""
+    components: list[dict[str, int | str]] = [
+        {"name": "current_position", "dim": 3},
+        {"name": "reference_position", "dim": 3},
+        {"name": "position_error", "dim": 3},
+        {"name": "trajectory_progress", "dim": 1},
+    ]
+    if settings.include_dynamics_observation:
+        components.extend(
+            [
+                {"name": "linear_velocity", "dim": 3},
+                {"name": "attitude_rpy", "dim": 3},
+                {"name": "angular_velocity", "dim": 3},
+            ]
+        )
+    if settings.include_previous_action:
+        components.append({"name": "previous_action", "dim": _settings_ppo_action_dim(settings)})
+    return components
+
+
+def _settings_observation_dim(settings: PPOTrackingSmokeSettings) -> int:
+    """Return the observation dimension implied by settings."""
+    return int(sum(int(component["dim"]) for component in _settings_observation_components(settings)))
+
+
 def _wandb_config(
     settings: PPOTrackingSmokeSettings,
     run_name: str,
@@ -1353,10 +1595,21 @@ def _wandb_config(
         "task_shape_requested": settings.task_shape,
         "total_timesteps": settings.total_timesteps,
         "num_envs": settings.num_envs,
+        "action_interface": settings.action_interface,
+        "ppo_action_dim": _settings_ppo_action_dim(settings),
+        "real_action_type": _settings_real_action_type(settings),
+        "real_action_space_bounds": _settings_real_action_space_bounds(settings),
+        "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == envs.actions.ActionInterface.DIRECT_RPM.value else None,
+        "include_dynamics_observation": settings.include_dynamics_observation,
+        "include_previous_action": settings.include_previous_action,
+        "observation_dim": _settings_observation_dim(settings),
+        "observation_components": _settings_observation_components(settings),
+        "direct_control_limitations": envs.actions.direct_control_limitations(settings.action_interface),
         "vec_env_type": _vec_env_type(settings.num_envs),
         "vec_monitor_enabled": VEC_MONITOR_ENABLED,
         "effective_rollout_steps": settings.ppo_config.effective_rollout_steps(settings.num_envs),
         "ppo": settings.ppo_config.to_dict(),
+        "policy_kwargs": settings.ppo_config.to_dict().get("policy_kwargs"),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
@@ -1380,15 +1633,30 @@ def _require_training_dependencies(dependencies: dict[str, bool]) -> None:
         raise RuntimeError(message)
 
 
-def _check_tracking_env(task: dict[str, Any], normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS) -> tuple[str, ...]:
+def _check_tracking_env(
+    task: dict[str, Any],
+    normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS,
+    action_interface: str = DEFAULT_ACTION_INTERFACE,
+    rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
+    include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+) -> tuple[str, ...]:
     """Run Stable-Baselines3's environment checker and return captured warnings."""
     try:
         from stable_baselines3.common.env_checker import check_env  # noqa: PLC0415
     except ImportError as exc:
         return (f"stable_baselines3 env checker unavailable: {exc}",)
 
-    real_checker_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
-    checker_env = _ppo_training_env(real_checker_env, normalize_actions=normalize_actions)
+    real_checker_env = envs.tracking_env.make_trajectory_tracking_env(
+        task,
+        gui=False,
+        record=False,
+        action_interface=action_interface,
+        rpm_delta_scale=rpm_delta_scale,
+        include_dynamics_observation=include_dynamics_observation,
+        include_previous_action=include_previous_action,
+    )
+    checker_env = _ppo_training_env(real_checker_env, normalize_actions=normalize_actions, action_interface=action_interface)
     try:
         with py_warnings.catch_warnings(record=True) as records:
             py_warnings.simplefilter("always")
@@ -1483,6 +1751,10 @@ def run_liftoff_diagnostics(
     seed: int = DEFAULT_SEED,
     model: Any | None = None,
     include_simple_policies: bool = True,
+    action_interface: str = DEFAULT_ACTION_INTERFACE,
+    rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
+    include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
 ) -> dict[str, Any]:
     """
     Run short headless rollouts that reveal whether valid actions can lift the drone.
@@ -1499,6 +1771,14 @@ def run_liftoff_diagnostics(
         Optional trained PPO-like model exposing ``predict`` for a policy rollout.
     include_simple_policies
         Whether to include zero, sampled, middle, and high action probes.
+    action_interface
+        Explicit action interface, either ``pid_position`` or ``direct_rpm``.
+    rpm_delta_scale
+        Fractional RPM delta around hover used by ``direct_rpm``.
+    include_dynamics_observation
+        Whether observations append velocity, attitude, and angular velocity.
+    include_previous_action
+        Whether observations append the previous PPO-facing action.
 
     Returns
     -------
@@ -1514,10 +1794,50 @@ def run_liftoff_diagnostics(
         }
     }
     if include_simple_policies:
-        diagnostics["zero_action"] = _run_liftoff_rollout(diagnostic_task, "zero_action", _zero_action, max_steps=max_steps, seed=seed)
-        diagnostics["sampled_action"] = _run_liftoff_rollout(diagnostic_task, "sampled_action", _sampled_action, max_steps=max_steps, seed=seed)
-        diagnostics["middle_action"] = _run_liftoff_rollout(diagnostic_task, "middle_action", _middle_action, max_steps=max_steps, seed=seed)
-        diagnostics["high_action"] = _run_liftoff_rollout(diagnostic_task, "high_action", _high_action, max_steps=max_steps, seed=seed)
+        diagnostics["zero_action"] = _run_liftoff_rollout(
+            diagnostic_task,
+            "zero_action",
+            _zero_action,
+            max_steps=max_steps,
+            seed=seed,
+            action_interface=action_interface,
+            rpm_delta_scale=rpm_delta_scale,
+            include_dynamics_observation=include_dynamics_observation,
+            include_previous_action=include_previous_action,
+        )
+        diagnostics["sampled_action"] = _run_liftoff_rollout(
+            diagnostic_task,
+            "sampled_action",
+            _sampled_action,
+            max_steps=max_steps,
+            seed=seed,
+            action_interface=action_interface,
+            rpm_delta_scale=rpm_delta_scale,
+            include_dynamics_observation=include_dynamics_observation,
+            include_previous_action=include_previous_action,
+        )
+        diagnostics["middle_action"] = _run_liftoff_rollout(
+            diagnostic_task,
+            "middle_action",
+            _middle_action,
+            max_steps=max_steps,
+            seed=seed,
+            action_interface=action_interface,
+            rpm_delta_scale=rpm_delta_scale,
+            include_dynamics_observation=include_dynamics_observation,
+            include_previous_action=include_previous_action,
+        )
+        diagnostics["high_action"] = _run_liftoff_rollout(
+            diagnostic_task,
+            "high_action",
+            _high_action,
+            max_steps=max_steps,
+            seed=seed,
+            action_interface=action_interface,
+            rpm_delta_scale=rpm_delta_scale,
+            include_dynamics_observation=include_dynamics_observation,
+            include_previous_action=include_previous_action,
+        )
     if model is not None:
         diagnostics["trained_policy"] = _run_liftoff_rollout(
             diagnostic_task,
@@ -1525,6 +1845,10 @@ def run_liftoff_diagnostics(
             lambda _env, observation, _step: model.predict(observation, deterministic=True)[0],
             max_steps=max_steps,
             seed=seed,
+            action_interface=action_interface,
+            rpm_delta_scale=rpm_delta_scale,
+            include_dynamics_observation=include_dynamics_observation,
+            include_previous_action=include_previous_action,
         )
     return diagnostics
 
@@ -1633,9 +1957,22 @@ def _run_liftoff_rollout(
     action_factory: Any,
     max_steps: int,
     seed: int,
+    action_interface: str = DEFAULT_ACTION_INTERFACE,
+    rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
+    include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
 ) -> dict[str, Any]:
     """Run one diagnostic rollout and return bounds and termination metadata."""
-    tracking_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False, max_steps=max_steps)
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        task,
+        gui=False,
+        record=False,
+        max_steps=max_steps,
+        action_interface=action_interface,
+        rpm_delta_scale=rpm_delta_scale,
+        include_dynamics_observation=include_dynamics_observation,
+        include_previous_action=include_previous_action,
+    )
     try:
         seed_action_space = getattr(tracking_env.action_space, "seed", None)
         if callable(seed_action_space):
@@ -1701,6 +2038,16 @@ def _run_liftoff_rollout(
             "mean_position_error_m": float(np.mean(errors)) if errors else 0.0,
             "base_action_shape": list(final_info.get("base_action_shape", [])),
             "base_action_dtype": str(final_info.get("base_action_dtype", "")),
+            "action_interface": str(final_info.get("action_interface", action_interface)),
+            "real_action_type": str(final_info.get("real_action_type", "")),
+            "ppo_action_dim": int(final_info.get("ppo_action_dim", 0)),
+            "hover_rpm": final_info.get("hover_rpm"),
+            "rpm_delta_scale": final_info.get("rpm_delta_scale"),
+            "include_dynamics_observation": bool(final_info.get("include_dynamics_observation", include_dynamics_observation)),
+            "include_previous_action": bool(final_info.get("include_previous_action", include_previous_action)),
+            "observation_dim": int(final_info.get("observation_dim", 0)),
+            "observation_components": [dict(component) for component in final_info.get("observation_components", [])],
+            "real_motor_rpms": _array_to_jsonable(final_info.get("real_motor_rpms", [])),
         }
     finally:
         tracking_env.close()
@@ -1731,22 +2078,80 @@ def _high_action(tracking_env: Any, _observation: np.ndarray, _step_index: int) 
 def _tracking_env_action_metadata(tracking_env: Any) -> dict[str, Any]:
     """Return JSON-serializable action-space metadata for a tracking environment."""
     action_space = tracking_env.action_space
+    observation_space = tracking_env.observation_space
     real_action_space = getattr(tracking_env, "real_action_space", action_space)
     sample = action_space.sample()
     tracking_core = getattr(tracking_env, "unwrapped", tracking_env)
-    action_type = getattr(getattr(tracking_core, "base_env", None), "ACT_TYPE", None)
+    base_env = getattr(tracking_core, "base_env", None)
+    action_type = getattr(base_env, "ACT_TYPE", None)
     action_type_value = _enum_value(action_type)
+    action_interface = str(getattr(tracking_env, "action_interface", getattr(tracking_core, "action_interface", DEFAULT_ACTION_INTERFACE)))
+    action_interface = envs.actions.parse_action_interface(action_interface).value
+    direct_rpm = action_interface == envs.actions.ActionInterface.DIRECT_RPM.value
+    if direct_rpm:
+        rpm_min = 0.0
+        rpm_max = float(getattr(base_env, "MAX_RPM", 0.0)) if base_env is not None else 0.0
+        hover_rpm = float(getattr(base_env, "HOVER_RPM", 0.0)) if base_env is not None else 0.0
+        rpm_delta_scale = float(getattr(tracking_core, "rpm_delta_scale", envs.actions.DEFAULT_RPM_DELTA_SCALE))
+        real_action_space_low = np.full(getattr(action_space, "shape", ()), rpm_min, dtype=float)
+        real_action_space_high = np.full(getattr(action_space, "shape", ()), rpm_max, dtype=float)
+        command_low = envs.tracking_env.normalized_direct_rpm_to_motor_rpms(
+            np.full(getattr(action_space, "shape", ()), -1.0, dtype=np.float32),
+            hover_rpm=hover_rpm,
+            rpm_delta_scale=rpm_delta_scale,
+            rpm_min=rpm_min,
+            rpm_max=rpm_max,
+        )
+        command_high = envs.tracking_env.normalized_direct_rpm_to_motor_rpms(
+            np.full(getattr(action_space, "shape", ()), 1.0, dtype=np.float32),
+            hover_rpm=hover_rpm,
+            rpm_delta_scale=rpm_delta_scale,
+            rpm_min=rpm_min,
+            rpm_max=rpm_max,
+        )
+        real_action_type = "motor_rpm"
+    else:
+        rpm_delta_scale = None
+        hover_rpm = None
+        rpm_min = None
+        rpm_max = None
+        command_low = None
+        command_high = None
+        real_action_space_low = np.asarray(getattr(real_action_space, "low", []), dtype=float)
+        real_action_space_high = np.asarray(getattr(real_action_space, "high", []), dtype=float)
+        real_action_type = "pid_target_position"
     return {
+        "action_interface": action_interface,
         "action_space": str(action_space),
         "action_space_shape": _shape_list(getattr(action_space, "shape", ())),
         "action_space_dtype": str(getattr(action_space, "dtype", "")),
         "action_space_low": _array_to_jsonable(getattr(action_space, "low", [])),
         "action_space_high": _array_to_jsonable(getattr(action_space, "high", [])),
-        "actions_normalized": bool(getattr(tracking_env, "real_action_space", None) is not None),
+        "actions_normalized": bool(direct_rpm or getattr(tracking_env, "real_action_space", None) is not None),
+        "ppo_action_dim": int(np.prod(tuple(getattr(action_space, "shape", ())))),
         "ppo_action_space": str(action_space),
+        "real_action_type": real_action_type,
         "real_action_space": str(real_action_space),
-        "real_action_space_low": _array_to_jsonable(getattr(real_action_space, "low", [])),
-        "real_action_space_high": _array_to_jsonable(getattr(real_action_space, "high", [])),
+        "real_action_space_low": _array_to_jsonable(real_action_space_low),
+        "real_action_space_high": _array_to_jsonable(real_action_space_high),
+        "real_action_space_bounds": {
+            "low": _array_to_jsonable(real_action_space_low),
+            "high": _array_to_jsonable(real_action_space_high),
+            "units": "rpm" if direct_rpm else "meters",
+        },
+        "hover_rpm": hover_rpm,
+        "rpm_delta_scale": rpm_delta_scale,
+        "rpm_min": rpm_min,
+        "rpm_max": rpm_max,
+        "rpm_command_space_low": None if command_low is None else _array_to_jsonable(command_low),
+        "rpm_command_space_high": None if command_high is None else _array_to_jsonable(command_high),
+        "include_dynamics_observation": bool(getattr(tracking_core, "include_dynamics_observation", False)),
+        "include_previous_action": bool(getattr(tracking_core, "include_previous_action", False)),
+        "observation_space": str(observation_space),
+        "observation_space_shape": _shape_list(getattr(observation_space, "shape", ())),
+        "observation_dim": int(np.prod(tuple(getattr(observation_space, "shape", ())))),
+        "observation_components": [dict(component) for component in getattr(tracking_core, "observation_components", [])],
+        "direct_control_limitations": envs.actions.direct_control_limitations(action_interface),
         "sampled_action_shape": _shape_list(np.asarray(sample).shape),
         "sampled_action_dtype": str(np.asarray(sample).dtype),
         "sampled_action": _array_to_jsonable(sample),
@@ -1763,6 +2168,10 @@ def _movement_warnings(eval_metrics: dict[str, Any], action_metadata: dict[str, 
         and float(eval_metrics.get("reference_xy_span_m", 0.0)) > _MOVEMENT_WARNING_SPAN_THRESHOLD_M
     ):
         warnings.append("ONE_D_RPM exposes collective thrust only; horizontal reference motion cannot be tracked with this action interface")
+    if action_metadata.get("action_interface") == envs.actions.ActionInterface.DIRECT_RPM.value and not bool(
+        action_metadata.get("include_dynamics_observation", False)
+    ):
+        warnings.append("direct_rpm is under-observed without include_dynamics_observation=true")
     if (
         float(eval_metrics.get("reference_z_span_m", 0.0)) > _MOVEMENT_WARNING_SPAN_THRESHOLD_M
         and float(eval_metrics.get("actual_z_span_m", 0.0)) < _MOVEMENT_WARNING_SPAN_THRESHOLD_M
@@ -1782,6 +2191,11 @@ def _action_semantics(action_type_value: str) -> str:
         return (
             "three-dimensional normalized target-position command shaped (num_drones, 3); "
             "upstream PID converts targets into motor RPMs for x/y/z movement"
+        )
+    if action_type_value == "rpm":
+        return (
+            "four-dimensional normalized per-motor command shaped (num_drones, 4); "
+            "tracking wrapper maps each motor command to clipped real RPMs before PyBullet physics"
         )
     if action_type_value == "one_d_pid":
         return (

@@ -16,6 +16,9 @@ from src.experiments.training import experiments_training_ppo_tracking as ppo_tr
 
 EXPECTED_SMOKE_TASK_COUNT = 5
 REQUIRED_SHAPES = {"hover", "circle", "line", "vertical", "polyline"}
+DIRECT_RPM_DELTA_SCALE = 0.05
+MAX_DIRECT_RPM_SMOKE_TIMESTEPS = 4096
+POLICY_NET_ARCH = [128, 128]
 
 
 def test_smoke_config_loads_and_contains_valid_tasks() -> None:
@@ -69,6 +72,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
             "n_epochs": 5,
             "wandb_mode": "disabled",
             "task_index": 0,
+            "action_interface": "pid_position",
         },
         "configs/training/ppo_tracking_medium.yaml": {
             "run_name": "direct_ppo_line_medium_seed0",
@@ -79,6 +83,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
             "n_epochs": 5,
             "wandb_mode": "auto",
             "task_index": 0,
+            "action_interface": "pid_position",
         },
         "configs/training/ppo_tracking_final.yaml": {
             "run_name": "direct_ppo_line_final_seed0",
@@ -89,6 +94,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
             "n_epochs": 10,
             "wandb_mode": "auto",
             "task_index": 1,
+            "action_interface": "pid_position",
         },
     }
 
@@ -102,6 +108,9 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
         assert config["total_timesteps"] == values["total_timesteps"]
         assert config["num_envs"] == values["num_envs"]
         assert config["task_index"] == values["task_index"]
+        assert config["action_interface"] == values["action_interface"]
+        assert config["include_dynamics_observation"] is False
+        assert config["include_previous_action"] is False
         assert config["wandb_mode"] == values["wandb_mode"]
         assert config["ppo"]["n_steps"] == values["n_steps"]
         assert config["ppo"]["batch_size"] == values["batch_size"]
@@ -110,7 +119,65 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)
         assert settings.run_name == values["run_name"]
         assert settings.num_envs == values["num_envs"]
+        assert settings.action_interface == values["action_interface"]
+        assert settings.include_dynamics_observation is False
+        assert settings.include_previous_action is False
         assert settings.ppo_config.to_dict() == config["ppo"]
+
+
+def test_direct_rpm_smoke_config_is_explicit_and_safe() -> None:
+    """Verify the direct-RPM smoke config is opt-in, tiny, and W&B-disabled."""
+    config_path = "configs/training/ppo_tracking_direct_rpm_smoke.yaml"
+    config = experiments_config.load_experiment_config(config_path)
+    settings = ppo_tracking.load_ppo_tracking_settings(config_path)
+
+    assert config["task_config_path"] == "configs/training/ppo_tracking_tasks.yaml"
+    assert config["action_interface"] == "direct_rpm"
+    assert config["normalize_actions"] is True
+    assert config["include_dynamics_observation"] is True
+    assert config["include_previous_action"] is True
+    assert config["rpm_delta_scale"] == DIRECT_RPM_DELTA_SCALE
+    assert config["wandb_mode"] == "disabled"
+    assert config["num_envs"] == 1
+    assert config["total_timesteps"] <= MAX_DIRECT_RPM_SMOKE_TIMESTEPS
+    assert settings.action_interface == "direct_rpm"
+    assert settings.include_dynamics_observation is True
+    assert settings.include_previous_action is True
+    assert settings.rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
+
+
+def test_dynamics_smoke_config_is_explicit_and_safe() -> None:
+    """Verify the optional PID dynamics smoke config is tiny and W&B-disabled."""
+    config_path = "configs/training/ppo_tracking_dynamics_smoke.yaml"
+    config = experiments_config.load_experiment_config(config_path)
+    settings = ppo_tracking.load_ppo_tracking_settings(config_path)
+
+    assert config["action_interface"] == "pid_position"
+    assert config["include_dynamics_observation"] is True
+    assert config["include_previous_action"] is True
+    assert config["wandb_mode"] == "disabled"
+    assert config["num_envs"] == 1
+    assert config["total_timesteps"] <= MAX_DIRECT_RPM_SMOKE_TIMESTEPS
+    assert settings.action_interface == "pid_position"
+    assert settings.include_dynamics_observation is True
+    assert settings.include_previous_action is True
+    assert settings.ppo_config.policy_kwargs is None
+
+
+def test_dynamics_medium_net_smoke_config_is_explicit_and_safe() -> None:
+    """Verify the optional larger-network config is still smoke-sized."""
+    config_path = "configs/training/ppo_tracking_dynamics_medium_net_smoke.yaml"
+    config = experiments_config.load_experiment_config(config_path)
+    settings = ppo_tracking.load_ppo_tracking_settings(config_path)
+
+    assert config["action_interface"] == "pid_position"
+    assert config["include_dynamics_observation"] is True
+    assert config["include_previous_action"] is True
+    assert config["wandb_mode"] == "disabled"
+    assert config["num_envs"] == 1
+    assert config["total_timesteps"] <= MAX_DIRECT_RPM_SMOKE_TIMESTEPS
+    assert config["ppo"]["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
+    assert settings.ppo_config.policy_kwargs == {"net_arch": POLICY_NET_ARCH}
 
 
 def test_real_direct_ppo_task_source_validates_and_final_uses_hard_line() -> None:

@@ -19,6 +19,8 @@ EXPECTED_CURRICULUM_STAGE_COUNT = 2
 CLI_SEED_OVERRIDE = 3
 EXPECTED_CURRICULUM_NUM_ENVS = 1
 EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS = 256
+EXPECTED_PID_ACTION_DIM = 3
+EXPECTED_BASE_OBSERVATION_DIM = 10
 
 EXPECTED_STAGE_COUNT = 5
 
@@ -136,6 +138,22 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
             "seed": kwargs["seed"],
             "diagnostics_dir": str(tmp_path / run_name / "diagnostics"),
             "num_envs": EXPECTED_CURRICULUM_NUM_ENVS,
+            "action_interface": "pid_position",
+            "ppo_action_dim": EXPECTED_PID_ACTION_DIM,
+            "real_action_type": "pid_target_position",
+            "real_action_space_bounds": {"low": [[-1.0, -1.0, -1.0]], "high": [[1.0, 1.0, 1.0]], "units": "meters"},
+            "rpm_delta_scale": None,
+            "include_dynamics_observation": False,
+            "include_previous_action": False,
+            "observation_dim": EXPECTED_BASE_OBSERVATION_DIM,
+            "observation_components": [
+                {"name": "current_position", "dim": 3},
+                {"name": "reference_position", "dim": 3},
+                {"name": "position_error", "dim": 3},
+                {"name": "trajectory_progress", "dim": 1},
+            ],
+            "policy_kwargs": None,
+            "direct_control_limitations": [],
             "vec_env_type": "DummyVecEnv",
             "effective_rollout_steps": EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS,
             "mean_position_error_m": 0.1,
@@ -190,6 +208,13 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert summary["curriculum_name"] == "curriculum_manual_line_smoke"
     assert summary["stage_count"] == EXPECTED_CURRICULUM_STAGE_COUNT
     assert summary["model_transfer_enabled"] is True
+    assert summary["action_interface"] == "pid_position"
+    assert summary["ppo_action_dim"] == EXPECTED_PID_ACTION_DIM
+    assert summary["real_action_type"] == "pid_target_position"
+    assert summary["include_dynamics_observation"] is False
+    assert summary["include_previous_action"] is False
+    assert summary["observation_dim"] == EXPECTED_BASE_OBSERVATION_DIM
+    assert summary["policy_kwargs"] is None
     assert summary["final_stage_run_name"] == "curriculum_manual_line_smoke_stage02_nearby_target_hover_seed0"
     assert summary["final_stage"]["stage_index"] == EXPECTED_CURRICULUM_STAGE_COUNT
     assert summary["final_stage"]["stage_name"] == "nearby_target_hover"
@@ -204,6 +229,13 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert summary["stages"][0]["manifest_path_relative"].endswith("_manifest.json")
     assert summary["stages"][0]["diagnostics_dir"].endswith("diagnostics")
     assert summary["stages"][0]["num_envs"] == EXPECTED_CURRICULUM_NUM_ENVS
+    assert summary["stages"][0]["action_interface"] == "pid_position"
+    assert summary["stages"][0]["ppo_action_dim"] == EXPECTED_PID_ACTION_DIM
+    assert summary["stages"][0]["real_action_type"] == "pid_target_position"
+    assert summary["stages"][0]["include_dynamics_observation"] is False
+    assert summary["stages"][0]["include_previous_action"] is False
+    assert summary["stages"][0]["observation_dim"] == EXPECTED_BASE_OBSERVATION_DIM
+    assert summary["stages"][0]["policy_kwargs"] is None
     assert summary["stages"][0]["vec_env_type"] == "DummyVecEnv"
     assert summary["stages"][0]["effective_rollout_steps"] == EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS
     assert summary["stages"][0]["model_transfer_enabled"] is False
@@ -214,6 +246,8 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
     assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
     assert calls[0]["normalize_actions"] is True
+    assert calls[0]["config_path"] == Path("configs/training/ppo_tracking_smoke.yaml")
+    assert "action_interface" not in calls[0]
     assert "num_envs" not in calls[0]
     assert calls[0]["wandb_group"] == "curriculum/curriculum_manual_line_smoke"
     assert Path(calls[0]["task_config_path"]).parent == expected_root / "config"
