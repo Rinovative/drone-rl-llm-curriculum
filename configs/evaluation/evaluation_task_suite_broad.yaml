@@ -1,4 +1,4 @@
-evaluation_name: broad
+evaluation_name: broad_suite
 seed: 0
 eval_steps: 360
 

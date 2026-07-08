@@ -61,6 +61,8 @@ _ACTION_SATURATION_TOLERANCE = 1.0e-6
 _TIMESTEPS_PER_THOUSAND_LABEL = 1_000
 _TIMESTEPS_PER_MILLION_LABEL = 1_000_000
 _MIN_TIMESTEPS_FOR_COMPACT_THOUSAND_LABEL = 10_000
+_ENT005_COEFFICIENT = 0.005
+_LOW_LR_LEARNING_RATE = 0.0001
 VEC_MONITOR_ENABLED = True
 
 
@@ -595,7 +597,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     run_manifest_path = _resolve_run_manifest_path(active_settings, training_run_name)
     logs_dir = _resolve_artifact_subdir(active_settings, training_run_name, utils.artifacts.LOGS_DIRNAME)
     diagnostics_dir = _resolve_artifact_subdir(active_settings, training_run_name, utils.artifacts.DIAGNOSTICS_DIRNAME)
-    wandb_settings = _wandb_settings(active_settings, resolved_task_shape)
+    wandb_settings = _wandb_settings(active_settings, resolved_task_shape, task_distribution_metadata)
     config_snapshots: dict[str, str | None] = {}
     if active_settings.artifact_root is None:
         utils.artifacts.ensure_run_training_dirs(training_run_name)
@@ -751,11 +753,12 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
 
         metrics: dict[str, Any] = {
             "run_type": "training",
-            "run_kind": "direct_ppo",
-            "curriculum_kind": None,
+            "run_kind": _metadata_text(active_settings.run_metadata, "run_kind", "direct_ppo"),
+            "curriculum_kind": active_settings.run_metadata.get("curriculum_kind"),
             "mode": "ppo_smoke",
             "training_run_name": training_run_name,
             "run_name": training_run_name,
+            "source_config_path": str(active_settings.training_config_path) if active_settings.training_config_path is not None else None,
             "training_task_shape": resolved_task_shape,
             "task_shape": resolved_task_shape,
             "task_index": selected_task_index,
@@ -788,6 +791,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "effective_rollout_steps": effective_rollout_steps,
             "ppo_config": active_settings.ppo_config.to_dict(),
             "policy_kwargs": active_settings.ppo_config.to_dict().get("policy_kwargs"),
+            "ppo_profile": _ppo_profile(active_settings),
             "timesteps_label": timesteps_label,
             "eval_steps": active_settings.eval_steps,
             "seed": active_settings.seed,
@@ -963,7 +967,11 @@ def run_ppo_tracking_smoke_from_config(
         wandb_project=settings.wandb_project if wandb_project is None else wandb_project,
         wandb_entity=settings.wandb_entity if wandb_entity is None else wandb_entity,
         wandb_group=settings.wandb_group if wandb_group is None else wandb_group,
-        wandb_name=settings.wandb_name if wandb_name is None else wandb_name,
+        wandb_name=_resolved_wandb_name_override(
+            base_wandb_name=settings.wandb_name,
+            run_name_override=run_name,
+            wandb_name_override=wandb_name,
+        ),
         wandb_tags=settings.wandb_tags if wandb_tags is None else wandb_tags,
         wandb_dir=settings.wandb_dir if wandb_dir is None else Path(wandb_dir),
         initial_model_path=settings.initial_model_path if initial_model_path is None else Path(initial_model_path),
@@ -1227,7 +1235,11 @@ def _resolve_directory(path: Path | None, default: Path) -> Path:
     return directory.expanduser().resolve(strict=False)
 
 
-def _wandb_settings(settings: PPOTrackingSmokeSettings, task_shape: str | None = None) -> utils.wandb.WandbTrackingSettings:
+def _wandb_settings(
+    settings: PPOTrackingSmokeSettings,
+    task_shape: str | None = None,
+    task_distribution_metadata: Mapping[str, Any] | None = None,
+) -> utils.wandb.WandbTrackingSettings:
     """Build W&B settings from PPO smoke settings and resolved task metadata."""
     run_name = _run_name(settings, task_shape)
     resolved_shape = task_shape or settings.task_shape or "unknown"
@@ -1235,25 +1247,129 @@ def _wandb_settings(settings: PPOTrackingSmokeSettings, task_shape: str | None =
         mode=settings.wandb_mode,
         project=settings.wandb_project,
         entity=settings.wandb_entity,
-        group=settings.wandb_group or f"ppo_tracking/{resolved_shape}",
+        group=_wandb_group(settings, run_name, resolved_shape, task_distribution_metadata),
         name=settings.wandb_name or run_name,
-        tags=_wandb_tags(settings, resolved_shape),
+        tags=_wandb_tags(settings, resolved_shape, task_distribution_metadata),
         dir=settings.wandb_dir or _resolve_artifact_subdir(settings, run_name, utils.artifacts.WANDB_DIRNAME),
     )
 
 
-def _wandb_tags(settings: PPOTrackingSmokeSettings, task_shape: str) -> tuple[str, ...]:
+def _wandb_group(
+    settings: PPOTrackingSmokeSettings,
+    run_name: str,
+    task_shape: str,
+    task_distribution_metadata: Mapping[str, Any] | None,
+) -> str:
+    """Return the W&B group for direct runs or curriculum stages."""
+    if _is_curriculum_stage(settings):
+        curriculum_kind = _metadata_text(settings.run_metadata, "curriculum_kind", "curriculum")
+        curriculum_run_name = _metadata_text(settings.run_metadata, "curriculum_run_name", settings.wandb_group or run_name)
+        return settings.wandb_group or f"curriculum/{curriculum_kind}/{curriculum_run_name}"
+    if settings.wandb_group and not settings.wandb_group.startswith("direct_ppo/"):
+        return settings.wandb_group
+    task_distribution = _task_distribution_tag_value(task_distribution_metadata)
+    variant = _direct_ppo_variant_label(run_name=run_name, task_shape=task_shape, seed=settings.seed)
+    return f"direct_ppo/{settings.action_interface}/{task_distribution}/{variant}/seed{settings.seed}"
+
+
+def _wandb_tags(
+    settings: PPOTrackingSmokeSettings,
+    task_shape: str,
+    task_distribution_metadata: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
     """Return derived and user-provided W&B tags without duplicates."""
     config_stem = settings.training_config_path.stem if settings.training_config_path is not None else "direct"
+    curriculum_kind = settings.run_metadata.get("curriculum_kind")
+    run_kind = _metadata_text(settings.run_metadata, "run_kind", "direct_ppo")
+    run_kind_tags = ("curriculum", str(curriculum_kind)) if run_kind == "curriculum_stage" and curriculum_kind else ("direct_ppo",)
+    observation_tags = (("observation:dynamics",) if settings.include_dynamics_observation else ()) + (
+        ("observation:previous_action",) if settings.include_previous_action else ()
+    )
     derived = (
         "ppo",
+        *run_kind_tags,
         "training",
         f"task:{task_shape}",
+        f"action_interface:{settings.action_interface}",
+        *observation_tags,
+        f"task_distribution:{_task_distribution_tag_value(task_distribution_metadata)}",
+        f"net:{_net_arch_label(settings)}",
+        f"ppo_profile:{_ppo_profile(settings)}",
         f"steps:{_timesteps_label(settings.total_timesteps)}",
         f"seed:{settings.seed}",
         f"config:{config_stem}",
     )
     return _dedupe_tags((*derived, *settings.wandb_tags))
+
+
+def _resolved_wandb_name_override(
+    *,
+    base_wandb_name: str | None,
+    run_name_override: str | None,
+    wandb_name_override: str | None,
+) -> str | None:
+    """Return the effective W&B name override for config-loaded runs."""
+    if wandb_name_override is not None:
+        return wandb_name_override
+    if run_name_override is not None:
+        return run_name_override
+    return base_wandb_name
+
+
+def _is_curriculum_stage(settings: PPOTrackingSmokeSettings) -> bool:
+    """Return whether caller metadata marks this PPO run as a curriculum stage."""
+    return settings.run_metadata.get("run_kind") == "curriculum_stage"
+
+
+def _metadata_text(metadata: Mapping[str, Any], key: str, default: str) -> str:
+    """Return a non-empty metadata string with a fallback."""
+    value = metadata.get(key)
+    if value is None or not str(value).strip():
+        return default
+    return str(value)
+
+
+def _task_distribution_tag_value(task_distribution_metadata: Mapping[str, Any] | None) -> str:
+    """Return a compact task-distribution identity for tags and groups."""
+    if not task_distribution_metadata:
+        return "fixed"
+    name = task_distribution_metadata.get("task_distribution_name")
+    if isinstance(name, str) and name.strip() and name != "fixed_task":
+        return name
+    mode = task_distribution_metadata.get("task_distribution_mode")
+    if mode == "fixed":
+        return "fixed"
+    return str(mode or "fixed")
+
+
+def _net_arch_label(settings: PPOTrackingSmokeSettings) -> str:
+    """Return a compact network-architecture tag label."""
+    policy_kwargs = settings.ppo_config.policy_kwargs or {}
+    net_arch = policy_kwargs.get("net_arch")
+    net128_flat_arch = [128, 128]
+    net128_policy_arch = {"pi": net128_flat_arch, "vf": net128_flat_arch}
+    if net_arch in (net128_flat_arch, net128_policy_arch):
+        return "net128"
+    return "default"
+
+
+def _ppo_profile(settings: PPOTrackingSmokeSettings) -> str:
+    """Infer the PPO profile represented by the resolved hyperparameters."""
+    if settings.ppo_config.ent_coef == _ENT005_COEFFICIENT:
+        return "ent005"
+    if settings.ppo_config.learning_rate == _LOW_LR_LEARNING_RATE:
+        return "low_lr"
+    return "default"
+
+
+def _direct_ppo_variant_label(run_name: str, task_shape: str, seed: int) -> str:
+    """Return the run variant segment used inside direct-PPO W&B groups."""
+    prefix = "direct_ppo_"
+    suffix = f"_seed{seed}"
+    if run_name.startswith(prefix) and run_name.endswith(suffix):
+        variant = run_name[len(prefix) : -len(suffix)]
+        return variant or task_shape
+    return task_shape
 
 
 def _dedupe_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
@@ -1329,13 +1445,14 @@ def _build_manifest(
     run_name = str(metrics["training_run_name"])
     diagnostics = _diagnostic_manifest_fields(metrics)
     return {
-        "run_type": "training",
-        "run_kind": "direct_ppo",
-        "curriculum_kind": None,
+        "run_type": metrics.get("run_type", "training"),
+        "run_kind": metrics.get("run_kind", "direct_ppo"),
+        "curriculum_kind": metrics.get("curriculum_kind"),
         "mode": "ppo_smoke",
         "training_run_name": run_name,
         "run_name": run_name,
         "training_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
+        "source_config_path": metrics.get("source_config_path"),
         "task_config_path": str(settings.task_config_path),
         "training_config_snapshot_path": metrics.get("training_config_snapshot_path"),
         "training_config_snapshot_path_relative": metrics.get("training_config_snapshot_path_relative"),
@@ -1367,6 +1484,7 @@ def _build_manifest(
         ),
         "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
         "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
+        "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
@@ -1387,6 +1505,7 @@ def _build_manifest(
         "diagnostics_dir_relative": utils.artifacts.path_relative_to(metrics.get("diagnostics_dir"), _manifest_relative_base(settings, run_name)),
         "warnings": list(metrics.get("warnings", [])),
         "run_metadata": dict(metrics.get("run_metadata", {})),
+        **_run_metadata_manifest_fields(metrics),
         "wandb": metrics.get("wandb", {}),
         "diagnostics": diagnostics,
         **diagnostics,
@@ -1401,12 +1520,13 @@ def _build_run_manifest(
     """Build the root manifest payload for a unified storage/runs training run."""
     run_name = str(metrics["training_run_name"])
     return {
-        "run_type": "training",
-        "run_kind": "direct_ppo",
-        "curriculum_kind": None,
+        "run_type": metrics.get("run_type", "training"),
+        "run_kind": metrics.get("run_kind", "direct_ppo"),
+        "curriculum_kind": metrics.get("curriculum_kind"),
         "mode": "ppo_smoke",
         "run_name": run_name,
         "training_run_name": run_name,
+        "source_config_path": metrics.get("source_config_path"),
         "run_manifest_path": metrics.get("run_manifest_path"),
         "training": {
             "manifest_path": metrics["manifest_path"],
@@ -1422,6 +1542,7 @@ def _build_run_manifest(
         },
         "config": {
             "training_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
+            "source_config_path": metrics.get("source_config_path"),
             "task_config_path": str(settings.task_config_path),
             "training_config_snapshot_path": metrics.get("training_config_snapshot_path"),
             "training_config_snapshot_path_relative": metrics.get("training_config_snapshot_path_relative"),
@@ -1434,6 +1555,7 @@ def _build_run_manifest(
             **_task_distribution_manifest_fields(metrics),
             "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
             "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
+            "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
             "num_envs": metrics.get("num_envs", settings.num_envs),
             "action_interface": metrics.get("action_interface", settings.action_interface),
             "ppo_action_dim": metrics.get("ppo_action_dim"),
@@ -1455,6 +1577,7 @@ def _build_run_manifest(
         **_task_distribution_manifest_fields(metrics),
         "total_timesteps": settings.total_timesteps,
         "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
+        "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
         "num_envs": metrics.get("num_envs", settings.num_envs),
         "action_interface": metrics.get("action_interface", settings.action_interface),
         "ppo_action_dim": metrics.get("ppo_action_dim"),
@@ -1480,6 +1603,7 @@ def _build_run_manifest(
         "model_transfer_source": metrics.get("model_transfer_source"),
         "wandb": metrics.get("wandb", {}),
         "run_metadata": dict(metrics.get("run_metadata", {})),
+        **_run_metadata_manifest_fields(metrics),
         "warnings": list(metrics.get("warnings", [])),
         "evaluation_index": _evaluation_index_manifest(run_name),
     }
@@ -1606,6 +1730,31 @@ def _diagnostic_artifact_paths(training_run_name: str, metrics: dict[str, Any]) 
     return paths
 
 
+def _run_metadata_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Select caller-owned identity metadata for top-level manifests."""
+    metadata_keys = (
+        "experiment_id",
+        "source_config_path",
+        "curriculum_run_name",
+        "curriculum_stage_index",
+        "curriculum_stage_name",
+        "curriculum_stage_count",
+        "curriculum_stage_run_name",
+        "previous_stage_model_path",
+        "stage_budget_profile",
+        "stage_total_timesteps",
+        "cumulative_budget_timesteps",
+        "cumulative_llm_budget_timesteps",
+        "llm_budget_cap_timesteps",
+        "proposal_fallback_used",
+        "task_distribution_reference",
+        "resolved_task_shape",
+        "llm_provider",
+        "llm_model",
+    )
+    return {key: metrics.get(key) for key in metadata_keys if key in metrics}
+
+
 def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
     """Select diagnostic fields that should be duplicated into the manifest."""
     diagnostic_keys = (
@@ -1720,9 +1869,13 @@ def _wandb_config(
 ) -> dict[str, Any]:
     """Build a compact W&B config payload for PPO smoke training."""
     return {
+        "run_type": _metadata_text(settings.run_metadata, "run_type", "training"),
+        "run_kind": _metadata_text(settings.run_metadata, "run_kind", "direct_ppo"),
+        "curriculum_kind": settings.run_metadata.get("curriculum_kind"),
         "run_name": run_name,
         "training_run_name": run_name,
         "training_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
+        "source_config_path": str(settings.training_config_path) if settings.training_config_path is not None else None,
         "task_config_path": str(settings.task_config_path),
         "task_index": selected_task_index,
         "task_shape": str(task.get("shape", "unknown")),
@@ -1745,6 +1898,7 @@ def _wandb_config(
         "effective_rollout_steps": settings.ppo_config.effective_rollout_steps(settings.num_envs),
         "ppo": settings.ppo_config.to_dict(),
         "policy_kwargs": settings.ppo_config.to_dict().get("policy_kwargs"),
+        "ppo_profile": _ppo_profile(settings),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,

@@ -21,6 +21,7 @@ EXPECTED_CURRICULUM_NUM_ENVS = 1
 EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS = 256
 EXPECTED_PID_ACTION_DIM = 3
 EXPECTED_BASE_OBSERVATION_DIM = 10
+EXPECTED_TRAINING_TOTAL_TIMESTEPS = 16
 
 EXPECTED_STAGE_COUNT = 5
 
@@ -207,6 +208,12 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert summary["curriculum_kind"] == "manual"
     assert summary["curriculum_name"] == "curriculum_manual_line_smoke"
     assert summary["stage_count"] == EXPECTED_CURRICULUM_STAGE_COUNT
+    assert summary["stage_run_names"] == [
+        "curriculum_manual_line_smoke_stage01_hover_stabilization_seed0",
+        "curriculum_manual_line_smoke_stage02_nearby_target_hover_seed0",
+    ]
+    assert summary["total_configured_timesteps"] == EXPECTED_TRAINING_TOTAL_TIMESTEPS
+    assert summary["total_actual_timesteps"] == EXPECTED_TRAINING_TOTAL_TIMESTEPS
     assert summary["model_transfer_enabled"] is True
     assert summary["action_interface"] == "pid_position"
     assert summary["ppo_action_dim"] == EXPECTED_PID_ACTION_DIM
@@ -249,7 +256,14 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert calls[0]["config_path"] == Path("configs/training/ppo_tracking_smoke.yaml")
     assert "action_interface" not in calls[0]
     assert "num_envs" not in calls[0]
-    assert calls[0]["wandb_group"] == "curriculum/curriculum_manual_line_smoke"
+    assert calls[0]["wandb_group"] == "curriculum/manual/curriculum_manual_line_smoke_seed0"
+    assert calls[0]["wandb_tags"] == ("stage_index:1", "stage:hover_stabilization", "task:hover_stabilization")
+    assert calls[0]["run_metadata"]["run_kind"] == "curriculum_stage"
+    assert calls[0]["run_metadata"]["curriculum_kind"] == "manual"
+    assert calls[0]["run_metadata"]["curriculum_run_name"] == "curriculum_manual_line_smoke_seed0"
+    assert calls[0]["run_metadata"]["curriculum_stage_index"] == 1
+    assert calls[0]["run_metadata"]["curriculum_stage_name"] == "hover_stabilization"
+    assert calls[0]["run_metadata"]["curriculum_stage_run_name"] == "curriculum_manual_line_smoke_stage01_hover_stabilization_seed0"
     assert Path(calls[0]["task_config_path"]).parent == expected_root / "config"
     assert Path(calls[0]["task_config_path"]).name == "stage01_hover_stabilization_task.yaml"
     assert Path(calls[1]["task_config_path"]).name == "stage02_nearby_target_hover_task.yaml"

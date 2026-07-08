@@ -44,7 +44,7 @@ init_lane() {
   mkdir -p "$LANE_LOG_ROOT/markers"
   LANE_SUMMARY_TSV="$LANE_LOG_ROOT/lane_summary.tsv"
   LANE_SUMMARY_MD="$LANE_LOG_ROOT/lane_summary.md"
-  printf 'experiment_id\tkind\tconfig_path\texpected_run_name\tunit_count\ttrain_status\teval_status\tvariation_eval_status\tbroad_eval_status\trender_status\tmanifest_path\tnotes\n' > "$LANE_SUMMARY_TSV"
+  printf 'experiment_id\tkind\tcurriculum_kind\tconfig_path\texpected_run_name\trun_name\twandb_group\twandb_name\tunit_count\ttrain_status\teval_status\tvariation_eval_status\tbroad_eval_status\trender_status\tmanifest_path\tnotes\n' > "$LANE_SUMMARY_TSV"
   print_thread_settings | tee "$LANE_LOG_ROOT/startup.log"
   printf 'LANE_RUN_ID=%s\nLANE_ID=%s\nLOG_ROOT=%s\n' "$LANE_RUN_ID" "$LANE_ID" "$LANE_LOG_ROOT" | tee -a "$LANE_LOG_ROOT/startup.log"
 }
@@ -132,6 +132,41 @@ raise SystemExit(1)
 PYCHECK
 }
 
+experiment_curriculum_kind() {
+  case "$1" in
+    manual_curriculum) echo "manual" ;;
+    llm_curriculum) echo "llm" ;;
+    *) echo "" ;;
+  esac
+}
+
+experiment_wandb_group() {
+  local kind="$1"
+  local run_name="$2"
+  local variant seed action_interface task_distribution
+  case "$kind" in
+    manual_curriculum) echo "curriculum/manual/${run_name}" ;;
+    llm_curriculum) echo "curriculum/llm/${run_name}" ;;
+    direct_ppo)
+      variant="${run_name#direct_ppo_}"
+      seed="${variant##*_seed}"
+      variant="${variant%_seed*}"
+      if [[ "$run_name" == *directrpm* ]]; then
+        action_interface="direct_rpm"
+      else
+        action_interface="pid_position"
+      fi
+      if [[ "$run_name" == *taskdist_medium* ]]; then
+        task_distribution="tracking_medium"
+      else
+        task_distribution="fixed"
+      fi
+      echo "direct_ppo/${action_interface}/${task_distribution}/${variant}/seed${seed}"
+      ;;
+    *) echo "" ;;
+  esac
+}
+
 append_summary_row() {
   local experiment_id="$1"
   local kind="$2"
@@ -145,9 +180,13 @@ append_summary_row() {
   local render_status="${10}"
   local manifest_path="${11}"
   local notes="${12}"
+  local curriculum_kind wandb_group wandb_name
+  curriculum_kind="$(experiment_curriculum_kind "$kind")"
+  wandb_group="$(experiment_wandb_group "$kind" "$run_name")"
+  wandb_name="$run_name"
   notes="${notes//$'\t'/ }"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$experiment_id" "$kind" "$config_path" "$run_name" "$units" "$train_status" "$eval_status" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$experiment_id" "$kind" "$curriculum_kind" "$config_path" "$run_name" "$run_name" "$wandb_group" "$wandb_name" "$units" "$train_status" "$eval_status" \
     "$variation_status" "$broad_status" "$render_status" "$manifest_path" "$notes" >> "$LANE_SUMMARY_TSV"
   write_markdown_summary
 }
@@ -161,7 +200,7 @@ import sys
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
 rows = list(csv.DictReader(src.read_text(encoding="utf-8").splitlines(), delimiter="\t"))
-headers = ["experiment_id", "kind", "unit_count", "train_status", "eval_status", "variation_eval_status", "broad_eval_status", "render_status", "manifest_path", "notes"]
+headers = ["experiment_id", "kind", "curriculum_kind", "run_name", "wandb_group", "wandb_name", "unit_count", "train_status", "eval_status", "variation_eval_status", "broad_eval_status", "render_status", "manifest_path", "notes"]
 lines = ["# Lane Summary", "", "| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
 for row in rows:
     values = [str(row.get(header, "")).replace("|", "\\|") for header in headers]

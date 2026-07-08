@@ -329,9 +329,9 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
     previous_model_path: str | None = None
     transfer_used = False
 
+    curriculum_run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
     for stage_index, stage in enumerate(settings.stages, start=1):
         run_name = derive_stage_run_name(settings.curriculum_name, stage_index, stage.stage_name, settings.seed)
-        curriculum_run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
         stage_dirs = utils.artifacts.ensure_curriculum_stage_training_dirs(curriculum_run_name, stage_index, stage.stage_name)
         stage_training_dir = stage_dirs[utils.artifacts.TRAINING_DIRNAME]
         task_config_path = _write_stage_task_config(
@@ -353,9 +353,17 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
             seed=settings.seed,
             wandb_mode=settings.wandb_mode,
             normalize_actions=settings.normalize_actions,
-            wandb_group=_curriculum_wandb_group(settings.curriculum_name),
-            wandb_tags=("curriculum", "manual", f"stage:{stage.stage_name}", f"task:{stage.task_shape}"),
+            wandb_group=_curriculum_wandb_group(curriculum_run_name),
+            wandb_tags=_stage_wandb_tags(stage_index, stage),
             initial_model_path=initial_model_path,
+            run_metadata=_stage_run_metadata(
+                settings=settings,
+                stage=stage,
+                stage_index=stage_index,
+                run_name=run_name,
+                curriculum_run_name=curriculum_run_name,
+                previous_model_path=previous_model_path,
+            ),
         )
         transfer_used = transfer_used or initial_model_path is not None
         entry = _stage_summary_entry(
@@ -469,6 +477,7 @@ def _stage_summary_entry(
         "stage_name": stage.stage_name,
         "task_shape": stage.task_shape,
         "run_name": run_name,
+        "curriculum_stage_run_name": run_name,
         "stage_dir": str(training_dir.parent),
         "stage_dir_relative": utils.artifacts.path_relative_to(training_dir.parent, run_root),
         "training_dir": str(training_dir),
@@ -519,6 +528,9 @@ def _build_curriculum_summary(
         "base_training_config": str(settings.base_training_config),
         "seed": settings.seed,
         "stage_count": len(stage_entries),
+        "stage_run_names": [str(stage["run_name"]) for stage in stage_entries],
+        "total_configured_timesteps": sum(int(stage.get("total_timesteps", 0)) for stage in stage_entries),
+        "total_actual_timesteps": sum(int(stage.get("total_timesteps", 0)) for stage in stage_entries),
         "model_transfer_enabled": model_transfer_enabled,
         "action_interface": final_stage.get("action_interface"),
         "ppo_action_dim": final_stage.get("ppo_action_dim"),
@@ -667,9 +679,40 @@ def _curriculum_config_dir(settings: ManualCurriculumSettings) -> Path:
     return utils.artifacts.get_run_config_dir(_curriculum_artifact_run_name(settings.curriculum_name, settings.seed))
 
 
-def _curriculum_wandb_group(curriculum_name: str) -> str:
+def _curriculum_wandb_group(curriculum_run_name: str) -> str:
     """Return the W&B group used for all stages in one curriculum."""
-    return f"curriculum/{curriculum_name}"
+    return f"curriculum/manual/{curriculum_run_name}"
+
+
+def _stage_wandb_tags(stage_index: int, stage: ManualCurriculumStage) -> tuple[str, ...]:
+    """Return caller-owned W&B tags for one manual curriculum stage."""
+    return (f"stage_index:{stage_index}", f"stage:{stage.stage_name}", f"task:{stage.task_shape}")
+
+
+def _stage_run_metadata(
+    *,
+    settings: ManualCurriculumSettings,
+    stage: ManualCurriculumStage,
+    stage_index: int,
+    run_name: str,
+    curriculum_run_name: str,
+    previous_model_path: str | None,
+) -> dict[str, Any]:
+    """Return identity metadata copied into stage metrics, manifests, and W&B config."""
+    return {
+        "run_type": "training",
+        "run_kind": "curriculum_stage",
+        "curriculum_kind": MANUAL_CURRICULUM_KIND,
+        "curriculum_run_name": curriculum_run_name,
+        "curriculum_stage_index": stage_index,
+        "curriculum_stage_name": stage.stage_name,
+        "curriculum_stage_count": len(settings.stages),
+        "curriculum_stage_run_name": run_name,
+        "source_config_path": str(settings.base_training_config),
+        "stage_total_timesteps": stage.total_timesteps,
+        "model_transfer_enabled": previous_model_path is not None,
+        "previous_stage_model_path": previous_model_path,
+    }
 
 
 def _to_yaml(payload: Mapping[str, Any]) -> str:

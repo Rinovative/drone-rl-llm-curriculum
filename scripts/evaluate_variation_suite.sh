@@ -126,6 +126,10 @@ suite_name = str(suite_payload.get("evaluation_name") or suite_path.stem)
 eval_root = run_root / "evaluations" / suite_name
 eval_root.mkdir(parents=True, exist_ok=True)
 statuses = list(csv.DictReader(status_tsv.read_text(encoding="utf-8").splitlines(), delimiter="\t"))
+source_run_name = manifest.get("run_name")
+source_run_kind = manifest.get("run_kind")
+source_curriculum_kind = manifest.get("curriculum_kind")
+model_scope = "final-stage" if source_run_kind == "curriculum" else "direct"
 metric_keys = [
     "failure_overall_status",
     "failure_primary_mode",
@@ -153,8 +157,14 @@ for status in statuses:
         metrics = json.loads(metric_candidates[-1].read_text(encoding="utf-8"))
     row = {
         "evaluation_suite_name": suite_name,
+        "evaluation_suite": suite_name,
         "suite_config": str(suite_path),
         "task_name": task_name,
+        "evaluated_task_name": task_name,
+        "source_run_name": source_run_name,
+        "source_run_kind": source_run_kind,
+        "source_curriculum_kind": source_curriculum_kind,
+        "model_scope": model_scope,
         "task_status": status["status"],
         "task_log_path": status["log_path"],
         "metrics_path": str(metric_candidates[-1]) if metric_candidates else None,
@@ -164,7 +174,6 @@ for status in statuses:
         if isinstance(value, (list, dict)):
             value = json.dumps(value, sort_keys=True)
         row[key] = value
-    row["evaluated_task_name"] = task_name
     summary_rows.append(row)
 
 summary_json_path = eval_root / "suite_summary.json"
@@ -173,8 +182,14 @@ summary_csv_path = eval_root / "suite_summary.csv"
 summary_payload = {
     "run_name": manifest.get("run_name"),
     "run_kind": manifest.get("run_kind"),
+    "curriculum_kind": manifest.get("curriculum_kind"),
     "evaluation_name": suite_name,
     "evaluation_suite_name": suite_name,
+    "evaluation_suite": suite_name,
+    "source_run_name": source_run_name,
+    "source_run_kind": source_run_kind,
+    "source_curriculum_kind": source_curriculum_kind,
+    "model_scope": model_scope,
     "suite_config_path": str(suite_path),
     "task_count": len(summary_rows),
     "failed_task_count": sum(1 for row in summary_rows if row["task_status"] != "success"),
@@ -200,6 +215,11 @@ entry = {
     "mode": "suite_task_loop_summary",
     "evaluation_name": suite_name,
     "evaluation_suite_name": suite_name,
+    "evaluation_suite": suite_name,
+    "source_run_name": source_run_name,
+    "source_run_kind": source_run_kind,
+    "source_curriculum_kind": source_curriculum_kind,
+    "model_scope": model_scope,
     "suite_config_path": str(suite_path),
     "task_names": [row["task_name"] for row in summary_rows],
     "failed_task_count": summary_payload["failed_task_count"],

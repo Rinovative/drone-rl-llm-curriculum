@@ -39,16 +39,23 @@ for suffix in ("*.gif", "*.mp4"):
             }
         )
 status = "found" if artifacts else "no_render_artifacts_found"
+run_name = str(manifest.get("run_name") or "unknown_run")
+safe_run_name = "".join(character if character.isalnum() or character in {"_", "-", "."} else "_" for character in run_name).strip("._-") or "unknown_run"
 report = {
-    "run_name": manifest.get("run_name"),
+    "run_name": run_name,
     "run_kind": manifest.get("run_kind"),
+    "curriculum_kind": manifest.get("curriculum_kind"),
+    "source_run_name": run_name,
+    "source_run_kind": manifest.get("run_kind"),
+    "source_curriculum_kind": manifest.get("curriculum_kind"),
+    "model_scope": "final-stage" if manifest.get("run_kind") == "curriculum" else "direct",
     "status": status,
     "artifact_count": len(artifacts),
     "artifacts": artifacts,
     "note": "Evaluation suites render deterministic GIFs when simulator rendering succeeds; this script reports discovered artifacts without deleting or overwriting runs.",
 }
-json_path = output_dir / "render_status.json"
-tsv_path = output_dir / "render_status.tsv"
+json_path = output_dir / f"{safe_run_name}_render_status.json"
+tsv_path = output_dir / f"{safe_run_name}_render_status.tsv"
 json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 with tsv_path.open("w", encoding="utf-8", newline="") as handle:
     fieldnames = ["kind", "path", "path_relative", "size_bytes"]

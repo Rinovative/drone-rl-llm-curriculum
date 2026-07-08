@@ -1,4 +1,4 @@
-evaluation_name: variation
+evaluation_name: variation_suite
 seed: 0
 eval_steps: 360
 

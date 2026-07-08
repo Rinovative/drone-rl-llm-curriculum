@@ -141,6 +141,11 @@ class PolicyEvaluationSpec:
     suite_config_snapshot_path: Path | None = None
     suite_config_snapshot_path_relative: str | None = None
     suite_config_sha256: str | None = None
+    source_run_name: str | None = None
+    source_run_kind: str | None = None
+    source_curriculum_kind: str | None = None
+    source_stage: dict[str, Any] | None = None
+    model_scope: str | None = None
 
     def __post_init__(self) -> None:
         """Validate required spec fields."""
@@ -295,6 +300,13 @@ def run_policy_evaluation(
         "suite_config_snapshot_path": None if spec.suite_config_snapshot_path is None else str(spec.suite_config_snapshot_path),
         "suite_config_snapshot_path_relative": spec.suite_config_snapshot_path_relative,
         "suite_config_sha256": spec.suite_config_sha256,
+        "evaluation_suite": spec.evaluation_suite_name or spec.evaluation_name,
+        "evaluated_task_name": spec.suite_task_name,
+        "source_run_name": spec.source_run_name,
+        "source_run_kind": spec.source_run_kind,
+        "source_curriculum_kind": spec.source_curriculum_kind,
+        "source_stage": spec.source_stage,
+        "model_scope": spec.model_scope,
         "model_path": str(spec.model_path),
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
@@ -414,6 +426,9 @@ def run_direct_policy_own_task_evaluation(
             evaluation_suite_name=None,
             suite_task_name=OWN_TASK_EVALUATION_NAME,
             suite_task_names=(OWN_TASK_EVALUATION_NAME,),
+            source_run_name=run_name,
+            source_run_kind="direct_ppo",
+            model_scope="direct",
         ),
         PolicyEvaluationArtifactOptions(),
     )
@@ -562,6 +577,9 @@ def run_direct_policy_suite_evaluation(
                 suite_config_snapshot_path=snapshot.suite_config_path,
                 suite_config_snapshot_path_relative=snapshot.suite_config_path_relative,
                 suite_config_sha256=snapshot.suite_config_sha256,
+                source_run_name=run_name,
+                source_run_kind="direct_ppo",
+                model_scope="direct",
             ),
             artifact_options,
         )
@@ -592,6 +610,11 @@ def run_direct_policy_suite_evaluation(
         "model_role": "direct_ppo",
         "model_path": str(model_path),
         "model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
+        "source_run_name": run_name,
+        "source_run_kind": "direct_ppo",
+        "source_curriculum_kind": None,
+        "source_stage": None,
+        "model_scope": "direct",
         "evaluated_models": evaluated_models,
         "summary_metrics_path": str(metrics_path),
         "summary_metrics_path_relative": utils.artifacts.path_relative_to(metrics_path, run_root),
@@ -713,6 +736,11 @@ def _evaluated_model_entry(result: PolicyEvaluationResult, run_root: Path, suite
         "plot_paths_relative": {key: utils.artifacts.path_relative_to(value, run_root) for key, value in result.plot_paths.items()},
         "eval_steps": metrics.get("eval_steps"),
         "seed": metrics.get("seed"),
+        "source_run_name": metrics.get("source_run_name"),
+        "source_run_kind": metrics.get("source_run_kind"),
+        "source_curriculum_kind": metrics.get("source_curriculum_kind"),
+        "source_stage": metrics.get("source_stage"),
+        "model_scope": metrics.get("model_scope"),
     }
 
 
@@ -987,6 +1015,13 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "suite_config_snapshot_path",
         "suite_config_snapshot_path_relative",
         "suite_config_sha256",
+        "evaluation_suite",
+        "evaluated_task_name",
+        "source_run_name",
+        "source_run_kind",
+        "source_curriculum_kind",
+        "source_stage",
+        "model_scope",
         "model_path",
         "task_config_path_used_for_evaluation",
         "task_shape_used_for_evaluation",

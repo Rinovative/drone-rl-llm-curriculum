@@ -370,6 +370,52 @@ def test_ppo_tracking_auto_run_name_uses_resolved_task_shape() -> None:
     assert ppo_tracking._run_name(settings) == "direct_ppo_line_seed0"  # noqa: SLF001
 
 
+def test_direct_ppo_wandb_naming_uses_run_name_group_and_identity_tags() -> None:
+    """Verify direct PPO W&B identity is derived from resolved run settings."""
+    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml")
+    assert settings.task_distribution_settings is not None
+
+    wandb_settings = ppo_tracking._wandb_settings(  # noqa: SLF001
+        settings,
+        "line",
+        settings.task_distribution_settings.to_metadata(),
+    )
+
+    assert wandb_settings.name == "direct_ppo_pid_dynprev_taskdist_medium_medium_seed0"
+    assert wandb_settings.group == "direct_ppo/pid_position/tracking_medium/pid_dynprev_taskdist_medium_medium/seed0"
+    assert "direct_ppo" in wandb_settings.tags
+    assert "training" in wandb_settings.tags
+    assert "curriculum" not in wandb_settings.tags
+    assert "action_interface:pid_position" in wandb_settings.tags
+    assert "observation:dynamics" in wandb_settings.tags
+    assert "observation:previous_action" in wandb_settings.tags
+    assert "task_distribution:tracking_medium" in wandb_settings.tags
+    assert "net:default" in wandb_settings.tags
+    assert "ppo_profile:default" in wandb_settings.tags
+    assert "seed:0" in wandb_settings.tags
+
+
+def test_run_name_override_becomes_default_wandb_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify config W&B names do not leak into curriculum stage run overrides."""
+    captured: dict[str, object] = {}
+
+    def fake_run(settings: ppo_tracking.PPOTrackingSmokeSettings) -> ppo_tracking.PPOTrackingSmokeResult:
+        captured["settings"] = settings
+        return ppo_tracking.PPOTrackingSmokeResult(model_path="model.zip", metrics_path="metrics.json", manifest_path="manifest.json", metrics={})
+
+    monkeypatch.setattr(ppo_tracking, "run_ppo_tracking_smoke", fake_run)
+
+    ppo_tracking.run_ppo_tracking_smoke_from_config(
+        config_path="configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml",
+        run_name="curriculum_llm_local_pid_dynprev_taskdist_medium_medium_stage01_line_seed0",
+    )
+
+    settings = captured["settings"]
+    assert isinstance(settings, ppo_tracking.PPOTrackingSmokeSettings)
+    assert settings.run_name == "curriculum_llm_local_pid_dynprev_taskdist_medium_medium_stage01_line_seed0"
+    assert settings.wandb_name == "curriculum_llm_local_pid_dynprev_taskdist_medium_medium_stage01_line_seed0"
+
+
 def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify run-name defaults place training artifacts under canonical storage/runs."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
@@ -394,7 +440,7 @@ def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, mo
     wandb_settings = ppo_tracking._wandb_settings(settings, "line")  # noqa: SLF001
     assert wandb_settings.dir == tmp_path / "runs" / "ppo_line_smoke" / "training" / "wandb"
     assert wandb_settings.name == "ppo_line_smoke"
-    assert wandb_settings.group == "ppo_tracking/line"
+    assert wandb_settings.group == "direct_ppo/pid_position/fixed/line/seed0"
 
 
 def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path) -> None:
@@ -432,6 +478,83 @@ def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path
     assert manifest["failure_primary_mode"] == "hover_lock"
     assert manifest["curriculum_readiness_level"] == "line_not_ready"
     assert manifest["ppo_config"] == settings.ppo_config.to_dict()
+
+
+def test_curriculum_stage_manifest_and_tags_include_identity_fields(tmp_path: Path) -> None:
+    """Verify curriculum stage manifests and W&B tags expose unambiguous identity."""
+    run_name = "curriculum_llm_unit_stage01_line_seed0"
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
+        run_name=run_name,
+        artifact_root=tmp_path / "stage01_line" / "training",
+        task_shape="line",
+        total_timesteps=32,
+        ppo_config=ppo_config.PPOConfig(n_steps=16, batch_size=8),
+        run_metadata={
+            "run_kind": "curriculum_stage",
+            "curriculum_kind": "llm",
+            "curriculum_run_name": "curriculum_llm_unit_seed0",
+            "curriculum_stage_index": 1,
+            "curriculum_stage_name": "line",
+            "curriculum_stage_count": 2,
+            "curriculum_stage_run_name": run_name,
+            "stage_budget_profile": "short",
+            "stage_total_timesteps": 32,
+            "cumulative_llm_budget_timesteps": 32,
+            "llm_budget_cap_timesteps": 64,
+            "proposal_fallback_used": False,
+            "task_distribution_reference": {"task_distribution_id": "tracking_medium"},
+            "resolved_task_shape": "line",
+            "llm_provider": "mock",
+        },
+        wandb_tags=("stage_index:1", "stage:line", "llm_provider:mock", "llm_budget_profile:short", "llm_fallback:false"),
+    )
+    metrics = {
+        "run_type": "training",
+        "run_kind": "curriculum_stage",
+        "curriculum_kind": "llm",
+        "training_run_name": run_name,
+        "model_path": str(tmp_path / "models" / f"{run_name}.zip"),
+        "metrics_path": str(tmp_path / "metrics" / f"{run_name}_metrics.json"),
+        "manifest_path": str(tmp_path / "manifest.json"),
+        "logs_dir": str(tmp_path / "logs"),
+        "diagnostics_dir": str(tmp_path / "diagnostics"),
+        "run_metadata": dict(settings.run_metadata),
+        **settings.run_metadata,
+    }
+
+    manifest = ppo_tracking._build_manifest(  # noqa: SLF001
+        settings=settings,
+        metrics=metrics,
+        task_source="config",
+        selected_task_index=0,
+        task={"shape": "line"},
+    )
+    wandb_settings = ppo_tracking._wandb_settings(settings, "line", {"task_distribution_name": "tracking_medium"})  # noqa: SLF001
+
+    assert manifest["run_kind"] == "curriculum_stage"
+    assert manifest["curriculum_kind"] == "llm"
+    assert manifest["curriculum_run_name"] == "curriculum_llm_unit_seed0"
+    assert manifest["curriculum_stage_index"] == 1
+    assert manifest["curriculum_stage_name"] == "line"
+    assert manifest["curriculum_stage_run_name"] == run_name
+    assert manifest["stage_budget_profile"] == "short"
+    assert manifest["llm_provider"] == "mock"
+    assert manifest["task_distribution_reference"] == {"task_distribution_id": "tracking_medium"}
+    assert wandb_settings.name == run_name
+    assert wandb_settings.group == "curriculum/llm/curriculum_llm_unit_seed0"
+    for tag in (
+        "curriculum",
+        "llm",
+        "training",
+        "stage_index:1",
+        "stage:line",
+        "action_interface:pid_position",
+        "task_distribution:tracking_medium",
+        "llm_provider:mock",
+        "llm_budget_profile:short",
+        "llm_fallback:false",
+    ):
+        assert tag in wandb_settings.tags
 
 
 def test_ppo_tracking_diagnostic_artifact_paths_include_feedback_files(tmp_path: Path) -> None:

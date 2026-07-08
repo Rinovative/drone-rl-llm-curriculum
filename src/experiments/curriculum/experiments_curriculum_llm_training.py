@@ -786,10 +786,17 @@ def _run_or_dry_stage(
         wandb_mode=settings.wandb_mode,
         normalize_actions=settings.normalize_actions,
         task_distribution_config_path=stage.task_distribution_config_path,
-        wandb_group=_curriculum_wandb_group(settings.curriculum_name),
-        wandb_tags=_stage_wandb_tags(stage),
+        wandb_group=_curriculum_wandb_group(curriculum_run_name),
+        wandb_tags=_stage_wandb_tags(settings, stage_index, stage),
         initial_model_path=previous_model_path,
-        run_metadata=_stage_run_metadata(stage),
+        run_metadata=_stage_training_run_metadata(
+            settings=settings,
+            stage=stage,
+            stage_index=stage_index,
+            run_name=run_name,
+            curriculum_run_name=curriculum_run_name,
+            previous_model_path=previous_model_path,
+        ),
     )
     entry = _stage_summary_entry(
         settings=settings,
@@ -829,7 +836,9 @@ def _stage_summary_entry(
         "notes": stage.notes,
         "task_distribution_config_path": None if stage.task_distribution_config_path is None else str(stage.task_distribution_config_path),
         "task_distribution_id": stage.task_distribution_id,
+        "curriculum_run_name": _curriculum_artifact_run_name(settings.curriculum_name, settings.seed),
         "run_name": run_name,
+        "curriculum_stage_run_name": run_name,
         "stage_dir": str(training_dir.parent),
         "stage_dir_relative": utils.artifacts.path_relative_to(training_dir.parent, run_root),
         "training_dir": str(training_dir),
@@ -885,7 +894,9 @@ def _dry_stage_summary_entry(
         "notes": stage.notes,
         "task_distribution_config_path": None if stage.task_distribution_config_path is None else str(stage.task_distribution_config_path),
         "task_distribution_id": stage.task_distribution_id,
+        "curriculum_run_name": _curriculum_artifact_run_name(settings.curriculum_name, settings.seed),
         "run_name": run_name,
+        "curriculum_stage_run_name": run_name,
         "stage_dir": str(training_dir.parent),
         "stage_dir_relative": utils.artifacts.path_relative_to(training_dir.parent, run_root),
         "training_dir": str(training_dir),
@@ -954,12 +965,20 @@ def _build_curriculum_summary(
         "base_training_config": str(settings.base_training_config),
         "seed": settings.seed,
         "stage_count": len(stage_entries),
+        "stage_run_names": [str(stage["run_name"]) for stage in stage_entries],
         "max_stages": settings.max_stages,
         "llm_stage_budget": _llm_stage_budget_summary(settings.llm_stage_budget),
         "proposal_fallback": _proposal_fallback_summary(settings.proposal_fallback),
         "proposal_fallback_used": any(bool(stage.get("proposal_fallback_used")) for stage in stage_entries),
+        "fallback_count": sum(1 for stage in stage_entries if bool(stage.get("proposal_fallback_used"))),
+        "repair_count": int(proposal_stats.get("repair_attempts", 0)),
+        "repair_success_count": int(proposal_stats.get("repair_successes", 0)),
+        "budget_profile_counts": _budget_profile_counts(stage_entries),
         "llm_budget_cap_timesteps": settings.llm_stage_budget.total_budget_cap_timesteps,
         "cumulative_llm_budget_timesteps": final_stage.get("cumulative_llm_budget_timesteps") if final_stage is not None else 0,
+        "cumulative_budget_timesteps": final_stage.get("cumulative_llm_budget_timesteps") if final_stage is not None else 0,
+        "total_configured_timesteps": sum(int(stage.get("stage_total_timesteps", stage.get("total_timesteps", 0))) for stage in stage_entries),
+        "total_actual_timesteps": sum(int(stage.get("stage_total_timesteps", stage.get("total_timesteps", 0))) for stage in stage_entries),
         "selected_stage_budget_profiles": [stage.get("selected_stage_budget_profile") for stage in stage_entries],
         "model_transfer_enabled": any(bool(stage.get("model_transfer_enabled")) for stage in stage_entries),
         "action_interface": final_stage.get("action_interface") if final_stage is not None else None,
@@ -1567,12 +1586,58 @@ def _stage_proposal_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
     }
 
 
-def _stage_wandb_tags(stage: LLMCurriculumStage) -> tuple[str, ...]:
-    """Return W&B tags for one LLM curriculum stage."""
-    tags = ("curriculum", LLM_CURRICULUM_KIND, f"stage:{stage.stage_name}", f"task:{stage.task_shape}")
+def _stage_wandb_tags(settings: LLMCurriculumSettings, stage_index: int, stage: LLMCurriculumStage) -> tuple[str, ...]:
+    """Return caller-owned W&B tags for one LLM curriculum stage."""
+    tags = (
+        f"stage_index:{stage_index}",
+        f"stage:{stage.stage_name}",
+        f"task:{stage.task_shape}",
+        f"llm_provider:{settings.llm_provider}",
+        f"llm_fallback:{str(stage.proposal_fallback_used).lower()}",
+    )
     if stage.selected_stage_budget_profile is None:
         return tags
-    return (*tags, f"budget:{stage.selected_stage_budget_profile}")
+    return (*tags, f"llm_budget_profile:{stage.selected_stage_budget_profile}")
+
+
+def _stage_training_run_metadata(
+    *,
+    settings: LLMCurriculumSettings,
+    stage: LLMCurriculumStage,
+    stage_index: int,
+    run_name: str,
+    curriculum_run_name: str,
+    previous_model_path: str | None,
+) -> dict[str, Any]:
+    """Return identity metadata copied into stage metrics, manifests, and W&B config."""
+    return {
+        "run_type": "training",
+        "run_kind": "curriculum_stage",
+        "curriculum_kind": LLM_CURRICULUM_KIND,
+        "curriculum_run_name": curriculum_run_name,
+        "curriculum_stage_index": stage_index,
+        "curriculum_stage_name": stage.stage_name,
+        "curriculum_stage_count": settings.max_stages,
+        "curriculum_stage_run_name": run_name,
+        "source_config_path": str(settings.base_training_config),
+        "llm_provider": settings.llm_provider,
+        "llm_model": settings.llm_model,
+        "model_transfer_enabled": previous_model_path is not None,
+        "previous_stage_model_path": previous_model_path,
+        **_stage_run_metadata(stage),
+    }
+
+
+def _budget_profile_counts(stage_entries: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Count selected LLM budget profiles in accepted stage entries."""
+    counts: dict[str, int] = {}
+    for stage in stage_entries:
+        profile = stage.get("selected_stage_budget_profile")
+        if profile is None:
+            continue
+        profile_name = str(profile)
+        counts[profile_name] = counts.get(profile_name, 0) + 1
+    return counts
 
 
 def _proposal_fallback_summary(settings: LLMProposalFallbackSettings) -> dict[str, Any]:
@@ -1785,9 +1850,9 @@ def _curriculum_run_topic(curriculum_name: str, curriculum_kind: str) -> str:
     return curriculum_name
 
 
-def _curriculum_wandb_group(curriculum_name: str) -> str:
-    """Return the W&B group used for all stages in one curriculum."""
-    return f"curriculum/{curriculum_name}"
+def _curriculum_wandb_group(curriculum_run_name: str) -> str:
+    """Return the W&B group used for all stages in one LLM curriculum."""
+    return f"curriculum/llm/{curriculum_run_name}"
 
 
 def _to_yaml(payload: Mapping[str, Any]) -> str:

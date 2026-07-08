@@ -21,6 +21,7 @@ CLI_MAX_STAGES = 2
 CLI_MAX_REPAIR_ATTEMPTS = 1
 EXPECTED_PID_ACTION_DIM = 3
 EXPECTED_BASE_OBSERVATION_DIM = 10
+EXPECTED_TRAINING_TOTAL_TIMESTEPS = 16
 EXPECTED_LOCAL_LLM_MAX_STAGES = 10
 EXPECTED_LLM_BUDGET_CAP = 350000
 EXPECTED_LLM_BUDGET_PROFILES = {"short": 20000, "normal": 30000, "recovery": 40000, "extend": 50000}
@@ -171,10 +172,33 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert calls[1]["initial_model_path"] == summary["stages"][0]["model_path"]
     assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
     assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
-    assert calls[0]["wandb_group"] == "curriculum/curriculum_llm_unit"
+    assert calls[0]["wandb_group"] == "curriculum/llm/curriculum_llm_unit_seed7"
+    assert calls[0]["wandb_tags"] == (
+        "stage_index:1",
+        "stage:hover_stabilization",
+        "task:hover_stabilization",
+        "llm_provider:mock",
+        "llm_fallback:false",
+        "llm_budget_profile:normal",
+    )
+    assert calls[0]["run_metadata"]["run_kind"] == "curriculum_stage"
+    assert calls[0]["run_metadata"]["curriculum_kind"] == "llm"
+    assert calls[0]["run_metadata"]["curriculum_run_name"] == "curriculum_llm_unit_seed7"
+    assert calls[0]["run_metadata"]["curriculum_stage_index"] == 1
+    assert calls[0]["run_metadata"]["curriculum_stage_name"] == "hover_stabilization"
+    assert calls[0]["run_metadata"]["curriculum_stage_run_name"] == "curriculum_llm_unit_stage01_hover_stabilization_seed7"
+    assert calls[0]["run_metadata"]["llm_provider"] == "mock"
+    assert calls[0]["run_metadata"]["stage_budget_profile"] == "normal"
     assert calls[0]["config_path"] == Path("configs/training/ppo_tracking_smoke.yaml")
     assert "action_interface" not in calls[0]
     assert summary["model_transfer_enabled"] is True
+    assert summary["stage_run_names"] == [
+        "curriculum_llm_unit_stage01_hover_stabilization_seed7",
+        "curriculum_llm_unit_stage02_nearby_target_hover_seed7",
+    ]
+    assert summary["total_configured_timesteps"] == EXPECTED_TRAINING_TOTAL_TIMESTEPS
+    assert summary["total_actual_timesteps"] == EXPECTED_TRAINING_TOTAL_TIMESTEPS
+    assert summary["budget_profile_counts"] == {"normal": 2}
     assert summary["action_interface"] == "pid_position"
     assert summary["ppo_action_dim"] == EXPECTED_PID_ACTION_DIM
     assert summary["real_action_type"] == "pid_target_position"
@@ -354,6 +378,9 @@ def test_llm_taskdist_fallback_logs_and_resolves_concrete_task(tmp_path: Path, m
     assert summary["proposal_stats"]["total_proposals"] == FALLBACK_FAILED_PROPOSAL_COUNT
     assert summary["proposal_stats"]["invalid_proposals"] == FALLBACK_FAILED_PROPOSAL_COUNT
     assert summary["proposal_stats"]["fallback_proposals"] == 1
+    assert summary["fallback_count"] == 1
+    assert summary["repair_count"] == FALLBACK_FAILED_PROPOSAL_COUNT - 1
+    assert summary["budget_profile_counts"] == {"short": 1}
     assert stage["proposal_fallback_used"] is True
     assert stage["proposal_type"] == "task_distribution"
     assert stage["selected_stage_budget_profile"] == "short"
