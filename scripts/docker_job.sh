@@ -4,14 +4,24 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STORAGE_DIR="${PROJECT_DIR}/../storage"
 
+usage() {
+  echo "Usage: scripts/docker_job.sh <repo-script-path> [args...]" >&2
+  echo "Example: scripts/docker_job.sh src/experiments/cli/experiments_cli_train_tracking.py --config configs/training/ppo_tracking.yaml" >&2
+}
+
+if [ "$#" -lt 1 ]; then
+  usage
+  exit 2
+fi
+
 mkdir -p "${STORAGE_DIR}"
 STORAGE_DIR="$(cd "${STORAGE_DIR}" && pwd)"
 
 LOG_DIR="${STORAGE_DIR}/docker_logs"
 mkdir -p "${LOG_DIR}"
 
-SCRIPT_PATH="${1:-src/experiments/cli_train_tracking.py}"
-shift || true
+SCRIPT_PATH="$1"
+shift
 
 SCRIPT_HOST_PATH="${PROJECT_DIR}/${SCRIPT_PATH}"
 if [ ! -f "${SCRIPT_HOST_PATH}" ]; then

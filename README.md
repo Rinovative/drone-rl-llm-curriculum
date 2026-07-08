@@ -217,11 +217,17 @@ Drone_RL_LLM_Curriculum.ipynb
 │   ├── validation/                     # Feasibility checks for generated tasks
 │   ├── evaluation/                     # Metrics, plots, result aggregation
 │   ├── experiments/                    # Experiment orchestration and entry points
+│   │   ├── cli/                        # python -m experiment CLIs
+│   │   ├── training/                   # PPO config, tracking training, training smoke
+│   │   ├── evaluation/                 # Policy evaluation orchestration
+│   │   ├── curriculum/                 # Manual curriculum training/evaluation helpers
+│   │   └── rendering/                  # Policy, scenario, and render smoke workflows
 │   └── utils/                          # Paths, seeds, logging, serialization
 │
 ├── tests/                              # Unit and smoke tests
 │
 ├── storage -> ../storage               # Optional symlink to external storage
+│   └── runs/<run_id>/                  # Canonical generated run container
 │
 ├── AGENTS.md                           # Instructions for coding agents
 ├── PROJECT_BRIEF.md                    # Detailed project brief
@@ -233,6 +239,8 @@ Drone_RL_LLM_Curriculum.ipynb
 ```
 
 </details>
+
+Generated artifacts use a run-scoped layout under `storage/runs/<self_describing_run_id>/`. Direct PPO training writes to `training/`, evaluations write to `evaluations/<evaluation_name>/`, and curriculum runs write stage-specific outputs under `stages/stageNN_<stage_name>/`.
 
 ---
 

@@ -91,6 +91,36 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert utils.wandb.default_wandb_dir("direct_ppo_hover_seed0") == tmp_path / "runs" / "direct_ppo_hover_seed0" / "training" / "wandb"
 
 
+@pytest.mark.parametrize(
+    ("config_text", "match"),
+    [
+        (
+            "task_shape: hover\ntotal_timesteps: 12\n",
+            "ppo config section is required",
+        ),
+        (
+            "task_shape: hover\ntotal_timesteps: 12\nlearning_rate: 0.0003\nn_steps: 12\nbatch_size: 6\n",
+            "top-level PPO keys are not supported",
+        ),
+        (
+            "task_shape: hover\ntotal_timesteps: 12\nlearning_rate: 0.0003\nppo:\n  n_steps: 12\n  batch_size: 6\n",
+            "top-level PPO keys are not supported",
+        ),
+    ],
+)
+def test_load_ppo_tracking_settings_requires_nested_ppo_config(
+    tmp_path: Path,
+    config_text: str,
+    match: str,
+) -> None:
+    """Verify YAML training settings reject missing, flat, and mixed PPO config forms."""
+    config_path = tmp_path / "ppo_tracking.yaml"
+    config_path.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=match):
+        ppo_tracking.load_ppo_tracking_settings(config_path)
+
+
 def test_ppo_tracking_settings_reject_invalid_timesteps() -> None:
     """Verify invalid PPO timestep budgets are rejected."""
     with pytest.raises(ValueError, match="total_timesteps must be positive"):

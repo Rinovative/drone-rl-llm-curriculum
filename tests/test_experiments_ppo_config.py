@@ -8,9 +8,6 @@ import pytest
 
 from src.experiments.training import experiments_training_ppo_config as ppo_config
 
-LEGACY_LEARNING_RATE = 0.0005
-LEGACY_N_STEPS = 16
-LEGACY_BATCH_SIZE = 8
 CONFIGURED_N_STEPS = 12
 CONFIGURED_BATCH_SIZE = 6
 
@@ -39,20 +36,18 @@ def test_ppo_config_loads_nested_config_values() -> None:
     assert config.to_sb3_kwargs() == VALID_PPO_CONFIG
 
 
-def test_ppo_config_preserves_legacy_flat_keys() -> None:
-    """Verify existing flat PPO keys remain a low-risk compatibility path."""
-    config = ppo_config.load_ppo_config_from_mapping(
-        {
-            "learning_rate": LEGACY_LEARNING_RATE,
-            "n_steps": LEGACY_N_STEPS,
-            "batch_size": LEGACY_BATCH_SIZE,
-        }
-    )
-
-    assert config.learning_rate == LEGACY_LEARNING_RATE
-    assert config.n_steps == LEGACY_N_STEPS
-    assert config.batch_size == LEGACY_BATCH_SIZE
-    assert config.policy == "MlpPolicy"
+@pytest.mark.parametrize(
+    ("config", "match"),
+    [
+        ({}, "ppo config section is required"),
+        ({"learning_rate": 0.0005, "n_steps": 16, "batch_size": 8}, "top-level PPO keys are not supported"),
+        ({"ppo": VALID_PPO_CONFIG, "learning_rate": 0.0005}, "top-level PPO keys are not supported"),
+    ],
+)
+def test_ppo_config_rejects_missing_or_flat_keys(config: dict[str, object], match: str) -> None:
+    """Verify PPO settings must be provided only through the nested ppo section."""
+    with pytest.raises(ValueError, match=match):
+        ppo_config.load_ppo_config_from_mapping(config)
 
 
 @pytest.mark.parametrize(

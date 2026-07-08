@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -65,6 +66,14 @@ def test_experiments_package_exposes_only_static_subpackages() -> None:
     assert not hasattr(experiments, "ppo_tracking")
     assert not hasattr(experiments, "policy_render")
     assert not hasattr(experiments, "curriculum_training")
+
+
+def test_docker_job_usage_points_at_canonical_train_tracking_cli() -> None:
+    """Verify the Docker job helper no longer advertises the removed root CLI path."""
+    script = Path("scripts/docker_job.sh").read_text(encoding="utf-8")
+
+    assert "src/experiments/cli/experiments_cli_train_tracking.py" in script
+    assert "src/experiments/cli_train_tracking.py" not in script
 
 
 @pytest.mark.parametrize(("module_path", "symbol"), CANONICAL_MODULE_SYMBOLS)

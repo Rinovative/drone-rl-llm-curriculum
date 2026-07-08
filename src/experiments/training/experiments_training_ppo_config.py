@@ -6,13 +6,12 @@ Validate Stable-Baselines3 PPO hyperparameters loaded from experiment configs.
 
 Responsibilities:
   - Represent the explicit PPO hyperparameter contract for tracking training
-  - Load nested or legacy flat PPO settings from resolved experiment mappings
+  - Load nested PPO settings from resolved experiment mappings
   - Convert validated settings into Stable-Baselines3 PPO keyword arguments
 
 Design principles:
   - Keep validation deterministic and independent of Stable-Baselines3 imports
   - Make tiny smoke-training rollout sizes explicit in config rather than hidden
-  - Preserve a low-risk compatibility path for existing flat config keys
 
 Boundaries:
   - Training modules own task selection, environment construction, and artifacts
@@ -181,8 +180,7 @@ def load_ppo_config_from_mapping(config: Mapping[str, Any]) -> PPOConfig:
     Parameters
     ----------
     config
-        Loaded experiment config. New configs should use a nested ``ppo`` block.
-        Legacy flat PPO keys are still accepted when present.
+        Loaded experiment config. PPO hyperparameters must live under a nested ``ppo`` block.
 
     Returns
     -------
@@ -192,18 +190,21 @@ def load_ppo_config_from_mapping(config: Mapping[str, Any]) -> PPOConfig:
     Raises
     ------
     ValueError
-        If ``ppo`` is present but is not a mapping, or if PPO values are invalid.
+        If ``ppo`` is missing, if top-level PPO keys are present, or if PPO values are invalid.
 
     """
+    flat_keys = sorted(set(config) & set(PPO_CONFIG_KEYS))
+    if flat_keys:
+        message = f"top-level PPO keys are not supported; move under ppo: {', '.join(flat_keys)}"
+        raise ValueError(message)
     nested_config = config.get("ppo")
-    flat_values = {key: config[key] for key in PPO_CONFIG_KEYS if key in config}
     if nested_config is None:
-        return PPOConfig.from_mapping(flat_values)
+        message = "ppo config section is required"
+        raise ValueError(message)
     if not isinstance(nested_config, Mapping):
         message = "ppo config section must be a mapping"
         raise ValueError(message)  # noqa: TRY004 - public config errors are reported as ValueError.
-    merged_values = {**flat_values, **dict(nested_config)}
-    return PPOConfig.from_mapping(merged_values)
+    return PPOConfig.from_mapping(dict(nested_config))
 
 
 def _required_text(value: Any, name: str) -> str:
