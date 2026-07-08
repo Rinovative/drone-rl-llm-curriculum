@@ -10,6 +10,11 @@ from src.experiments.training import experiments_training_ppo_config as ppo_conf
 
 CONFIGURED_N_STEPS = 12
 CONFIGURED_BATCH_SIZE = 6
+VECTOR_TEST_N_STEPS = 8
+VECTOR_TEST_NUM_ENVS = 2
+VECTOR_TEST_BATCH_SIZE = 16
+VECTOR_TEST_OVERSIZED_BATCH_SIZE = 17
+VECTOR_TEST_EFFECTIVE_ROLLOUT_STEPS = 16
 
 VALID_PPO_CONFIG = {
     "policy": "MlpPolicy",
@@ -60,7 +65,6 @@ def test_ppo_config_rejects_missing_or_flat_keys(config: dict[str, object], matc
         ({"gae_lambda": 0.0}, "ppo.gae_lambda"),
         ({"n_steps": 0}, "ppo.n_steps"),
         ({"batch_size": 0}, "ppo.batch_size"),
-        ({"n_steps": 8, "batch_size": 16}, "ppo.batch_size"),
         ({"n_epochs": 0}, "ppo.n_epochs"),
         ({"clip_range": 0.0}, "ppo.clip_range"),
         ({"ent_coef": -0.1}, "ppo.ent_coef"),
@@ -96,3 +100,19 @@ def test_ppo_config_validates_total_timesteps_against_configured_rollout() -> No
     config.validate_total_timesteps(CONFIGURED_N_STEPS)
     with pytest.raises(ValueError, match=r"total_timesteps must be greater than or equal to ppo\.n_steps"):
         config.validate_total_timesteps(CONFIGURED_N_STEPS - 1)
+
+
+def test_ppo_config_accepts_vectorized_rollout_batch_size() -> None:
+    """Verify batch_size may exceed per-env n_steps when num_envs supplies enough rollout samples."""
+    config = ppo_config.PPOConfig(n_steps=VECTOR_TEST_N_STEPS, batch_size=VECTOR_TEST_BATCH_SIZE)
+
+    assert config.effective_rollout_steps(num_envs=VECTOR_TEST_NUM_ENVS) == VECTOR_TEST_EFFECTIVE_ROLLOUT_STEPS
+    config.validate_rollout_consistency(num_envs=VECTOR_TEST_NUM_ENVS)
+
+
+def test_ppo_config_rejects_batch_size_larger_than_effective_rollout() -> None:
+    """Verify batch_size cannot exceed n_steps multiplied by num_envs."""
+    config = ppo_config.PPOConfig(n_steps=VECTOR_TEST_N_STEPS, batch_size=VECTOR_TEST_OVERSIZED_BATCH_SIZE)
+
+    with pytest.raises(ValueError, match=r"ppo\.batch_size must be less than or equal to ppo\.n_steps \* num_envs"):
+        config.validate_rollout_consistency(num_envs=VECTOR_TEST_NUM_ENVS)

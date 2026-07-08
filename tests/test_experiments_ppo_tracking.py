@@ -23,11 +23,20 @@ from src.experiments.training import experiments_training_ppo_tracking as ppo_tr
 EXPECTED_SMOKE_TASK_INDEX = 0
 LINE_TASK_INDEX = 0
 EXPECTED_SMOKE_TIMESTEPS = 4096
+EXPECTED_SMOKE_NUM_ENVS = 1
 EXPECTED_SMOKE_EVAL_STEPS = 120
 DIAGNOSTIC_STEPS = 6
 CURRICULUM_DIAGNOSTIC_STEPS = 120
 CONFIGURED_TEST_PPO_N_STEPS = 12
 CONFIGURED_TEST_PPO_BATCH_SIZE = 6
+CONFIGURED_TEST_NUM_ENVS = 2
+VECTOR_TEST_N_STEPS = 8
+VECTOR_TEST_BATCH_SIZE = 16
+VECTOR_TEST_OVERSIZED_BATCH_SIZE = 17
+VECTOR_TEST_EFFECTIVE_ROLLOUT_STEPS = 16
+SUBPROC_TEST_NUM_ENVS = 3
+SUBPROC_TEST_SEED = 11
+CLI_NUM_ENVS_OVERRIDE = 3
 
 EXPECTED_PPO_CONFIG = {
     "policy": "MlpPolicy",
@@ -73,6 +82,7 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.task_shape is None
     assert settings.run_name == "direct_ppo_line_smoke_seed0"
     assert settings.total_timesteps == EXPECTED_SMOKE_TIMESTEPS
+    assert settings.num_envs == EXPECTED_SMOKE_NUM_ENVS
     assert settings.ppo_config.to_dict() == EXPECTED_PPO_CONFIG
     assert settings.eval_steps == EXPECTED_SMOKE_EVAL_STEPS
     assert settings.seed == 0
@@ -125,6 +135,34 @@ def test_ppo_tracking_settings_reject_invalid_timesteps() -> None:
     """Verify invalid PPO timestep budgets are rejected."""
     with pytest.raises(ValueError, match="total_timesteps must be positive"):
         ppo_tracking.PPOTrackingSmokeSettings(total_timesteps=0)
+
+
+@pytest.mark.parametrize("num_envs", [0, -1, 1.5, True])
+def test_ppo_tracking_settings_reject_invalid_num_envs(num_envs: object) -> None:
+    """Verify parallel training environment counts must be positive integers."""
+    with pytest.raises(ValueError, match="num_envs must be a positive integer"):
+        ppo_tracking.PPOTrackingSmokeSettings(num_envs=num_envs)  # type: ignore[arg-type]
+
+
+def test_ppo_tracking_settings_accept_vectorized_rollout_batch_size() -> None:
+    """Verify settings validate batch size against n_steps multiplied by num_envs."""
+    config = ppo_config.PPOConfig(n_steps=VECTOR_TEST_N_STEPS, batch_size=VECTOR_TEST_BATCH_SIZE)
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
+        total_timesteps=8,
+        num_envs=CONFIGURED_TEST_NUM_ENVS,
+        ppo_config=config,
+    )
+
+    assert settings.num_envs == CONFIGURED_TEST_NUM_ENVS
+    assert settings.ppo_config.effective_rollout_steps(settings.num_envs) == VECTOR_TEST_EFFECTIVE_ROLLOUT_STEPS
+
+
+def test_ppo_tracking_settings_reject_batch_size_larger_than_effective_rollout() -> None:
+    """Verify settings reject PPO minibatches larger than the vectorized rollout."""
+    config = ppo_config.PPOConfig(n_steps=VECTOR_TEST_N_STEPS, batch_size=VECTOR_TEST_OVERSIZED_BATCH_SIZE)
+
+    with pytest.raises(ValueError, match=r"ppo\.batch_size must be less than or equal to ppo\.n_steps \* num_envs"):
+        ppo_tracking.PPOTrackingSmokeSettings(total_timesteps=8, num_envs=CONFIGURED_TEST_NUM_ENVS, ppo_config=config)
 
 
 def test_ppo_tracking_settings_reject_invalid_eval_steps() -> None:
@@ -349,6 +387,110 @@ def test_ppo_training_env_uses_normalized_action_space_when_enabled() -> None:
         training_env.close()
 
 
+def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify num_envs=1 uses the same vectorized construction path with DummyVecEnv."""
+
+    class FakeDummyVecEnv:
+        """Record DummyVecEnv construction without building child envs eagerly."""
+
+        def __init__(self, env_fns: list[object]) -> None:
+            """Store lazy env factories."""
+            self.env_fns = list(env_fns)
+            self.seed_calls: list[int] = []
+
+        def seed(self, seed: int) -> None:
+            """Record the base vector seed."""
+            self.seed_calls.append(seed)
+
+    class FakeSubprocVecEnv:
+        """Unused stand-in for the subprocess vector env."""
+
+    factory_seeds: list[int] = []
+    constructed_seeds: list[int] = []
+
+    def fake_factory(task: dict[str, Any], normalize_actions: bool, seed: int) -> object:
+        """Return a lazy factory while recording derived seeds."""
+        assert task == {"shape": "line"}
+        assert normalize_actions is True
+        factory_seeds.append(seed)
+
+        def make_env() -> object:
+            constructed_seeds.append(seed)
+            return object()
+
+        return make_env
+
+    monkeypatch.setattr(ppo_tracking, "_vec_env_classes", lambda: (FakeDummyVecEnv, FakeSubprocVecEnv))
+    monkeypatch.setattr(ppo_tracking, "_make_ppo_training_env_factory", fake_factory)
+
+    vec_env = ppo_tracking._make_ppo_training_vec_env(  # noqa: SLF001
+        task={"shape": "line"},
+        num_envs=1,
+        normalize_actions=True,
+        seed=7,
+    )
+
+    assert isinstance(vec_env, FakeDummyVecEnv)
+    assert ppo_tracking._vec_env_type(1) == "DummyVecEnv"  # noqa: SLF001
+    assert factory_seeds == [7]
+    assert constructed_seeds == []
+    assert len(vec_env.env_fns) == 1
+    assert vec_env.seed_calls == [7]
+
+
+def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify num_envs>1 uses SubprocVecEnv with lazy per-rank env factories."""
+
+    class FakeDummyVecEnv:
+        """Unused stand-in for the single-env vector env."""
+
+    class FakeSubprocVecEnv:
+        """Record SubprocVecEnv construction without calling env factories."""
+
+        def __init__(self, env_fns: list[object], start_method: str) -> None:
+            """Store factories and multiprocessing start method."""
+            self.env_fns = list(env_fns)
+            self.start_method = start_method
+            self.seed_calls: list[int] = []
+
+        def seed(self, seed: int) -> None:
+            """Record the base vector seed."""
+            self.seed_calls.append(seed)
+
+    factory_seeds: list[int] = []
+    constructed_seeds: list[int] = []
+
+    def fake_factory(task: dict[str, Any], normalize_actions: bool, seed: int) -> object:
+        """Return a lazy factory while recording derived seeds."""
+        assert task == {"shape": "line"}
+        assert normalize_actions is False
+        factory_seeds.append(seed)
+
+        def make_env() -> object:
+            constructed_seeds.append(seed)
+            return object()
+
+        return make_env
+
+    monkeypatch.setattr(ppo_tracking, "_vec_env_classes", lambda: (FakeDummyVecEnv, FakeSubprocVecEnv))
+    monkeypatch.setattr(ppo_tracking, "_make_ppo_training_env_factory", fake_factory)
+
+    vec_env = ppo_tracking._make_ppo_training_vec_env(  # noqa: SLF001
+        task={"shape": "line"},
+        num_envs=SUBPROC_TEST_NUM_ENVS,
+        normalize_actions=False,
+        seed=SUBPROC_TEST_SEED,
+    )
+
+    assert isinstance(vec_env, FakeSubprocVecEnv)
+    assert ppo_tracking._vec_env_type(3) == "SubprocVecEnv"  # noqa: SLF001
+    assert vec_env.start_method == "spawn"
+    assert factory_seeds == [11, 12, 13]
+    assert constructed_seeds == []
+    assert len(vec_env.env_fns) == SUBPROC_TEST_NUM_ENVS
+    assert vec_env.seed_calls == [11]
+
+
 def test_task_with_minimum_reference_samples_extends_hold_move_task_without_raising() -> None:
     """Verify start-hold curriculum diagnostics extend duration instead of failing."""
     task = _manual_curriculum_task("start_hold_then_short_line")
@@ -467,17 +609,22 @@ def test_evaluate_model_metrics_include_movement_bounds() -> None:
     assert "final_abs_z_error" in metrics
 
 
-def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
+def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify PPO, metrics, manifests, and W&B all receive resolved PPO config."""
 
     class FakeTrainingEnv:
-        """Minimal environment stand-in for the PPO training path."""
+        """Minimal environment stand-in for the PPO training and eval paths."""
+
+        def __init__(self) -> None:
+            """Track whether the fake environment was closed."""
+            self.closed = False
 
         def close(self) -> None:
             """Close the fake environment."""
+            self.closed = True
 
     class FakePPO:
         """Tiny SB3 PPO stand-in that records constructor kwargs."""
@@ -516,6 +663,9 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
         target_kl=0.07,
     )
     captured_wandb_config: dict[str, Any] = {}
+    captured_eval: dict[str, Any] = {}
+    fake_training_vec_env = FakeTrainingEnv()
+    fake_eval_env = FakeTrainingEnv()
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     fake_sb3 = types.ModuleType("stable_baselines3")
     fake_sb3.PPO = FakePPO
@@ -537,6 +687,16 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
         lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
+        ppo_tracking,
+        "_make_ppo_training_vec_env",
+        lambda **_kwargs: fake_training_vec_env,
+    )
+    monkeypatch.setattr(
+        ppo_tracking,
+        "_make_seeded_ppo_tracking_env",
+        lambda **_kwargs: fake_eval_env,
+    )
+    monkeypatch.setattr(
         ppo_tracking.envs.tracking_env,
         "make_trajectory_tracking_env",
         lambda *_args, **_kwargs: FakeTrainingEnv(),
@@ -547,10 +707,16 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
         lambda _env: {"actions_normalized": False},
     )
     monkeypatch.setattr(ppo_tracking, "_movement_warnings", lambda **_kwargs: ())
+
+    def fake_collect_policy_evaluation_diagnostics(**kwargs: Any) -> object:
+        """Capture the eval env used for deterministic diagnostics."""
+        captured_eval.update(kwargs)
+        return types.SimpleNamespace(metrics={"mean_position_error_m": 0.1})
+
     monkeypatch.setattr(
         ppo_tracking.evaluation.diagnostics,
         "collect_policy_evaluation_diagnostics",
-        lambda **_kwargs: types.SimpleNamespace(metrics={"mean_position_error_m": 0.1}),
+        fake_collect_policy_evaluation_diagnostics,
     )
     monkeypatch.setattr(
         ppo_tracking.evaluation.diagnostics,
@@ -567,6 +733,7 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
     settings = ppo_tracking.PPOTrackingSmokeSettings(
         run_name="configured_ppo",
         total_timesteps=20,
+        num_envs=CONFIGURED_TEST_NUM_ENVS,
         ppo_config=configured_ppo,
         eval_steps=4,
         check_env=False,
@@ -586,6 +753,13 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
     assert constructor_kwargs["n_steps"] == CONFIGURED_TEST_PPO_N_STEPS
     assert constructor_kwargs["batch_size"] == CONFIGURED_TEST_PPO_BATCH_SIZE
     assert result.metrics["ppo_config"] == configured_ppo.to_dict()
+    assert result.metrics["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert result.metrics["vec_env_type"] == "SubprocVecEnv"
+    assert result.metrics["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
+    assert captured_eval["tracking_env"] is fake_eval_env
+    assert captured_eval["tracking_env"] is not fake_training_vec_env
+    assert fake_training_vec_env.closed is True
+    assert fake_eval_env.closed is True
     assert result.metrics["run_kind"] == "direct_ppo"
     assert result.metrics["curriculum_kind"] is None
     assert "artifact_layout" not in result.metrics
@@ -594,9 +768,15 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
     assert Path(result.manifest_path) == tmp_path / "runs" / "configured_ppo" / "training" / "manifest.json"
     assert Path(result.metrics["run_manifest_path"]) == tmp_path / "runs" / "configured_ppo" / "run_manifest.json"
     assert captured_wandb_config["ppo"] == configured_ppo.to_dict()
+    assert captured_wandb_config["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert captured_wandb_config["vec_env_type"] == "SubprocVecEnv"
+    assert captured_wandb_config["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert "artifact_layout" not in captured_wandb_config
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert manifest["ppo_config"] == configured_ppo.to_dict()
+    assert manifest["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert manifest["vec_env_type"] == "SubprocVecEnv"
+    assert manifest["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert manifest["run_kind"] == "direct_ppo"
     assert manifest["curriculum_kind"] is None
     assert "artifact_layout" not in manifest
@@ -620,6 +800,12 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
     run_manifest = json.loads(Path(result.metrics["run_manifest_path"]).read_text(encoding="utf-8"))
     assert run_manifest["run_kind"] == "direct_ppo"
     assert run_manifest["curriculum_kind"] is None
+    assert run_manifest["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert run_manifest["vec_env_type"] == "SubprocVecEnv"
+    assert run_manifest["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
+    assert run_manifest["config"]["num_envs"] == CONFIGURED_TEST_NUM_ENVS
+    assert run_manifest["config"]["vec_env_type"] == "SubprocVecEnv"
+    assert run_manifest["config"]["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert "artifact_layout" not in run_manifest
     assert run_manifest["training"]["manifest_path"] == result.manifest_path
     assert run_manifest["training"]["manifest_path_relative"] == "training/manifest.json"
@@ -637,10 +823,33 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
 def test_cli_train_tracking_parser_accepts_task_shape_and_run_name() -> None:
     """Verify the training parser exposes task-specific run controls."""
     parser = cli_train_tracking.build_parser()
-    args = parser.parse_args(["--task-shape", "line", "--run-name", "ppo_line_smoke"])
+    args = parser.parse_args(["--task-shape", "line", "--run-name", "ppo_line_smoke", "--num-envs", str(CLI_NUM_ENVS_OVERRIDE)])
 
     assert args.task_shape == "line"
     assert args.run_name == "ppo_line_smoke"
+    assert args.num_envs == CLI_NUM_ENVS_OVERRIDE
+
+
+def test_cli_train_tracking_passes_num_envs_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify the CLI forwards --num-envs to the training helper."""
+    captured: dict[str, Any] = {}
+
+    def fake_run_from_config(**kwargs: Any) -> ppo_tracking.PPOTrackingSmokeResult:
+        """Capture CLI overrides without running PPO."""
+        captured.update(kwargs)
+        return ppo_tracking.PPOTrackingSmokeResult(
+            model_path="model.zip",
+            metrics_path="metrics.json",
+            manifest_path="manifest.json",
+            metrics={"num_envs": kwargs["num_envs"]},
+        )
+
+    monkeypatch.setattr(cli_train_tracking.ppo_tracking, "run_ppo_tracking_smoke_from_config", fake_run_from_config)
+
+    status = cli_train_tracking.main(["--config", "configs/training/ppo_tracking_smoke.yaml", "--num-envs", str(CLI_NUM_ENVS_OVERRIDE)])
+
+    assert status == 0
+    assert captured["num_envs"] == CLI_NUM_ENVS_OVERRIDE
 
 
 def test_cli_train_tracking_help_works() -> None:
@@ -656,6 +865,7 @@ def test_cli_train_tracking_help_works() -> None:
     assert "--task-shape" in completed.stdout
     assert "--run-name" in completed.stdout
     assert "--total-timesteps" in completed.stdout
+    assert "--num-envs" in completed.stdout
     assert "--eval-steps" in completed.stdout
     assert "--artifact-layout" not in completed.stdout
     assert "--wandb-mode" in completed.stdout

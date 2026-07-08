@@ -17,6 +17,8 @@ from src.experiments.training import experiments_training_ppo_tracking as ppo_tr
 
 EXPECTED_CURRICULUM_STAGE_COUNT = 2
 CLI_SEED_OVERRIDE = 3
+EXPECTED_CURRICULUM_NUM_ENVS = 1
+EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS = 256
 
 EXPECTED_STAGE_COUNT = 5
 
@@ -133,6 +135,9 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
         metrics = {
             "seed": kwargs["seed"],
             "diagnostics_dir": str(tmp_path / run_name / "diagnostics"),
+            "num_envs": EXPECTED_CURRICULUM_NUM_ENVS,
+            "vec_env_type": "DummyVecEnv",
+            "effective_rollout_steps": EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS,
             "mean_position_error_m": 0.1,
             "final_position_error_m": 0.2,
             "max_position_error_m": 0.3,
@@ -198,6 +203,9 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert summary["stages"][0]["training_dir_relative"] == "stages/stage01_hover_stabilization/training"
     assert summary["stages"][0]["manifest_path_relative"].endswith("_manifest.json")
     assert summary["stages"][0]["diagnostics_dir"].endswith("diagnostics")
+    assert summary["stages"][0]["num_envs"] == EXPECTED_CURRICULUM_NUM_ENVS
+    assert summary["stages"][0]["vec_env_type"] == "DummyVecEnv"
+    assert summary["stages"][0]["effective_rollout_steps"] == EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS
     assert summary["stages"][0]["model_transfer_enabled"] is False
     assert summary["stages"][1]["model_transfer_enabled"] is True
     assert summary["stages"][1]["previous_model_path"] == summary["stages"][0]["model_path"]
@@ -206,6 +214,7 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
     assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
     assert calls[0]["normalize_actions"] is True
+    assert "num_envs" not in calls[0]
     assert calls[0]["wandb_group"] == "curriculum/curriculum_manual_line_smoke"
     assert Path(calls[0]["task_config_path"]).parent == expected_root / "config"
     assert Path(calls[0]["task_config_path"]).name == "stage01_hover_stabilization_task.yaml"

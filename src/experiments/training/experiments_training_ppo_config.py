@@ -62,9 +62,10 @@ class PPOConfig:
     gae_lambda
         Generalized advantage estimation lambda in the interval ``(0, 1]``.
     n_steps
-        Number of rollout steps per PPO update.
+        Number of rollout steps per environment for each PPO update.
     batch_size
-        Minibatch size used for PPO updates. It must not exceed ``n_steps``.
+        Minibatch size used for PPO updates. Rollout-size consistency is
+        validated separately against ``n_steps * num_envs`` by the training settings.
     n_epochs
         Number of optimization epochs per rollout.
     clip_range
@@ -109,9 +110,6 @@ class PPOConfig:
         object.__setattr__(self, "vf_coef", _nonnegative_float(self.vf_coef, "ppo.vf_coef"))
         object.__setattr__(self, "max_grad_norm", _positive_float(self.max_grad_norm, "ppo.max_grad_norm"))
         object.__setattr__(self, "target_kl", _optional_positive_float(self.target_kl, "ppo.target_kl"))
-        if self.batch_size > self.n_steps:
-            message = "ppo.batch_size must be less than or equal to ppo.n_steps"
-            raise ValueError(message)
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any] | None, *, section_name: str = "ppo") -> PPOConfig:
@@ -170,6 +168,43 @@ class PPOConfig:
         resolved_total_timesteps = _positive_int(total_timesteps, "total_timesteps")
         if resolved_total_timesteps < self.n_steps:
             message = "total_timesteps must be greater than or equal to ppo.n_steps; set an explicit smaller ppo.n_steps for tiny smoke tests"
+            raise ValueError(message)
+
+    def effective_rollout_steps(self, num_envs: int) -> int:
+        """
+        Return PPO rollout samples collected per update across all environments.
+
+        Parameters
+        ----------
+        num_envs
+            Number of parallel training environments.
+
+        Returns
+        -------
+        int
+            Effective rollout sample count, ``ppo.n_steps * num_envs``.
+
+        """
+        return self.n_steps * _positive_int(num_envs, "num_envs")
+
+    def validate_rollout_consistency(self, num_envs: int) -> None:
+        """
+        Validate minibatch size against the vectorized PPO rollout size.
+
+        Parameters
+        ----------
+        num_envs
+            Number of parallel training environments used for rollout collection.
+
+        Raises
+        ------
+        ValueError
+            If ``ppo.batch_size`` exceeds ``ppo.n_steps * num_envs``.
+
+        """
+        effective_rollout_steps = self.effective_rollout_steps(num_envs)
+        if self.batch_size > effective_rollout_steps:
+            message = "ppo.batch_size must be less than or equal to ppo.n_steps * num_envs"
             raise ValueError(message)
 
 

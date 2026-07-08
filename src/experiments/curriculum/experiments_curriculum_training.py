@@ -39,6 +39,9 @@ from src.experiments.training import experiments_training_ppo_tracking as ppo_tr
 DEFAULT_CURRICULUM_CONFIG_PATH = Path("configs/curricula/curriculum_manual_line_smoke.yaml")
 MANUAL_CURRICULUM_KIND = "manual"
 SUMMARY_METRIC_KEYS = (
+    "num_envs",
+    "vec_env_type",
+    "effective_rollout_steps",
     "start_hold_enabled",
     "start_hold_sec",
     "exclude_start_hold_from_tracking_metrics",

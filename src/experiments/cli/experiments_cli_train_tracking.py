@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional training run name; derived as ppo_<task_shape>_<timesteps>_seed<seed> when omitted.",
     )
     parser.add_argument("--total-timesteps", type=int, default=None)
+    parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--model-dir", type=Path, default=None)
@@ -81,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         task_shape=args.task_shape,
         run_name=args.run_name,
         total_timesteps=args.total_timesteps,
+        num_envs=args.num_envs,
         eval_steps=args.eval_steps,
         output_dir=args.output_dir,
         model_dir=args.model_dir,

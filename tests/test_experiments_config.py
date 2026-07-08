@@ -63,6 +63,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
         "configs/training/ppo_tracking_smoke.yaml": {
             "run_name": "direct_ppo_line_smoke_seed0",
             "total_timesteps": 4096,
+            "num_envs": 1,
             "n_steps": 256,
             "batch_size": 64,
             "n_epochs": 5,
@@ -72,6 +73,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
         "configs/training/ppo_tracking_medium.yaml": {
             "run_name": "direct_ppo_line_medium_seed0",
             "total_timesteps": 250000,
+            "num_envs": 4,
             "n_steps": 512,
             "batch_size": 128,
             "n_epochs": 5,
@@ -81,6 +83,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
         "configs/training/ppo_tracking_final.yaml": {
             "run_name": "direct_ppo_line_final_seed0",
             "total_timesteps": 1000000,
+            "num_envs": 8,
             "n_steps": 1024,
             "batch_size": 256,
             "n_epochs": 10,
@@ -97,6 +100,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
         assert config["task_config_path"] == "configs/training/ppo_tracking_tasks.yaml"
         assert config["run_name"] == values["run_name"]
         assert config["total_timesteps"] == values["total_timesteps"]
+        assert config["num_envs"] == values["num_envs"]
         assert config["task_index"] == values["task_index"]
         assert config["wandb_mode"] == values["wandb_mode"]
         assert config["ppo"]["n_steps"] == values["n_steps"]
@@ -105,6 +109,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
 
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)
         assert settings.run_name == values["run_name"]
+        assert settings.num_envs == values["num_envs"]
         assert settings.ppo_config.to_dict() == config["ppo"]
 
 

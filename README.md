@@ -185,6 +185,8 @@ Drone_RL_LLM_Curriculum.ipynb
 
 The report-ready training configs are split into smoke, medium, and final tiers. Smoke commands are for correctness only; medium and final commands start meaningful training and should be run intentionally.
 
+Direct PPO training uses top-level `num_envs` to control training-time sample collection parallelism. `num_envs: 1` is the normal single-environment path, while higher values use parallel environments for PPO rollouts. PPO still treats `ppo.n_steps` as the per-environment rollout length, so the effective rollout size per update is `ppo.n_steps * num_envs`. Evaluation remains deterministic and single-rollout based, separate from training parallelism.
+
 ```bash
 python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking_smoke.yaml --run-name direct_ppo_line_smoke_seed0 --seed 0 --wandb-mode disabled
 python -m src.experiments.cli.experiments_cli_train_curriculum --config configs/curricula/curriculum_manual_line_smoke.yaml --seed 0 --wandb-mode disabled

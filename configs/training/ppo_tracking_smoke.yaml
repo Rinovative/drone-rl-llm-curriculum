@@ -1,6 +1,7 @@
 task_config_path: configs/training/ppo_tracking_tasks.yaml
 task_index: 0
 run_name: direct_ppo_line_smoke_seed0
+num_envs: 1
 total_timesteps: 4096
 eval_steps: 120
 seed: 0

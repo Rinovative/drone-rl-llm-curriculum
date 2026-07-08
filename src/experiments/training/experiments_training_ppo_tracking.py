@@ -42,6 +42,7 @@ DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking_smoke.yam
 DEFAULT_TASK_CONFIG_PATH = Path("configs/training/ppo_tracking_tasks.yaml")
 DEFAULT_TASK_INDEX = 0
 DEFAULT_TOTAL_TIMESTEPS = 4096
+DEFAULT_NUM_ENVS = 1
 DEFAULT_EVAL_STEPS = 120
 DEFAULT_SEED = 0
 DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS = 120
@@ -74,6 +75,8 @@ class PPOTrackingSmokeSettings:
         Optional canonical storage/runs run name for model, metrics, and W&B artifacts.
     total_timesteps
         Tiny upper-level PPO learning budget passed to Stable-Baselines3.
+    num_envs
+        Number of parallel training environments used for PPO rollout collection.
     ppo_config
         Resolved PPO hyperparameters passed to Stable-Baselines3.
     eval_steps
@@ -121,6 +124,7 @@ class PPOTrackingSmokeSettings:
     task_shape: str | None = None
     run_name: str | None = None
     total_timesteps: int = DEFAULT_TOTAL_TIMESTEPS
+    num_envs: int = DEFAULT_NUM_ENVS
     ppo_config: ppo_config.PPOConfig = field(default_factory=ppo_config.PPOConfig)
     eval_steps: int = DEFAULT_EVAL_STEPS
     seed: int = DEFAULT_SEED
@@ -154,10 +158,12 @@ class PPOTrackingSmokeSettings:
         if self.total_timesteps <= 0:
             message = "total_timesteps must be positive"
             raise ValueError(message)
+        object.__setattr__(self, "num_envs", _positive_int_setting(self.num_envs, "num_envs"))
         if not isinstance(self.ppo_config, ppo_config.PPOConfig):
             message = "ppo_config must be a PPOConfig"
             raise TypeError(message)
         self.ppo_config.validate_total_timesteps(self.total_timesteps)
+        self.ppo_config.validate_rollout_consistency(self.num_envs)
         if self.eval_steps <= 0:
             message = "eval_steps must be positive"
             raise ValueError(message)
@@ -297,8 +303,11 @@ def describe_tracking_env_action_metadata(task: dict[str, Any], normalize_action
         JSON-serializable action-space and upstream action-type metadata.
 
     """
-    real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
-    tracking_env = _ppo_training_env(real_env, normalize_actions=normalize_actions)
+    tracking_env = _make_seeded_ppo_tracking_env(
+        task=task,
+        normalize_actions=normalize_actions,
+        seed=DEFAULT_SEED,
+    )
     try:
         return _tracking_env_action_metadata(tracking_env)
     finally:
@@ -310,6 +319,96 @@ def _ppo_training_env(tracking_env: Any, normalize_actions: bool) -> Any:
     if not normalize_actions:
         return tracking_env
     return envs.tracking_env.make_normalized_action_env(tracking_env)
+
+
+def _make_seeded_ppo_tracking_env(task: dict[str, Any], normalize_actions: bool, seed: int) -> Any:
+    """Build one PPO-facing tracking environment and apply a deterministic seed."""
+    real_env = envs.tracking_env.make_trajectory_tracking_env(dict(task), gui=False, record=False)
+    tracking_env = _ppo_training_env(real_env, normalize_actions=normalize_actions)
+    _seed_tracking_env(tracking_env, seed)
+    return tracking_env
+
+
+def _seed_tracking_env(tracking_env: Any, seed: int) -> None:
+    """Seed a Gymnasium tracking environment and its spaces when supported."""
+    for space_name in ("action_space", "observation_space"):
+        space = getattr(tracking_env, space_name, None)
+        seed_space = getattr(space, "seed", None)
+        if callable(seed_space):
+            seed_space(seed)
+    reset = getattr(tracking_env, "reset", None)
+    if callable(reset):
+        reset(seed=seed)
+
+
+def _make_ppo_training_env_factory(task: dict[str, Any], normalize_actions: bool, seed: int) -> Any:
+    """Return a lazy factory for one seeded PPO training environment."""
+    task_payload = dict(task)
+
+    def make_env() -> Any:
+        """Build the actual PyBullet-backed environment lazily."""
+        return _make_seeded_ppo_tracking_env(
+            task=task_payload,
+            normalize_actions=normalize_actions,
+            seed=seed,
+        )
+
+    return make_env
+
+
+def _vec_env_classes() -> tuple[type[Any], type[Any]]:
+    """Return Stable-Baselines3 VecEnv classes without importing SB3 at module import time."""
+    from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv  # noqa: PLC0415
+
+    return DummyVecEnv, SubprocVecEnv
+
+
+def _vec_env_type(num_envs: int) -> str:
+    """Return the Stable-Baselines3 vector environment type for a training env count."""
+    return "DummyVecEnv" if _positive_int_setting(num_envs, "num_envs") == 1 else "SubprocVecEnv"
+
+
+def _rank_seed(base_seed: int, env_rank: int) -> int:
+    """Derive a deterministic per-environment seed from a base seed and rank."""
+    return int(base_seed) + int(env_rank)
+
+
+def _make_ppo_training_vec_env(task: dict[str, Any], num_envs: int, normalize_actions: bool, seed: int) -> Any:
+    """Build the vectorized PPO training environment with lazy per-rank factories."""
+    resolved_num_envs = _positive_int_setting(num_envs, "num_envs")
+    dummy_vec_env_cls, subproc_vec_env_cls = _vec_env_classes()
+    env_factories = [
+        _make_ppo_training_env_factory(
+            task=task,
+            normalize_actions=normalize_actions,
+            seed=_rank_seed(seed, env_rank),
+        )
+        for env_rank in range(resolved_num_envs)
+    ]
+    vec_env = dummy_vec_env_cls(env_factories) if resolved_num_envs == 1 else subproc_vec_env_cls(env_factories, start_method="spawn")
+    seed_vec_env = getattr(vec_env, "seed", None)
+    if callable(seed_vec_env):
+        seed_vec_env(seed)
+    return vec_env
+
+
+def _positive_int_setting(value: Any, name: str) -> int:
+    """Return a strictly positive integer setting value."""
+    if isinstance(value, bool):
+        message = f"{name} must be a positive integer"
+        raise ValueError(message)  # noqa: TRY004 - public config errors are reported as ValueError.
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError) as exc:
+        message = f"{name} must be a positive integer"
+        raise ValueError(message) from exc
+    if isinstance(value, float) and not value.is_integer():
+        message = f"{name} must be a positive integer"
+        raise ValueError(message)
+    if resolved <= 0:
+        message = f"{name} must be a positive integer"
+        raise ValueError(message)
+    return resolved
 
 
 def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> PPOTrackingSmokeResult:
@@ -382,10 +481,15 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     from stable_baselines3 import PPO  # noqa: PLC0415
 
     wandb_run = None
-    real_training_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
-    training_env = _ppo_training_env(real_training_env, normalize_actions=active_settings.normalize_actions)
+    vec_env_type = _vec_env_type(active_settings.num_envs)
+    effective_rollout_steps = active_settings.ppo_config.effective_rollout_steps(active_settings.num_envs)
+    training_env = _make_ppo_training_vec_env(
+        task=task,
+        num_envs=active_settings.num_envs,
+        normalize_actions=active_settings.normalize_actions,
+        seed=active_settings.seed,
+    )
     try:
-        action_metadata = _tracking_env_action_metadata(training_env)
         if active_settings.initial_model_path is None:
             sb3_ppo_kwargs = active_settings.ppo_config.to_sb3_kwargs()
             policy = str(sb3_ppo_kwargs.pop("policy"))
@@ -432,16 +536,25 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         model.learn(**learn_kwargs)
         model.save(str(model_path))
         ppo_device = str(model.device)
-        eval_diagnostics = evaluation.diagnostics.collect_policy_evaluation_diagnostics(
-            model=model,
-            tracking_env=training_env,
-            eval_steps=active_settings.eval_steps,
+        eval_env = _make_seeded_ppo_tracking_env(
+            task=task,
+            normalize_actions=active_settings.normalize_actions,
             seed=active_settings.seed,
-            training_run_name=training_run_name,
-            task_shape=resolved_task_shape,
-            total_timesteps=active_settings.total_timesteps,
         )
-        eval_metrics = eval_diagnostics.metrics
+        try:
+            action_metadata = _tracking_env_action_metadata(eval_env)
+            eval_diagnostics = evaluation.diagnostics.collect_policy_evaluation_diagnostics(
+                model=model,
+                tracking_env=eval_env,
+                eval_steps=active_settings.eval_steps,
+                seed=active_settings.seed,
+                training_run_name=training_run_name,
+                task_shape=resolved_task_shape,
+                total_timesteps=active_settings.total_timesteps,
+            )
+            eval_metrics = eval_diagnostics.metrics
+        finally:
+            eval_env.close()
     finally:
         training_env.close()
 
@@ -479,6 +592,9 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         "task_source": task_source,
         "task_shape_requested": active_settings.task_shape,
         "total_timesteps": active_settings.total_timesteps,
+        "num_envs": active_settings.num_envs,
+        "vec_env_type": vec_env_type,
+        "effective_rollout_steps": effective_rollout_steps,
         "ppo_config": active_settings.ppo_config.to_dict(),
         "timesteps_label": timesteps_label,
         "eval_steps": active_settings.eval_steps,
@@ -539,6 +655,7 @@ def run_ppo_tracking_smoke_from_config(
     task_shape: str | None = None,
     run_name: str | None = None,
     total_timesteps: int | None = None,
+    num_envs: int | None = None,
     eval_steps: int | None = None,
     output_dir: str | Path | None = None,
     artifact_root: str | Path | None = None,
@@ -571,6 +688,8 @@ def run_ppo_tracking_smoke_from_config(
         Optional storage/runs/<run_name> root for generated artifacts.
     total_timesteps
         Optional PPO timestep-budget override.
+    num_envs
+        Optional parallel training environment count override.
     eval_steps
         Optional evaluation-step override.
     output_dir
@@ -613,6 +732,7 @@ def run_ppo_tracking_smoke_from_config(
         task_shape=settings.task_shape if task_shape is None else task_shape,
         run_name=settings.run_name if run_name is None else run_name,
         total_timesteps=settings.total_timesteps if total_timesteps is None else total_timesteps,
+        num_envs=settings.num_envs if num_envs is None else num_envs,
         ppo_config=settings.ppo_config,
         eval_steps=settings.eval_steps if eval_steps is None else eval_steps,
         seed=settings.seed if seed is None else seed,
@@ -651,6 +771,7 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
         "task_shape": config.get("task_shape") or None,
         "run_name": config.get("run_name") or None,
         "total_timesteps": int(config.get("total_timesteps", DEFAULT_TOTAL_TIMESTEPS)),
+        "num_envs": config.get("num_envs", DEFAULT_NUM_ENVS),
         "ppo_config": ppo_config.load_ppo_config_from_mapping(config),
         "eval_steps": int(config.get("eval_steps", DEFAULT_EVAL_STEPS)),
         "seed": int(config.get("seed", DEFAULT_SEED)),
@@ -927,6 +1048,12 @@ def _build_manifest(
         "training_task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": settings.task_shape,
         "total_timesteps": settings.total_timesteps,
+        "num_envs": metrics.get("num_envs", settings.num_envs),
+        "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
+        "effective_rollout_steps": metrics.get(
+            "effective_rollout_steps",
+            settings.ppo_config.effective_rollout_steps(settings.num_envs),
+        ),
         "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
@@ -992,8 +1119,20 @@ def _build_run_manifest(
             "task_index": training_manifest["task_index"],
             "task_source": training_manifest["task_source"],
             "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
+            "num_envs": metrics.get("num_envs", settings.num_envs),
+            "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
+            "effective_rollout_steps": metrics.get(
+                "effective_rollout_steps",
+                settings.ppo_config.effective_rollout_steps(settings.num_envs),
+            ),
         },
         "total_timesteps": settings.total_timesteps,
+        "num_envs": metrics.get("num_envs", settings.num_envs),
+        "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
+        "effective_rollout_steps": metrics.get(
+            "effective_rollout_steps",
+            settings.ppo_config.effective_rollout_steps(settings.num_envs),
+        ),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "normalize_actions": settings.normalize_actions,
@@ -1056,6 +1195,7 @@ def _training_config_snapshot_payload(settings: PPOTrackingSmokeSettings) -> dic
         "task_shape": settings.task_shape,
         "run_name": settings.run_name,
         "total_timesteps": settings.total_timesteps,
+        "num_envs": settings.num_envs,
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
         "check_env": settings.check_env,
@@ -1180,6 +1320,9 @@ def _wandb_config(
         "task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": settings.task_shape,
         "total_timesteps": settings.total_timesteps,
+        "num_envs": settings.num_envs,
+        "vec_env_type": _vec_env_type(settings.num_envs),
+        "effective_rollout_steps": settings.ppo_config.effective_rollout_steps(settings.num_envs),
         "ppo": settings.ppo_config.to_dict(),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
