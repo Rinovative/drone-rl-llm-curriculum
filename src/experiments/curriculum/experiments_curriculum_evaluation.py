@@ -2,18 +2,18 @@
 ===============================================================================
 experiments_curriculum_evaluation.py
 ===============================================================================
-Evaluate manual-curriculum PPO checkpoints through one shared policy pipeline.
+Evaluate manual-curriculum PPO checkpoints through shared evaluation suites.
 
 Responsibilities:
-  - Load curriculum summaries and config-driven benchmark definitions
-  - Build concrete own-stage, benchmark, and generalization evaluation specs
+  - Load curriculum summaries and canonical evaluation suite definitions
+  - Build concrete own-stage and suite-driven evaluation specs
   - Delegate per-model execution to the shared policy evaluation helper
   - Aggregate compact curriculum-level metrics and manifests
 
 Design principles:
   - Keep curriculum evaluation focused on planning and aggregation
-  - Keep benchmark selection config-driven and deterministic
-  - Fail clearly when required summary fields, benchmarks, or model paths are invalid
+  - Keep benchmark tasks suite-driven and deterministic
+  - Fail clearly when required summary fields, suite tasks, or model paths are invalid
 
 Boundaries:
   - Rollout, diagnostics, plotting, and rendering logic belong in shared helpers
@@ -24,60 +24,23 @@ Boundaries:
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src import utils, validation
-from src.experiments import experiments_config as config
+from src import utils
 from src.experiments.evaluation import experiments_evaluation_policy as policy_evaluation
+from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
 
-DEFAULT_BENCHMARK_CONFIG_PATH = Path("configs/evaluation/curriculum_benchmarks.yaml")
-SUPPORTED_EVALUATION_MODES = ("own-stage", "benchmark", "generalization")
+DEFAULT_EVALUATION_SUITE_PATH = evaluation_suites.DEFAULT_EVALUATION_SUITE_PATH
+SUPPORTED_EVALUATION_MODES = ("own-stage", "suite")
+DEFAULT_EVALUATION_MODE = "suite"
 SUPPORTED_MODEL_SCOPES = ("all-stages", "final-stage")
 DEFAULT_MODEL_SCOPE = "all-stages"
 DEFAULT_RENDER_FPS = policy_evaluation.DEFAULT_RENDER_FPS
-
-
-@dataclass(frozen=True)
-class CurriculumBenchmark:
-    """
-    One named benchmark task loaded from configuration.
-
-    Parameters
-    ----------
-    benchmark_name
-        Stable benchmark identifier.
-    task_shape
-        Expected task shape for the benchmark evaluation.
-    eval_steps
-        Deterministic rollout steps for benchmark evaluation.
-    task
-        Validated trajectory task mapping.
-
-    """
-
-    benchmark_name: str
-    task_shape: str
-    eval_steps: int
-    task: dict[str, Any]
-
-    def __post_init__(self) -> None:
-        """Validate benchmark metadata."""
-        if not self.benchmark_name.strip():
-            message = "benchmark_name must be non-empty"
-            raise ValueError(message)
-        if not self.task_shape.strip():
-            message = "task_shape must be non-empty"
-            raise ValueError(message)
-        if self.eval_steps <= 0:
-            message = "eval_steps must be positive"
-            raise ValueError(message)
-        if str(self.task.get("shape", "")) != self.task_shape:
-            message = f"benchmark {self.benchmark_name!r} task shape must match task_shape {self.task_shape!r}"
-            raise ValueError(message)
 
 
 @dataclass(frozen=True)
@@ -101,81 +64,52 @@ class CurriculumEvaluationResult:
     metrics: dict[str, Any]
 
 
-def load_curriculum_benchmarks(path: str | Path = DEFAULT_BENCHMARK_CONFIG_PATH) -> dict[str, CurriculumBenchmark]:
-    """
-    Load and validate benchmark tasks from YAML.
-
-    Parameters
-    ----------
-    path
-        Benchmark YAML path.
-
-    Returns
-    -------
-    dict[str, CurriculumBenchmark]
-        Benchmarks keyed by benchmark name.
-
-    """
-    payload = config.load_experiment_config(Path(path))
-    raw_benchmarks = payload.get("benchmarks")
-    if not isinstance(raw_benchmarks, list):
-        message = "benchmark config must contain a top-level 'benchmarks' list"
-        raise TypeError(message)
-    benchmarks = {benchmark.benchmark_name: benchmark for benchmark in (_benchmark_from_mapping(raw) for raw in raw_benchmarks)}
-    for benchmark in benchmarks.values():
-        _validate_task(benchmark.task, label=f"benchmark {benchmark.benchmark_name!r}")
-    return benchmarks
-
-
 def run_curriculum_evaluation(
     summary_path: str | Path,
-    mode: str,
-    benchmark: str | None = None,
-    benchmark_config_path: str | Path = DEFAULT_BENCHMARK_CONFIG_PATH,
+    mode: str = DEFAULT_EVALUATION_MODE,
+    suite_path: str | Path | None = DEFAULT_EVALUATION_SUITE_PATH,
     model_scope: str = DEFAULT_MODEL_SCOPE,
     include_baseline_model: str | Path | None = None,
     baseline_label: str = "baseline",
     eval_steps: int | None = None,
     wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED,
-    render: bool = True,
-    render_fps: int = DEFAULT_RENDER_FPS,
+    render: bool | None = None,
+    render_fps: int | None = None,
     render_max_steps: int | None = None,
-    plots: bool = True,
-    traces: bool = True,
+    plots: bool | None = None,
+    traces: bool | None = None,
 ) -> CurriculumEvaluationResult:
     """
-    Run curriculum evaluation for one mode using the shared model-evaluation pipeline.
+    Run curriculum evaluation using own-stage tasks or a canonical evaluation suite.
 
     Parameters
     ----------
     summary_path
         Curriculum summary JSON path.
     mode
-        Evaluation mode: ``own-stage``, ``benchmark``, or ``generalization``.
-    benchmark
-        Benchmark name required for benchmark/generalization modes.
-    benchmark_config_path
-        Benchmark YAML path.
+        Evaluation mode: ``suite`` or ``own-stage``. Defaults to suite evaluation.
+    suite_path
+        Canonical evaluation suite YAML path required for ``suite`` mode.
     model_scope
         Stage model selection scope: ``all-stages`` or ``final-stage``.
     include_baseline_model
-        Optional baseline model path evaluated alongside selected curriculum models.
+        Optional baseline model path evaluated alongside selected curriculum models in suite mode.
     baseline_label
         Human-readable baseline label.
     eval_steps
-        Optional evaluation-step override.
+        Optional evaluation-step override. Suite mode defaults to the suite ``eval_steps`` value.
     wandb_mode
         Accepted for CLI symmetry.
     render
-        Whether GIF rendering is enabled for each evaluated model.
+        Optional render-enabled override. Uses suite settings when omitted in suite mode.
     render_fps
-        Requested GIF playback frame rate.
+        Optional render FPS override. Uses suite settings when omitted in suite mode.
     render_max_steps
-        Optional render-step override.
+        Optional render-step override. Uses suite settings when omitted in suite mode.
     plots
-        Whether plot generation is enabled for each evaluated model.
+        Optional plot-enabled override. Uses suite settings when omitted in suite mode.
     traces
-        Whether trace-copy artifacts are enabled for each evaluated model.
+        Optional trace-enabled override. Uses suite settings when omitted in suite mode.
 
     Returns
     -------
@@ -187,21 +121,20 @@ def run_curriculum_evaluation(
     _validate_model_scope(model_scope)
     summary = _read_json(Path(summary_path))
     stages = _stages(summary)
-    benchmarks = load_curriculum_benchmarks(benchmark_config_path)
+    suite = _load_suite_for_mode(mode=mode, suite_path=suite_path)
 
-    benchmark_name, benchmark_task_shape = _benchmark_metadata(mode=mode, benchmark_name=benchmark, benchmarks=benchmarks)
     curriculum_run_name = _curriculum_run_name(summary)
-    evaluation_name = _evaluation_name(mode=mode, benchmark_name=benchmark_name)
-    output_root = _mode_output_root(summary=summary, mode=mode, benchmark_name=benchmark_name)
+    evaluation_name = _evaluation_name(mode=mode, suite=suite)
+    output_root = _mode_output_root(summary=summary, evaluation_name=evaluation_name)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    artifact_options = policy_evaluation.PolicyEvaluationArtifactOptions(
-        render_enabled=render,
-        plots_enabled=plots,
-        trace_enabled=traces,
-        diagnostics_enabled=True,
+    artifact_options = _artifact_options_from_suite(
+        suite=suite,
+        render=render,
         render_fps=render_fps,
         render_max_steps=render_max_steps,
+        plots=plots,
+        traces=traces,
     )
 
     spec_payloads = _evaluation_spec_payloads(
@@ -211,8 +144,7 @@ def run_curriculum_evaluation(
         output_root=output_root,
         curriculum_run_name=curriculum_run_name,
         evaluation_name=evaluation_name,
-        benchmark_name=benchmark_name,
-        benchmarks=benchmarks,
+        suite=suite,
         model_scope=model_scope,
         include_baseline_model=include_baseline_model,
         baseline_label=baseline_label,
@@ -229,11 +161,12 @@ def run_curriculum_evaluation(
                 stage_name=payload.get("stage_name"),
                 source_run_name=payload.get("source_run_name"),
                 is_final_stage=bool(payload.get("is_final_stage", False)),
-                benchmark_name=benchmark_name,
+                evaluation_suite_name=None if suite is None else suite.evaluation_name,
+                suite_task_name=payload.get("suite_task_name"),
             )
         )
 
-    filename_stem = _summary_filename_stem(summary=summary, mode=mode, benchmark_name=benchmark_name)
+    filename_stem = _summary_filename_stem(summary=summary, mode=mode, suite=suite)
     metrics_dir = output_root / utils.artifacts.METRICS_DIRNAME
     manifests_dir = output_root / utils.artifacts.MANIFESTS_DIRNAME
     metrics_dir.mkdir(parents=True, exist_ok=True)
@@ -241,6 +174,8 @@ def run_curriculum_evaluation(
 
     metrics_path = metrics_dir / f"{filename_stem}_metrics.json"
     manifest_path = manifests_dir / f"{filename_stem}_manifest.json"
+    suite_path_for_metrics = None if suite is None or suite_path is None else str(Path(suite_path))
+    suite_task_names = [] if suite is None else suite.task_names
 
     aggregate_metrics = {
         "run_type": "evaluation",
@@ -251,9 +186,11 @@ def run_curriculum_evaluation(
         "seed": int(summary.get("seed", 0)),
         "evaluation_mode": mode,
         "evaluation_name": evaluation_name,
+        "evaluation_suite_name": None if suite is None else suite.evaluation_name,
+        "evaluation_suite_path": suite_path_for_metrics,
+        "suite_task_names": suite_task_names,
+        "suite_task_count": len(suite_task_names),
         "curriculum_run_name": curriculum_run_name,
-        "benchmark_name": benchmark_name,
-        "benchmark_task_shape": benchmark_task_shape,
         "model_scope": model_scope,
         "evaluated_models": evaluated_models,
         "summary_metrics_path": str(metrics_path),
@@ -269,9 +206,11 @@ def run_curriculum_evaluation(
         "seed": int(summary.get("seed", 0)),
         "evaluation_mode": mode,
         "evaluation_name": evaluation_name,
+        "evaluation_suite_name": None if suite is None else suite.evaluation_name,
+        "evaluation_suite_path": suite_path_for_metrics,
+        "suite_task_names": suite_task_names,
+        "suite_task_count": len(suite_task_names),
         "curriculum_run_name": curriculum_run_name,
-        "benchmark_name": benchmark_name,
-        "benchmark_task_shape": benchmark_task_shape,
         "model_scope": model_scope,
         "summary_metrics_path": str(metrics_path),
         "summary_manifest_path": str(manifest_path),
@@ -304,19 +243,41 @@ def _validate_model_scope(model_scope: str) -> None:
         raise ValueError(message)
 
 
-def _benchmark_metadata(
+def _load_suite_for_mode(
     mode: str,
-    benchmark_name: str | None,
-    benchmarks: Mapping[str, CurriculumBenchmark],
-) -> tuple[str | None, str | None]:
-    """Resolve benchmark name and shape metadata for the requested mode."""
+    suite_path: str | Path | None,
+) -> evaluation_suites.EvaluationSuite | None:
+    """Load the suite required by suite mode."""
     if mode == "own-stage":
-        return None, None
-    if benchmark_name is None:
-        message = f"--benchmark is required for {mode} mode"
+        return None
+    if suite_path is None:
+        message = "--suite is required for suite mode"
         raise ValueError(message)
-    benchmark = _require_benchmark(benchmarks, benchmark_name)
-    return benchmark.benchmark_name, benchmark.task_shape
+    return evaluation_suites.load_evaluation_suite(suite_path)
+
+
+def _artifact_options_from_suite(
+    suite: evaluation_suites.EvaluationSuite | None,
+    render: bool | None,
+    render_fps: int | None,
+    render_max_steps: int | None,
+    plots: bool | None,
+    traces: bool | None,
+) -> policy_evaluation.PolicyEvaluationArtifactOptions:
+    """Resolve artifact options from a suite plus explicit overrides."""
+    render_enabled = (True if suite is None else suite.render.enabled) if render is None else render
+    plots_enabled = (True if suite is None else suite.plots.enabled) if plots is None else plots
+    traces_enabled = (True if suite is None else suite.traces.enabled) if traces is None else traces
+    resolved_render_fps = (DEFAULT_RENDER_FPS if suite is None else suite.render.fps) if render_fps is None else render_fps
+    resolved_render_max_steps = (None if suite is None else suite.render.max_steps) if render_max_steps is None else render_max_steps
+    return policy_evaluation.PolicyEvaluationArtifactOptions(
+        render_enabled=render_enabled,
+        plots_enabled=plots_enabled,
+        trace_enabled=traces_enabled,
+        diagnostics_enabled=True,
+        render_fps=resolved_render_fps,
+        render_max_steps=resolved_render_max_steps,
+    )
 
 
 def _evaluation_spec_payloads(
@@ -326,8 +287,7 @@ def _evaluation_spec_payloads(
     output_root: Path,
     curriculum_run_name: str,
     evaluation_name: str,
-    benchmark_name: str | None,
-    benchmarks: Mapping[str, CurriculumBenchmark],
+    suite: evaluation_suites.EvaluationSuite | None,
     model_scope: str,
     include_baseline_model: str | Path | None,
     baseline_label: str,
@@ -345,36 +305,68 @@ def _evaluation_spec_payloads(
             default_seed=int(summary.get("seed", 0)),
         )
 
-    if benchmark_name is None:
-        message = "benchmark_name must be provided for benchmark/generalization modes"
+    if suite is None:
+        message = "suite must be provided for suite mode"
         raise ValueError(message)
-    benchmark = _require_benchmark(benchmarks, benchmark_name)
-    benchmark_task_config = _write_benchmark_task_config(curriculum_run_name=curriculum_run_name, benchmark=benchmark)
+    return _suite_payloads(
+        stages=stages,
+        selected_stages=selected_stages,
+        suite=suite,
+        output_root=output_root,
+        curriculum_run_name=curriculum_run_name,
+        evaluation_name=evaluation_name,
+        model_scope=model_scope,
+        include_baseline_model=include_baseline_model,
+        baseline_label=baseline_label,
+        eval_steps_override=eval_steps_override,
+    )
 
+
+def _suite_payloads(
+    stages: list[Mapping[str, Any]],
+    selected_stages: list[Mapping[str, Any]],
+    suite: evaluation_suites.EvaluationSuite,
+    output_root: Path,
+    curriculum_run_name: str,
+    evaluation_name: str,
+    model_scope: str,
+    include_baseline_model: str | Path | None,
+    baseline_label: str,
+    eval_steps_override: int | None,
+) -> list[dict[str, Any]]:
+    """Build suite-task evaluation payloads for selected curriculum models."""
+    task_config_paths = _write_suite_task_configs(curriculum_run_name=curriculum_run_name, suite=suite)
     payloads: list[dict[str, Any]] = []
     final_stage_index = int(stages[-1]["stage_index"])
+    final_stage_run_level = model_scope == "final-stage"
+
     for stage in selected_stages:
         stage_index = int(stage["stage_index"])
         stage_name = str(stage["stage_name"])
         stage_dir_name = f"stage{stage_index:02d}_{stage_name}"
-        stage_output_dir = utils.artifacts.get_curriculum_stage_evaluation_dir(
-            curriculum_run_name,
-            stage_index,
-            stage_name,
-            evaluation_name,
+        stage_output_root = (
+            output_root
+            if final_stage_run_level
+            else utils.artifacts.get_curriculum_stage_evaluation_dir(
+                curriculum_run_name,
+                stage_index,
+                stage_name,
+                evaluation_name,
+            )
         )
-        payloads.append(
+        label_prefix = "final_stage" if final_stage_run_level else stage_dir_name
+        payloads.extend(
             {
                 "spec": policy_evaluation.PolicyEvaluationSpec(
-                    label=stage_dir_name,
+                    label=f"{label_prefix}_{suite_task.task_name}",
                     model_role="stage",
                     model_path=Path(str(stage["model_path"])),
-                    task_config_path=benchmark_task_config,
+                    task_config_path=task_config_paths[suite_task.task_name],
                     task_index=0,
-                    task_shape=benchmark.task_shape,
-                    output_dir=stage_output_dir,
-                    eval_steps=int(eval_steps_override or benchmark.eval_steps),
-                    seed=int(summary.get("seed", stage.get("seed", 0))),
+                    task_shape=suite_task.task_shape,
+                    output_dir=stage_output_root / _safe_name(suite_task.task_name),
+                    eval_steps=int(eval_steps_override or suite.eval_steps),
+                    seed=suite.seed,
                     total_timesteps=int(stage.get("total_timesteps", 0)),
                     normalize_actions=bool(stage.get("normalize_actions", True)),
                 ),
@@ -382,23 +374,25 @@ def _evaluation_spec_payloads(
                 "stage_name": stage_name,
                 "source_run_name": stage.get("run_name"),
                 "is_final_stage": stage_index == final_stage_index,
+                "suite_task_name": suite_task.task_name,
             }
+            for suite_task in suite.tasks
         )
 
     if include_baseline_model is not None:
         baseline_dir_name = f"baseline_{_safe_name(baseline_label)}"
-        payloads.append(
+        payloads.extend(
             {
                 "spec": policy_evaluation.PolicyEvaluationSpec(
-                    label=baseline_dir_name,
+                    label=f"{baseline_dir_name}_{suite_task.task_name}",
                     model_role="baseline",
                     model_path=Path(str(include_baseline_model)),
-                    task_config_path=benchmark_task_config,
+                    task_config_path=task_config_paths[suite_task.task_name],
                     task_index=0,
-                    task_shape=benchmark.task_shape,
-                    output_dir=output_root / "baselines" / baseline_dir_name,
-                    eval_steps=int(eval_steps_override or benchmark.eval_steps),
-                    seed=int(summary.get("seed", 0)),
+                    task_shape=suite_task.task_shape,
+                    output_dir=output_root / "baselines" / baseline_dir_name / _safe_name(suite_task.task_name),
+                    eval_steps=int(eval_steps_override or suite.eval_steps),
+                    seed=suite.seed,
                     total_timesteps=0,
                     normalize_actions=True,
                 ),
@@ -406,7 +400,9 @@ def _evaluation_spec_payloads(
                 "stage_name": None,
                 "source_run_name": baseline_dir_name,
                 "is_final_stage": False,
+                "suite_task_name": suite_task.task_name,
             }
+            for suite_task in suite.tasks
         )
 
     return payloads
@@ -463,17 +459,15 @@ def _own_stage_payloads(
                 "stage_name": stage_name,
                 "source_run_name": stage.get("run_name"),
                 "is_final_stage": stage_index == final_stage_index,
+                "suite_task_name": None,
             }
         )
     return payloads
 
 
-def _mode_output_root(summary: Mapping[str, Any], mode: str, benchmark_name: str | None) -> Path:
+def _mode_output_root(summary: Mapping[str, Any], evaluation_name: str) -> Path:
     """Return mode-scoped curriculum evaluation output root."""
-    return utils.artifacts.get_run_evaluation_dir(
-        _curriculum_run_name(summary),
-        _evaluation_name(mode=mode, benchmark_name=benchmark_name),
-    )
+    return utils.artifacts.get_run_evaluation_dir(_curriculum_run_name(summary), evaluation_name)
 
 
 def _curriculum_run_name(summary: Mapping[str, Any]) -> str:
@@ -485,34 +479,56 @@ def _curriculum_run_name(summary: Mapping[str, Any]) -> str:
     return str(run_name)
 
 
-def _evaluation_name(mode: str, benchmark_name: str | None) -> str:
+def _evaluation_name(mode: str, suite: evaluation_suites.EvaluationSuite | None) -> str:
     """Return the canonical evaluation name for a curriculum evaluation mode."""
-    mode_slug = mode.replace("-", "_")
-    if benchmark_name is None:
-        return mode_slug
-    return f"{mode_slug}_{benchmark_name}"
+    if mode == "own-stage":
+        return "own_stage"
+    if suite is None:
+        message = "suite must be provided for suite evaluation naming"
+        raise ValueError(message)
+    return suite.evaluation_name
 
 
-def _summary_filename_stem(summary: Mapping[str, Any], mode: str, benchmark_name: str | None) -> str:
+def _summary_filename_stem(
+    summary: Mapping[str, Any],
+    mode: str,
+    suite: evaluation_suites.EvaluationSuite | None,
+) -> str:
     """Return summary filename stem for aggregate metrics/manifest outputs."""
     run_name = _curriculum_run_name(summary)
-    mode_slug = mode.replace("-", "_")
-    if benchmark_name is None:
-        return f"{run_name}_{mode_slug}"
-    return f"{run_name}_{mode_slug}_{benchmark_name}"
+    if mode == "own-stage":
+        return f"{run_name}_own_stage"
+    if suite is None:
+        message = "suite must be provided for suite summary naming"
+        raise ValueError(message)
+    return f"{run_name}_{suite.evaluation_name}"
 
 
-def _write_benchmark_task_config(curriculum_run_name: str, benchmark: CurriculumBenchmark) -> Path:
-    """Write a one-task benchmark config used by the shared evaluator."""
+def _write_suite_task_configs(
+    curriculum_run_name: str,
+    suite: evaluation_suites.EvaluationSuite,
+) -> dict[str, Path]:
+    """Copy a canonical suite and write one-task configs consumed by policy evaluation."""
     config_dir = utils.artifacts.get_run_config_evaluation_suites_dir(curriculum_run_name)
     config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / f"{benchmark.benchmark_name}_task.yaml"
-    payload = {
-        "name": f"benchmark_{benchmark.benchmark_name}",
-        "tasks": [benchmark.task],
-    }
-    config_path.write_text(_to_yaml(payload), encoding="utf-8")
-    return config_path
+    suite_stem = _safe_name(suite.evaluation_name)
+    suite_copy_path = config_dir / f"{suite_stem}_eval_suite.yaml"
+    suite_copy_path.write_text(_to_yaml(suite.to_dict()), encoding="utf-8")
+
+    task_config_dir = config_dir / suite_stem
+    task_config_dir.mkdir(parents=True, exist_ok=True)
+    task_config_paths: dict[str, Path] = {}
+    for suite_task in suite.tasks:
+        task_config_path = task_config_dir / f"{_safe_name(suite_task.task_name)}_task.yaml"
+        payload = {
+            "name": suite_task.task_name,
+            "evaluation_name": suite.evaluation_name,
+            "suite_task_name": suite_task.task_name,
+            "tasks": [copy.deepcopy(suite_task.task)],
+        }
+        task_config_path.write_text(_to_yaml(payload), encoding="utf-8")
+        task_config_paths[suite_task.task_name] = task_config_path
+    return task_config_paths
 
 
 def _evaluated_model_entry(
@@ -521,7 +537,8 @@ def _evaluated_model_entry(
     stage_name: str | None,
     source_run_name: str | None,
     is_final_stage: bool,
-    benchmark_name: str | None,
+    evaluation_suite_name: str | None,
+    suite_task_name: str | None,
 ) -> dict[str, Any]:
     """Build one evaluated-model summary entry from a shared helper result."""
     metrics = result.metrics
@@ -576,45 +593,10 @@ def _evaluated_model_entry(
     entry["stage_index"] = stage_index
     entry["stage_name"] = stage_name
     entry["is_final_stage"] = bool(is_final_stage)
-    entry["benchmark_name"] = benchmark_name
+    entry["evaluation_suite_name"] = evaluation_suite_name
+    entry["suite_task_name"] = suite_task_name
     entry["source_run_name"] = source_run_name
     return entry
-
-
-def _benchmark_from_mapping(raw: Any) -> CurriculumBenchmark:
-    """Build one benchmark from a raw YAML mapping."""
-    if not isinstance(raw, Mapping):
-        message = "benchmark entry must be a mapping"
-        raise TypeError(message)
-    task = raw.get("task")
-    if not isinstance(task, Mapping):
-        message = "benchmark entry must contain an explicit task mapping"
-        raise TypeError(message)
-    return CurriculumBenchmark(
-        benchmark_name=str(raw.get("benchmark_name") or ""),
-        task_shape=str(raw.get("task_shape") or ""),
-        eval_steps=int(raw.get("eval_steps", 0)),
-        task=dict(task),
-    )
-
-
-def _require_benchmark(benchmarks: Mapping[str, CurriculumBenchmark], benchmark_name: str) -> CurriculumBenchmark:
-    """Return a benchmark or raise a clear error with available names."""
-    try:
-        return benchmarks[benchmark_name]
-    except KeyError as exc:
-        available = ", ".join(sorted(benchmarks))
-        message = f"benchmark {benchmark_name!r} not found; available: {available}"
-        raise ValueError(message) from exc
-
-
-def _validate_task(task: Mapping[str, Any], label: str) -> None:
-    """Raise when a benchmark task fails deterministic validation."""
-    result = validation.tasks.validate_task(dict(task))
-    if not result.is_valid:
-        details = "; ".join(result.messages)
-        message = f"invalid {label} task: {details}"
-        raise ValueError(message)
 
 
 def _stages(summary: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -652,20 +634,19 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _to_yaml(payload: Mapping[str, Any]) -> str:
-    """Serialize a compact one-task config to YAML."""
+    """Serialize a compact evaluation config to YAML."""
     import yaml  # noqa: PLC0415
 
     return yaml.safe_dump(dict(payload), sort_keys=False)
 
 
 __all__ = [
-    "DEFAULT_BENCHMARK_CONFIG_PATH",
+    "DEFAULT_EVALUATION_MODE",
+    "DEFAULT_EVALUATION_SUITE_PATH",
     "DEFAULT_MODEL_SCOPE",
     "DEFAULT_RENDER_FPS",
     "SUPPORTED_EVALUATION_MODES",
     "SUPPORTED_MODEL_SCOPES",
-    "CurriculumBenchmark",
     "CurriculumEvaluationResult",
-    "load_curriculum_benchmarks",
     "run_curriculum_evaluation",
 ]

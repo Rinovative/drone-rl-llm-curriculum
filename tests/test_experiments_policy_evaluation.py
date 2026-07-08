@@ -9,10 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from src.experiments.evaluation import experiments_evaluation_policy as policy_evaluation
+from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
 
 FULL_EVALUATION_EPISODE_COUNT = 2
+SUITE_EVALUATION_STEPS = 120
 
 
 @dataclass
@@ -312,3 +315,74 @@ def test_shared_policy_evaluation_no_plots_records_flag_and_skips_plot_paths(
     assert result.plot_paths == {}
     assert result.plot_trace_scope == "disabled"
     assert result.metrics["plot_trace_scope"] == "disabled"
+
+
+def test_shared_policy_evaluation_accepts_task_config_derived_from_suite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify a suite task can feed the existing one-task policy evaluation contract."""
+    suite_path = tmp_path / "suite.yaml"
+    suite_path.write_text(
+        """evaluation_name: line_suite
+seed: 0
+eval_steps: 120
+render:
+  enabled: true
+  fps: 20
+  max_steps: null
+plots:
+  enabled: true
+traces:
+  enabled: true
+tasks:
+  - task_name: line_basic
+    task_shape: line
+    task:
+      task_type: trajectory
+      shape: line
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      start: [0.0, 0.0, 1.0]
+      end: [1.0, 0.0, 1.0]
+""",
+        encoding="utf-8",
+    )
+    suite = evaluation_suites.load_evaluation_suite(suite_path)
+    suite_task = suite.get_task("line_basic")
+    task_config = tmp_path / "line_basic_task.yaml"
+    task_config.write_text(yaml.safe_dump(suite_task.to_task_config_dict(), sort_keys=False), encoding="utf-8")
+    model_path = tmp_path / "model.zip"
+    model_path.write_bytes(b"model")
+
+    def fake_collect(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        task: dict[str, Any],
+        diagnostics_dir: Path,
+    ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
+        assert spec.task_shape == "line"
+        assert task["shape"] == "line"
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        trace = diagnostics_dir / "evaluation_trace.jsonl"
+        trace.write_text("{}\n", encoding="utf-8")
+        return _FakeDiagnostics(metrics={}, trace_records=[]), {"evaluation_trace_path": str(trace)}
+
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
+
+    result = policy_evaluation.run_policy_evaluation(
+        policy_evaluation.PolicyEvaluationSpec(
+            label="line_basic",
+            model_role="suite_task",
+            model_path=model_path,
+            task_config_path=task_config,
+            task_shape=suite_task.task_shape,
+            output_dir=tmp_path / "out",
+            eval_steps=suite.eval_steps,
+            seed=suite.seed,
+        ),
+        policy_evaluation.PolicyEvaluationArtifactOptions(render_enabled=False, plots_enabled=False, trace_enabled=False),
+    )
+
+    assert result.task_shape == "line"
+    assert result.metrics["task_config_path_used_for_evaluation"] == str(task_config)
+    assert result.metrics["eval_steps"] == SUITE_EVALUATION_STEPS

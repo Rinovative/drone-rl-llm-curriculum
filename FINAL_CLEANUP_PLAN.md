@@ -1,10 +1,10 @@
 # Final Cleanup Roadmap
 
-This document is the current roadmap for the drone RL with LLM-guided curriculum repository. It reflects the completed Phase 0 through Phase 3 work, the post-audit cleanup status, and the next planned phases. It is documentation only; it does not start Phase 4, edit notebooks, migrate storage, or change training, reward, action, or evaluation semantics.
+This document is the current roadmap for the drone RL with LLM-guided curriculum repository. It reflects the completed Phase 0 through Phase 4 work, the post-audit cleanup status, and the next planned phases. It is documentation only; it does not start Phase 5, edit notebooks, migrate storage, or change training, reward, action, or evaluation semantics.
 
 ## 1. Current Status
 
-The repository now has the intended source-package split and canonical run layout:
+The repository now has the intended source-package split, canonical run layout, and canonical evaluation suite contract:
 
 - Core reusable logic lives in `src/envs`, `src/trajectories`, `src/validation`, `src/evaluation`, `src/llm`, and `src/utils`.
 - Experiment orchestration lives under `src/experiments` with focused subpackages for CLI entry points, training, evaluation, curriculum, and rendering.
@@ -12,8 +12,9 @@ The repository now has the intended source-package split and canonical run layou
 - The old root-level experiment modules and CLI wrappers are intentionally removed. Tests keep negative coverage so those import paths stay removed.
 - PPO hyperparameters are configured through the nested `ppo:` block in `configs/training/ppo_tracking.yaml`.
 - The post-audit legacy cleanup is complete: flat PPO keys, mixed flat+nested PPO configs, old root experiment imports, and stale Docker job references to removed CLI paths are rejected or absent from active code.
+- Evaluation suites under `configs/evaluation/*_eval_suite.yaml` are now the canonical source for benchmark tasks used by policy and curriculum evaluation.
 
-Phase 3 is completed. The next real implementation phase is Phase 4: config-driven policy evaluation suites. This cleanup does not implement Phase 4.
+Phase 4 is completed. The next real implementation phase is Phase 5: comparison pipeline.
 
 ## 2. Current Source Layout
 
@@ -113,6 +114,12 @@ Phase 3 introduced `storage/runs/<self_describing_run_id>` as the canonical flat
 
 Phase 3 is not open. Do not re-migrate storage or reintroduce old storage helpers as compatibility layers.
 
+### Phase 4: Completed - config-driven policy evaluation suites
+
+Phase 4 added canonical evaluation suite loading through `src/experiments/evaluation/experiments_evaluation_suites.py`, migrated benchmark tasks into `configs/evaluation/final_benchmark_eval_suite.yaml`, and added `configs/evaluation/line_eval_suite.yaml` for focused line evaluations. The old `configs/evaluation/curriculum_benchmarks.yaml` format is removed from active configs.
+
+Curriculum evaluation now consumes `--suite` configs instead of custom benchmark configs. Final-stage suite evaluation writes under the run-level `storage/runs/<curriculum_run>/evaluations/<evaluation_name>/...` tree, while all-stage suite evaluation writes stage-scoped artifacts under `storage/runs/<curriculum_run>/stages/stageNN_<stage_name>/evaluations/<evaluation_name>/...`. Metrics, plot filenames, render/GIF behavior, diagnostics, reward logic, and action semantics remain unchanged.
+
 ## 5. Post-Audit Static Analysis And Legacy Findings
 
 Post-audit static analysis found no broad source breakage, and the follow-up legacy cleanup leaves no active compatibility paths for the removed experiment modules or flat PPO config form:
@@ -137,7 +144,7 @@ Legacy scan status:
 
 ## 6. Remaining Cleanup
 
-These are cleanup items, not Phase 4 implementation:
+These are cleanup items, not Phase 5 implementation:
 
 - Keep old-root-module negative tests in `tests/test_experiments_package_structure.py`.
 - Keep reviewing user-facing smoke/MVP wording in docstrings and README before final report polish.
@@ -147,11 +154,17 @@ These are cleanup items, not Phase 4 implementation:
 
 ## 7. Future Roadmap
 
-### Phase 4: Policy evaluation suites
-Phase 4 must use the canonical `storage/runs` layout and must not add adapters for old benchmark configs. Evaluation suites should become the canonical source for benchmark tasks.
-Add config-driven evaluation suites for direct PPO, curriculum stages, and final benchmark evaluation. This should likely add a suite loader under `src/experiments/evaluation`, update evaluation CLI coverage, and keep output naming deterministic for notebook/report loading.
+### Phase 4: Completed - policy evaluation suites
+Phase 4 uses the canonical `storage/runs` layout and does not add adapters for old benchmark configs. Evaluation suites are now the canonical source for benchmark tasks.
+Config-driven evaluation suites are available for direct PPO, curriculum stages, and final benchmark evaluation through the suite loader under `src/experiments/evaluation`. Curriculum evaluation CLI coverage now uses `--suite`, and output naming is deterministic for notebook/report loading.
 
 ### Phase 5: Comparison pipeline
+
+Immediate next actions:
+
+- Define comparison inputs around completed run manifests and matching `evaluation_suite_name` / `suite_task_names` metadata.
+- Compare direct PPO and manual curriculum runs only after they have both been evaluated through the same suite.
+- Keep comparison outputs under canonical `storage/runs` without reintroducing `storage/comparison_reports`.
 
 Add a report-ready comparison workflow for direct PPO, manual curriculum, and later LLM curriculum runs. Expected outputs include JSON summaries, CSV rows, plots, and a manifest that records suite identity so mismatched evaluations cannot be compared silently.
 
@@ -170,7 +183,7 @@ Update README commands, artifact descriptions, and final workflow documentation 
 ## 8. Do-Not-Change List
 
 - Do not create commits during Codex tasks.
-- Do not start Phase 4 as part of cleanup.
+- Do not reopen Phase 4 or add legacy benchmark adapters as part of later cleanup.
 - Do not edit `Drone_RL_LLM_Curriculum.ipynb` until notebook/report integration is explicitly requested.
 - Do not migrate storage again or bulk-move generated artifacts.
 - Do not change PPO hyperparameter values or PPO training semantics.
@@ -183,7 +196,7 @@ Update README commands, artifact descriptions, and final workflow documentation 
 
 ## 9. Validation Baseline
 
-For this post-audit cleanup, run:
+For the current validated roadmap baseline, run:
 
 ```bash
 bash -n scripts/docker_job.sh
@@ -193,3 +206,5 @@ mypy src
 pytest tests/test_experiments_ppo_config.py tests/test_experiments_package_structure.py -q
 pytest -q
 ```
+
+Phase 4 validation passed with `ruff format .`, `ruff format --check .`, `ruff check .`, `mypy src`, focused suite/policy/curriculum evaluation tests, `pytest -q`, and the manual-curriculum final-stage runtime evaluation through `configs/evaluation/final_benchmark_eval_suite.yaml`.

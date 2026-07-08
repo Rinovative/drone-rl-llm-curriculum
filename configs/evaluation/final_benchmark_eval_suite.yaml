@@ -1,8 +1,21 @@
-name: curriculum_benchmarks
-benchmarks:
-  - benchmark_name: line_basic
+evaluation_name: final_benchmark
+seed: 0
+eval_steps: 240
+
+render:
+  enabled: true
+  fps: 20
+  max_steps: null
+
+plots:
+  enabled: true
+
+traces:
+  enabled: true
+
+tasks:
+  - task_name: line_basic
     task_shape: line
-    eval_steps: 120
     task:
       task_type: trajectory
       shape: line
@@ -13,9 +26,8 @@ benchmarks:
       exclude_start_hold_from_tracking_metrics: true
       start: [0.0, 0.0, 1.0]
       end: [1.0, 0.0, 1.0]
-  - benchmark_name: polyline_basic
+  - task_name: polyline_basic
     task_shape: polyline
-    eval_steps: 120
     task:
       task_type: trajectory
       shape: polyline
@@ -28,9 +40,8 @@ benchmarks:
         - [0.0, 0.0, 1.0]
         - [0.4, 0.0, 1.0]
         - [0.4, 0.35, 1.0]
-  - benchmark_name: circle_basic
+  - task_name: circle_basic
     task_shape: circle
-    eval_steps: 120
     task:
       task_type: trajectory
       shape: circle
@@ -43,9 +54,8 @@ benchmarks:
       height: 1.0
       center: [0.0, 0.0]
       clockwise: false
-  - benchmark_name: line_long
+  - task_name: line_long
     task_shape: line
-    eval_steps: 160
     task:
       task_type: trajectory
       shape: line

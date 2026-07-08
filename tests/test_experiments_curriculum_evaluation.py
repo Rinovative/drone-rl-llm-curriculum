@@ -112,14 +112,23 @@ tasks:
     return summary_path
 
 
-def _benchmark_config(tmp_path: Path) -> Path:
-    config_path = tmp_path / "benchmarks.yaml"
+def _suite_config(tmp_path: Path, evaluation_name: str = "final_suite") -> Path:
+    config_path = tmp_path / f"{evaluation_name}.yaml"
     config_path.write_text(
-        """name: curriculum_benchmarks
-benchmarks:
-  - benchmark_name: line_basic
+        f"""evaluation_name: {evaluation_name}
+seed: 7
+eval_steps: 88
+render:
+  enabled: false
+  fps: 12
+  max_steps: 40
+plots:
+  enabled: false
+traces:
+  enabled: false
+tasks:
+  - task_name: line_basic
     task_shape: line
-    eval_steps: 120
     task:
       task_type: trajectory
       shape: line
@@ -127,26 +136,53 @@ benchmarks:
       sample_rate_hz: 10.0
       start: [0.0, 0.0, 1.0]
       end: [1.0, 0.0, 1.0]
-  - benchmark_name: polyline_basic
-    task_shape: polyline
-    eval_steps: 120
+  - task_name: hover_basic
+    task_shape: hover_stabilization
     task:
       task_type: trajectory
-      shape: polyline
-      duration_sec: 6.0
+      shape: hover_stabilization
+      duration_sec: 2.0
       sample_rate_hz: 10.0
-      points:
-        - [0.0, 0.0, 1.0]
-        - [0.4, 0.0, 1.0]
-        - [0.4, 0.3, 1.0]
+      position: [0.0, 0.0, 1.0]
 """,
         encoding="utf-8",
     )
     return config_path
 
 
-def _fake_policy_evaluation(spec: object, _: object) -> policy_evaluation.PolicyEvaluationResult:
+def _one_task_suite(tmp_path: Path) -> Path:
+    config_path = tmp_path / "line_suite.yaml"
+    config_path.write_text(
+        """evaluation_name: line_suite
+seed: 5
+eval_steps: 77
+render:
+  enabled: true
+  fps: 20
+  max_steps: null
+plots:
+  enabled: true
+traces:
+  enabled: true
+tasks:
+  - task_name: line_basic
+    task_shape: line
+    task:
+      task_type: trajectory
+      shape: line
+      duration_sec: 3.0
+      sample_rate_hz: 10.0
+      start: [0.0, 0.0, 1.0]
+      end: [1.0, 0.0, 1.0]
+""",
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def _fake_policy_evaluation(spec: object, artifacts: object) -> policy_evaluation.PolicyEvaluationResult:
     assert isinstance(spec, policy_evaluation.PolicyEvaluationSpec)
+    assert isinstance(artifacts, policy_evaluation.PolicyEvaluationArtifactOptions)
     output_dir = spec.output_dir
     diagnostics_dir = output_dir / "diagnostics"
     traces_dir = output_dir / "traces"
@@ -157,12 +193,15 @@ def _fake_policy_evaluation(spec: object, _: object) -> policy_evaluation.Policy
     for directory in (diagnostics_dir, traces_dir, plots_dir, renders_dir, metrics_dir, manifests_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
-    trace_path = traces_dir / "evaluation_trace.jsonl"
-    gif_path = renders_dir / "scenario_rollout.gif"
-    xy_plot = plots_dir / "trajectory_xy.png"
-    trace_path.write_text("{}\n", encoding="utf-8")
-    gif_path.write_bytes(b"GIF89a")
-    xy_plot.write_bytes(b"plot")
+    trace_path = traces_dir / "evaluation_trace.jsonl" if artifacts.trace_enabled else None
+    gif_path = renders_dir / "scenario_rollout.gif" if artifacts.render_enabled else None
+    xy_plot = plots_dir / "trajectory_xy.png" if artifacts.plots_enabled else None
+    if trace_path is not None:
+        trace_path.write_text("{}\n", encoding="utf-8")
+    if gif_path is not None:
+        gif_path.write_bytes(b"GIF89a")
+    if xy_plot is not None:
+        xy_plot.write_bytes(b"plot")
 
     metrics_path = metrics_dir / f"{spec.label}_metrics.json"
     manifest_path = manifests_dir / f"{spec.label}_manifest.json"
@@ -180,20 +219,20 @@ def _fake_policy_evaluation(spec: object, _: object) -> policy_evaluation.Policy
         "renders_dir": str(renders_dir),
         "metrics_path": str(metrics_path),
         "manifest_path": str(manifest_path),
-        "trace_path": str(trace_path),
-        "gif_path": str(gif_path),
-        "plot_paths": {"trajectory_xy": str(xy_plot)},
-        "plot_trace_scope": "render_rollout",
-        "plot_trace_step_count": 1,
+        "trace_path": None if trace_path is None else str(trace_path),
+        "gif_path": None if gif_path is None else str(gif_path),
+        "plot_paths": {} if xy_plot is None else {"trajectory_xy": str(xy_plot)},
+        "plot_trace_scope": "disabled" if not artifacts.plots_enabled else "render_rollout",
+        "plot_trace_step_count": 0 if not artifacts.plots_enabled else 1,
         "plot_trace_terminated": False,
         "plot_trace_truncated": False,
         "failure_report_path": str(diagnostics_dir / "failure_report.json"),
         "episode_summaries_path": str(diagnostics_dir / "episode_summaries.json"),
         "curriculum_feedback_path": str(diagnostics_dir / "curriculum_feedback.json"),
-        "render_enabled": True,
-        "plots_enabled": True,
-        "trace_enabled": True,
-        "diagnostics_enabled": True,
+        "render_enabled": artifacts.render_enabled,
+        "plots_enabled": artifacts.plots_enabled,
+        "trace_enabled": artifacts.trace_enabled,
+        "diagnostics_enabled": artifacts.diagnostics_enabled,
         "eval_steps": spec.eval_steps,
         "seed": spec.seed,
         "start_hold_enabled": True,
@@ -230,85 +269,63 @@ def _fake_policy_evaluation(spec: object, _: object) -> policy_evaluation.Policy
         renders_dir=str(renders_dir),
         metrics_path=str(metrics_path),
         manifest_path=str(manifest_path),
-        trace_path=str(trace_path),
-        gif_path=str(gif_path),
-        plot_paths={"trajectory_xy": str(xy_plot)},
-        plot_trace_scope="render_rollout",
+        trace_path=None if trace_path is None else str(trace_path),
+        gif_path=None if gif_path is None else str(gif_path),
+        plot_paths={} if xy_plot is None else {"trajectory_xy": str(xy_plot)},
+        plot_trace_scope="disabled" if not artifacts.plots_enabled else "render_rollout",
         failure_report_path=str(diagnostics_dir / "failure_report.json"),
         episode_summaries_path=str(diagnostics_dir / "episode_summaries.json"),
         curriculum_feedback_path=str(diagnostics_dir / "curriculum_feedback.json"),
-        render_enabled=True,
-        plots_enabled=True,
-        trace_enabled=True,
+        render_enabled=artifacts.render_enabled,
+        plots_enabled=artifacts.plots_enabled,
+        trace_enabled=artifacts.trace_enabled,
         metrics=payload,
     )
 
 
-def test_curriculum_evaluation_cli_parser_exposes_expected_options() -> None:
-    """Verify curriculum evaluation CLI keeps required options and controls."""
+def test_curriculum_evaluation_cli_parser_exposes_suite_options() -> None:
+    """Verify curriculum evaluation CLI exposes suite-oriented controls."""
     parser = cli_evaluate_curriculum.build_parser()
     args = parser.parse_args(
         [
             "--summary",
             "summary.json",
-            "--mode",
-            "benchmark",
-            "--benchmark",
-            "line_basic",
+            "--suite",
+            "suite.yaml",
             "--no-render",
             "--render-fps",
             "12",
             "--render-max-steps",
             "40",
             "--no-plots",
+            "--no-traces",
             "--model-scope",
             "final-stage",
         ]
     )
 
     assert args.summary == Path("summary.json")
-    assert args.mode == "benchmark"
-    assert args.benchmark == "line_basic"
+    assert args.suite == Path("suite.yaml")
+    assert args.mode == "suite"
+    assert not hasattr(args, "benchmark")
+    assert not hasattr(args, "benchmark_config")
     assert args.no_render is True
     assert args.render_fps == 12
     assert args.render_max_steps == 40
     assert args.no_plots is True
+    assert args.no_traces is True
     assert args.model_scope == "final-stage"
 
 
-def test_curriculum_evaluation_requires_benchmark_for_benchmark_and_generalization(tmp_path: Path) -> None:
-    """Verify benchmark and generalization modes require --benchmark."""
+def test_curriculum_evaluation_requires_suite_for_suite_mode(tmp_path: Path) -> None:
+    """Verify suite mode requires a canonical --suite config."""
     summary_path = _curriculum_summary(tmp_path)
-    benchmarks = _benchmark_config(tmp_path)
 
-    with pytest.raises(ValueError, match="--benchmark is required for benchmark mode"):
+    with pytest.raises(ValueError, match="--suite is required for suite mode"):
         curriculum_evaluation.run_curriculum_evaluation(
             summary_path=summary_path,
-            mode="benchmark",
-            benchmark=None,
-            benchmark_config_path=benchmarks,
-        )
-
-    with pytest.raises(ValueError, match="--benchmark is required for generalization mode"):
-        curriculum_evaluation.run_curriculum_evaluation(
-            summary_path=summary_path,
-            mode="generalization",
-            benchmark=None,
-            benchmark_config_path=benchmarks,
-        )
-
-
-def test_curriculum_evaluation_unknown_benchmark_fails_clearly(tmp_path: Path) -> None:
-    """Verify unknown benchmark names fail with available benchmark names."""
-    summary_path = _curriculum_summary(tmp_path)
-    benchmarks = _benchmark_config(tmp_path)
-
-    with pytest.raises(ValueError, match="benchmark 'missing' not found"):
-        curriculum_evaluation.run_curriculum_evaluation(
-            summary_path=summary_path,
-            mode="benchmark",
-            benchmark="missing",
-            benchmark_config_path=benchmarks,
+            mode="suite",
+            suite_path=None,
         )
 
 
@@ -316,24 +333,20 @@ def test_curriculum_evaluation_own_stage_creates_stage_indexed_dirs_and_summary_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify own-stage mode produces stage-indexed evaluation dirs and path fields."""
+    """Verify own-stage mode still produces stage-indexed evaluation dirs."""
     summary_path = _curriculum_summary(tmp_path)
-    benchmarks = _benchmark_config(tmp_path)
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
 
-    result = curriculum_evaluation.run_curriculum_evaluation(
-        summary_path=summary_path,
-        mode="own-stage",
-        benchmark_config_path=benchmarks,
-    )
+    result = curriculum_evaluation.run_curriculum_evaluation(summary_path=summary_path, mode="own-stage")
 
     payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
     assert payload["evaluation_mode"] == "own-stage"
     assert payload["run_kind"] == "curriculum"
     assert payload["curriculum_kind"] == "manual"
     assert payload["curriculum_run_name"] == "curriculum_manual_line_v1_seed0"
-    assert payload["benchmark_name"] is None
+    assert payload["evaluation_suite_name"] is None
+    assert payload["suite_task_count"] == 0
     assert payload["model_scope"] == "all-stages"
     assert len(payload["evaluated_models"]) == 2
     directories = [entry["evaluation_dir"].replace("\\", "/") for entry in payload["evaluated_models"]]
@@ -341,85 +354,102 @@ def test_curriculum_evaluation_own_stage_creates_stage_indexed_dirs_and_summary_
     assert directories[1].endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/own_stage")
     assert payload["evaluated_models"][0]["is_final_stage"] is False
     assert payload["evaluated_models"][1]["is_final_stage"] is True
-    assert payload["evaluated_models"][0]["gif_path"].replace("\\", "/").endswith("renders/scenario_rollout.gif")
-    assert payload["evaluated_models"][0]["trace_path"].replace("\\", "/").endswith("traces/evaluation_trace.jsonl")
-    assert "trajectory_xy" in payload["evaluated_models"][0]["plot_paths"]
-    assert payload["evaluated_models"][0]["plot_trace_scope"] == "render_rollout"
+    assert payload["evaluated_models"][0]["suite_task_name"] is None
 
 
-def test_curriculum_evaluation_benchmark_and_generalization_layouts_include_baseline(
+def test_curriculum_evaluation_suite_final_stage_writes_run_level_and_uses_suite_options(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify benchmark/generalization layouts include final and optional baseline model dirs."""
+    """Verify final-stage suite evaluation writes run-level task artifacts."""
     summary_path = _curriculum_summary(tmp_path)
-    benchmarks = _benchmark_config(tmp_path)
+    suite_path = _suite_config(tmp_path)
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+
+    result = curriculum_evaluation.run_curriculum_evaluation(
+        summary_path=summary_path,
+        suite_path=suite_path,
+        model_scope="final-stage",
+    )
+
+    payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    directories = [entry["evaluation_dir"].replace("\\", "/") for entry in payload["evaluated_models"]]
+    assert payload["evaluation_mode"] == "suite"
+    assert payload["evaluation_name"] == "final_suite"
+    assert payload["evaluation_suite_name"] == "final_suite"
+    assert payload["suite_task_names"] == ["line_basic", "hover_basic"]
+    assert payload["suite_task_count"] == 2
+    assert payload["model_scope"] == "final-stage"
+    assert payload["entry_count"] == 2
+    assert all(entry["stage_index"] == 2 for entry in payload["evaluated_models"])
+    assert all(entry["is_final_stage"] is True for entry in payload["evaluated_models"])
+    assert directories[0].endswith("runs/curriculum_manual_line_v1_seed0/evaluations/final_suite/line_basic")
+    assert directories[1].endswith("runs/curriculum_manual_line_v1_seed0/evaluations/final_suite/hover_basic")
+    assert not any("/stages/" in path for path in directories)
+    assert {entry["suite_task_name"] for entry in payload["evaluated_models"]} == {"line_basic", "hover_basic"}
+    assert all(entry["eval_steps"] == 88 for entry in payload["evaluated_models"])
+    assert all(entry["seed"] == 7 for entry in payload["evaluated_models"])
+    assert all(entry["render_enabled"] is False for entry in payload["evaluated_models"])
+    assert all(entry["plots_enabled"] is False for entry in payload["evaluated_models"])
+    assert all(entry["trace_enabled"] is False for entry in payload["evaluated_models"])
+    copied_task_config = Path(payload["evaluated_models"][0]["task_config_path_used_for_evaluation"])
+    assert copied_task_config.exists()
+    assert copied_task_config.as_posix().endswith("config/evaluation_suites/final_suite/line_basic_task.yaml")
+
+
+def test_curriculum_evaluation_stage_suite_scope_uses_stage_dirs_and_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify all-stage suite evaluation uses stage dirs and optional baseline dirs."""
+    summary_path = _curriculum_summary(tmp_path)
+    suite_path = _suite_config(tmp_path)
     baseline = tmp_path / "baseline_model.zip"
     baseline.write_bytes(b"model")
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
 
-    benchmark_result = curriculum_evaluation.run_curriculum_evaluation(
+    result = curriculum_evaluation.run_curriculum_evaluation(
         summary_path=summary_path,
-        mode="benchmark",
-        benchmark="line_basic",
-        benchmark_config_path=benchmarks,
+        suite_path=suite_path,
         include_baseline_model=baseline,
         baseline_label="ppo_line",
+        render=True,
+        plots=True,
+        traces=True,
     )
-    benchmark_payload = json.loads(Path(benchmark_result.metrics_path).read_text(encoding="utf-8"))
-    directories = [entry["evaluation_dir"].replace("\\", "/") for entry in benchmark_payload["evaluated_models"]]
-    assert benchmark_payload["model_scope"] == "all-stages"
-    assert benchmark_payload["run_kind"] == "curriculum"
-    assert benchmark_payload["curriculum_kind"] == "manual"
-    assert benchmark_payload["curriculum_run_name"] == "curriculum_manual_line_v1_seed0"
-    assert benchmark_payload["evaluation_name"] == "benchmark_line_basic"
-    assert any(
-        path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage01_hover_stabilization/evaluations/benchmark_line_basic")
-        for path in directories
-    )
-    assert any(path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/benchmark_line_basic") for path in directories)
-    assert any(
-        path.endswith("runs/curriculum_manual_line_v1_seed0/evaluations/benchmark_line_basic/baselines/baseline_ppo_line") for path in directories
-    )
-    assert not any("final_curriculum" in path for path in directories)
-    final_entries = [entry for entry in benchmark_payload["evaluated_models"] if entry["stage_index"] == 2]
-    assert final_entries[0]["is_final_stage"] is True
 
-    generalization_result = curriculum_evaluation.run_curriculum_evaluation(
-        summary_path=summary_path,
-        mode="generalization",
-        benchmark="polyline_basic",
-        benchmark_config_path=benchmarks,
-    )
-    generalization_payload = json.loads(Path(generalization_result.metrics_path).read_text(encoding="utf-8"))
-    directories = [entry["evaluation_dir"].replace("\\", "/") for entry in generalization_payload["evaluated_models"]]
-    assert generalization_payload["evaluation_name"] == "generalization_polyline_basic"
+    payload = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    directories = [entry["evaluation_dir"].replace("\\", "/") for entry in payload["evaluated_models"]]
+    assert payload["model_scope"] == "all-stages"
+    assert payload["entry_count"] == 6
     assert any(
-        path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage01_hover_stabilization/evaluations/generalization_polyline_basic")
+        path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage01_hover_stabilization/evaluations/final_suite/line_basic")
         for path in directories
     )
+    assert any(path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/final_suite/hover_basic") for path in directories)
     assert any(
-        path.endswith("runs/curriculum_manual_line_v1_seed0/stages/stage02_line/evaluations/generalization_polyline_basic") for path in directories
+        path.endswith("runs/curriculum_manual_line_v1_seed0/evaluations/final_suite/baselines/baseline_ppo_line/line_basic") for path in directories
     )
-    assert not any("final_curriculum" in path for path in directories)
+    assert all(entry["render_enabled"] is True for entry in payload["evaluated_models"])
+    assert all(entry["plots_enabled"] is True for entry in payload["evaluated_models"])
+    assert all(entry["trace_enabled"] is True for entry in payload["evaluated_models"])
 
 
 def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify --model-scope final-stage restricts evaluation to the final curriculum stage."""
+    """Verify --model-scope final-stage restricts evaluation to the final stage."""
     summary_path = _curriculum_summary(tmp_path)
-    benchmarks = _benchmark_config(tmp_path)
+    suite_path = _one_task_suite(tmp_path)
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
     monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
 
     result = curriculum_evaluation.run_curriculum_evaluation(
         summary_path=summary_path,
-        mode="benchmark",
-        benchmark="line_basic",
-        benchmark_config_path=benchmarks,
+        suite_path=suite_path,
         model_scope="final-stage",
     )
 
@@ -428,12 +458,16 @@ def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
     assert payload["model_scope"] == "final-stage"
     assert [entry["stage_index"] for entry in payload["evaluated_models"]] == [2]
     assert payload["evaluated_models"][0]["is_final_stage"] is True
+    assert payload["evaluated_models"][0]["suite_task_name"] == "line_basic"
+
+
+def test_old_curriculum_benchmarks_config_is_not_required() -> None:
+    """Verify the old benchmark config path is absent from active curriculum evaluation."""
+    assert not hasattr(curriculum_evaluation, "DEFAULT_BENCHMARK_CONFIG_PATH")
+    assert not hasattr(curriculum_evaluation, "load_curriculum_benchmarks")
+    assert not Path("configs/evaluation/curriculum_benchmarks.yaml").exists()
 
 
 def test_curriculum_evaluation_supported_modes_do_not_expose_progression() -> None:
     """Verify progression mode is intentionally unsupported."""
-    assert set(curriculum_evaluation.SUPPORTED_EVALUATION_MODES) == {
-        "own-stage",
-        "benchmark",
-        "generalization",
-    }
+    assert set(curriculum_evaluation.SUPPORTED_EVALUATION_MODES) == {"own-stage", "suite"}
