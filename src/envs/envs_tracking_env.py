@@ -140,6 +140,10 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         Whether observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether observations append the previous PPO-facing action.
+    termination_limits
+        Optional hard episode-control safety limits. Defaults preserve upstream truncation behavior.
+    diagnostic_limits
+        Optional strict diagnostic thresholds reported independently of episode truncation.
 
     Notes
     -----
@@ -164,6 +168,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
         include_dynamics_observation: bool = envs.actions.DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
         include_previous_action: bool = envs.actions.DEFAULT_INCLUDE_PREVIOUS_ACTION,
+        termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+        diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
     ) -> None:
         """Initialize the tracking wrapper and its base HoverAviary environment."""
         super().__init__()
@@ -179,6 +185,11 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             include_previous_action=include_previous_action,
         )
         self.action_interface = self.action_config.parsed_action_interface.value
+        self.termination_limits = envs.termination.parse_termination_limits(
+            termination_limits,
+            self.action_config.parsed_action_interface,
+        )
+        self.diagnostic_limits = envs.termination.parse_diagnostic_limits(diagnostic_limits)
         self.rpm_delta_scale = self.action_config.rpm_delta_scale
         self.include_dynamics_observation = self.action_config.include_dynamics_observation
         self.include_previous_action = self.action_config.include_previous_action
@@ -211,6 +222,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         )
         self.reward_config = envs.tracking_reward.TrackingRewardConfig(max_steps=max_steps)
         self._step_index = 0
+        self._strict_limit_violation_count = 0
+        self._termination_limit_violation_steps = 0
         self._previous_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self._previous_action_override: np.ndarray | None = None
         self._closed = False
@@ -241,6 +254,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         self._refresh_task_reference_for_reset()
         _, base_info = self.base_env.reset(seed=seed, options=options)
         self._step_index = 0
+        self._strict_limit_violation_count = 0
+        self._termination_limit_violation_steps = 0
         self._reset_previous_action()
         state = self._current_state_vector()
         current_position = _state_position(state)
@@ -304,8 +319,19 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             state=state,
         )
         self._step_index = next_step_index
+        base_truncation_causes = _base_truncation_causes(self.base_env, state)
+        strict_limit_violations = envs.termination.state_limit_violations(state, self.diagnostic_limits)
+        project_truncation_causes = envs.termination.state_limit_violations(state, self.termination_limits)
+        if strict_limit_violations:
+            self._strict_limit_violation_count += 1
+        if project_truncation_causes:
+            self._termination_limit_violation_steps += 1
+        else:
+            self._termination_limit_violation_steps = 0
+        base_truncation_effective = bool(base_truncated and self.termination_limits.terminate_on_base_truncation)
+        project_truncated = bool(project_truncation_causes and self._termination_limit_violation_steps > self.termination_limits.allow_recovery_steps)
         terminated = bool(tracking_result.done or base_terminated)
-        truncated = bool(base_truncated)
+        truncated = bool(base_truncation_effective or project_truncated)
         info = self._make_info(
             current_position=tracking_result.actual_position,
             reference_position=tracking_result.reference_position,
@@ -315,11 +341,19 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             state=state,
             base_terminated=bool(base_terminated),
             base_truncated=bool(base_truncated),
+            base_truncation_causes=base_truncation_causes,
+            base_truncation_effective=base_truncation_effective,
+            project_truncated=project_truncated,
+            project_truncation_causes=project_truncation_causes,
+            strict_limit_violations=strict_limit_violations,
+            termination_limit_violation_steps=self._termination_limit_violation_steps,
             termination_reason=_termination_reason(
                 tracking_done=tracking_result.done,
                 base_terminated=bool(base_terminated),
-                base_truncated=bool(base_truncated),
-                base_truncation_causes=_base_truncation_causes(self.base_env, state),
+                base_truncated=bool(base_truncation_effective),
+                base_truncation_causes=base_truncation_causes,
+                project_truncated=project_truncated,
+                project_truncation_causes=project_truncation_causes,
                 step_index=tracking_result.step_index,
                 max_steps=self.reward_config.max_steps,
                 reference_sample_count=int(self.reference.positions.shape[0]),
@@ -429,6 +463,12 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         state: np.ndarray | None = None,
         base_terminated: bool = False,
         base_truncated: bool = False,
+        base_truncation_causes: list[str] | None = None,
+        base_truncation_effective: bool | None = None,
+        project_truncated: bool = False,
+        project_truncation_causes: list[str] | None = None,
+        strict_limit_violations: list[str] | None = None,
+        termination_limit_violation_steps: int = 0,
         termination_reason: str = "reset",
         requested_action: np.ndarray | None = None,
         applied_action: np.ndarray | None = None,
@@ -440,6 +480,19 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         velocity = np.array(active_state[10:13], dtype=float, copy=True)
         angular_velocity = np.array(active_state[13:16], dtype=float, copy=True)
         last_action = np.array(active_state[16:20], dtype=float, copy=True)
+        base_causes = _base_truncation_causes(self.base_env, active_state) if base_truncation_causes is None else list(base_truncation_causes)
+        strict_causes = (
+            envs.termination.state_limit_violations(active_state, self.diagnostic_limits)
+            if strict_limit_violations is None
+            else list(strict_limit_violations)
+        )
+        project_causes = (
+            envs.termination.state_limit_violations(active_state, self.termination_limits)
+            if project_truncation_causes is None
+            else list(project_truncation_causes)
+        )
+        strict_limit_violation = bool(strict_causes)
+        recovery_allowed = bool(project_causes and termination_limit_violation_steps <= self.termination_limits.allow_recovery_steps)
         current = np.array(current_position, dtype=float, copy=True)
         reference = np.array(reference_position, dtype=float, copy=True)
         reference_index = int(np.clip(reference_step_index, 0, self.reference.times.shape[0] - 1))
@@ -457,6 +510,11 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             "observation_components": _copy_observation_components(self.observation_components),
             "previous_action": np.array(self._previous_action, dtype=float, copy=True),
             "direct_control_limitations": envs.actions.direct_control_limitations(self.action_config.parsed_action_interface),
+            "termination_limits_mode": self.termination_limits.mode,
+            "termination_limits": self.termination_limits.to_dict(),
+            "diagnostic_limits": self.diagnostic_limits.to_dict(),
+            "base_truncation_policy": self.termination_limits.base_truncation_policy,
+            "terminate_on_base_truncation": self.termination_limits.terminate_on_base_truncation,
             "reference_position": reference,
             "reference_xyz": reference,
             "current_position": current,
@@ -483,7 +541,19 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             "applied_action": None if applied_action is None else np.array(applied_action, dtype=float, copy=True),
             "base_terminated": bool(base_terminated),
             "base_truncated": bool(base_truncated),
-            "base_truncation_causes": _base_truncation_causes(self.base_env, active_state),
+            "base_truncation_effective": bool(base_truncated if base_truncation_effective is None else base_truncation_effective),
+            "base_truncation_ignored": bool(
+                base_truncated and not (base_truncated if base_truncation_effective is None else base_truncation_effective)
+            ),
+            "base_truncation_causes": base_causes,
+            "project_truncated": bool(project_truncated),
+            "project_truncation_causes": project_causes,
+            "strict_limit_violation": strict_limit_violation,
+            "strict_limit_violations": strict_causes,
+            "strict_limit_violation_count": int(self._strict_limit_violation_count),
+            "recovery_allowed_after_limit_violation": recovery_allowed,
+            "recovery_steps_after_limit_violation": int(termination_limit_violation_steps),
+            "recovery_steps_limit": int(self.termination_limits.allow_recovery_steps),
             "base_info": dict(base_info),
             "base_info_keys": sorted(str(key) for key in base_info),
             "base_reason_fields": _base_reason_fields(base_info),
@@ -585,6 +655,8 @@ def make_trajectory_tracking_env(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = envs.actions.DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = envs.actions.DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> TrajectoryTrackingEnv:
     """
     Build a ready-to-use minimal trajectory-tracking environment.
@@ -611,6 +683,10 @@ def make_trajectory_tracking_env(
         Whether observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether observations append the previous PPO-facing action.
+    termination_limits
+        Optional hard episode-control safety limits.
+    diagnostic_limits
+        Optional strict diagnostic thresholds reported independently of episode control.
 
     Returns
     -------
@@ -629,6 +705,8 @@ def make_trajectory_tracking_env(
         rpm_delta_scale=rpm_delta_scale,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        termination_limits=termination_limits,
+        diagnostic_limits=diagnostic_limits,
     )
 
 
@@ -893,11 +971,17 @@ def _termination_reason(
     base_terminated: bool,
     base_truncated: bool,
     base_truncation_causes: list[str],
+    project_truncated: bool,
+    project_truncation_causes: list[str],
     step_index: int,
     max_steps: int | None,
     reference_sample_count: int,
 ) -> str:
     """Return the most specific rollout termination reason available."""
+    if project_truncated:
+        if project_truncation_causes:
+            return "project_truncated:" + ",".join(project_truncation_causes)
+        return "project_truncated:unclassified"
     if base_truncated:
         if base_truncation_causes:
             return "base_truncated:" + ",".join(base_truncation_causes)

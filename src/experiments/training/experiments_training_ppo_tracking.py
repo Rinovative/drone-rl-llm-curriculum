@@ -30,7 +30,7 @@ import sys
 import warnings as py_warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -121,6 +121,10 @@ class PPOTrackingSmokeSettings:
         Whether tracking observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether tracking observations append the previous PPO-facing action.
+    termination_limits
+        Hard safety limits used by PPO training environments.
+    diagnostic_limits
+        Strict diagnostic thresholds reported during training and evaluation rollouts.
     wandb_mode
         Optional W&B mode. Auto mode uses online credentials when available and offline otherwise.
     wandb_project
@@ -166,6 +170,8 @@ class PPOTrackingSmokeSettings:
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None
     wandb_mode: str = utils.wandb.WANDB_MODE_AUTO
     wandb_project: str = utils.wandb.DEFAULT_WANDB_PROJECT
     wandb_entity: str | None = None
@@ -229,6 +235,12 @@ class PPOTrackingSmokeSettings:
         object.__setattr__(self, "rpm_delta_scale", action_config.rpm_delta_scale)
         object.__setattr__(self, "include_dynamics_observation", action_config.include_dynamics_observation)
         object.__setattr__(self, "include_previous_action", action_config.include_previous_action)
+        object.__setattr__(
+            self,
+            "termination_limits",
+            envs.termination.parse_termination_limits(self.termination_limits, action_config.parsed_action_interface),
+        )
+        object.__setattr__(self, "diagnostic_limits", envs.termination.parse_diagnostic_limits(self.diagnostic_limits))
         if action_config.parsed_action_interface == envs.actions.ActionInterface.DIRECT_RPM and not self.normalize_actions:
             message = "direct_rpm requires normalize_actions true because PPO actions are normalized motor commands"
             raise ValueError(message)
@@ -268,6 +280,16 @@ class PPOTrackingSmokeResult:
     manifest_path: str
     metrics: dict[str, Any]
     warnings: tuple[str, ...] = ()
+
+
+def _settings_termination_limits(settings: PPOTrackingSmokeSettings) -> envs.termination.TerminationLimitConfig:
+    """Return the resolved termination limit config stored on validated settings."""
+    return cast("envs.termination.TerminationLimitConfig", settings.termination_limits)
+
+
+def _settings_diagnostic_limits(settings: PPOTrackingSmokeSettings) -> envs.termination.DiagnosticLimitConfig:
+    """Return the resolved diagnostic limit config stored on validated settings."""
+    return cast("envs.termination.DiagnosticLimitConfig", settings.diagnostic_limits)
 
 
 def load_ppo_tracking_settings(path: str | Path) -> PPOTrackingSmokeSettings:
@@ -346,6 +368,8 @@ def describe_tracking_env_action_metadata(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     """
     Build TrajectoryTrackingEnv and return action-space metadata for diagnostics.
@@ -364,6 +388,10 @@ def describe_tracking_env_action_metadata(
         Whether observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether observations append the previous PPO-facing action.
+    termination_limits
+        Optional hard episode-control safety limits used by the described environment.
+    diagnostic_limits
+        Optional strict diagnostic thresholds used by the described environment.
 
     Returns
     -------
@@ -379,6 +407,8 @@ def describe_tracking_env_action_metadata(
         rpm_delta_scale=rpm_delta_scale,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        termination_limits=termination_limits,
+        diagnostic_limits=diagnostic_limits,
     )
     try:
         return _tracking_env_action_metadata(tracking_env)
@@ -404,6 +434,8 @@ def _make_seeded_ppo_tracking_env(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
     task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
     env_rank: int = 0,
 ) -> Any:
@@ -421,6 +453,8 @@ def _make_seeded_ppo_tracking_env(
         rpm_delta_scale=rpm_delta_scale,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        termination_limits=termination_limits,
+        diagnostic_limits=diagnostic_limits,
     )
     tracking_env = _ppo_training_env(real_env, normalize_actions=normalize_actions, action_interface=action_interface)
     _seed_tracking_env(tracking_env, seed)
@@ -447,6 +481,8 @@ def _make_ppo_training_env_factory(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
     task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
     env_rank: int = 0,
 ) -> Any:
@@ -463,6 +499,8 @@ def _make_ppo_training_env_factory(
             rpm_delta_scale=rpm_delta_scale,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            termination_limits=termination_limits,
+            diagnostic_limits=diagnostic_limits,
             task_distribution_settings=task_distribution_settings,
             env_rank=env_rank,
         )
@@ -509,6 +547,8 @@ def _make_ppo_training_vec_env(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
     task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
 ) -> Any:
     """Build the vectorized PPO training environment with lazy per-rank factories."""
@@ -524,6 +564,8 @@ def _make_ppo_training_vec_env(
             "rpm_delta_scale": rpm_delta_scale,
             "include_dynamics_observation": include_dynamics_observation,
             "include_previous_action": include_previous_action,
+            "termination_limits": termination_limits,
+            "diagnostic_limits": diagnostic_limits,
         }
         if task_distribution_settings is not None:
             factory_kwargs["task_distribution_settings"] = task_distribution_settings
@@ -619,6 +661,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
                 rpm_delta_scale=active_settings.rpm_delta_scale,
                 include_dynamics_observation=active_settings.include_dynamics_observation,
                 include_previous_action=active_settings.include_previous_action,
+                termination_limits=active_settings.termination_limits,
+                diagnostic_limits=active_settings.diagnostic_limits,
             )
             if active_settings.check_env
             else ()
@@ -633,6 +677,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         rpm_delta_scale=active_settings.rpm_delta_scale,
         include_dynamics_observation=active_settings.include_dynamics_observation,
         include_previous_action=active_settings.include_previous_action,
+        termination_limits=active_settings.termination_limits,
+        diagnostic_limits=active_settings.diagnostic_limits,
     )
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -657,6 +703,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             rpm_delta_scale=active_settings.rpm_delta_scale,
             include_dynamics_observation=active_settings.include_dynamics_observation,
             include_previous_action=active_settings.include_previous_action,
+            termination_limits=active_settings.termination_limits,
+            diagnostic_limits=active_settings.diagnostic_limits,
             task_distribution_settings=task_distribution_settings,
         )
         try:
@@ -715,6 +763,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
                 rpm_delta_scale=active_settings.rpm_delta_scale,
                 include_dynamics_observation=active_settings.include_dynamics_observation,
                 include_previous_action=active_settings.include_previous_action,
+                termination_limits=envs.termination.default_termination_limits(),
+                diagnostic_limits=active_settings.diagnostic_limits,
             )
             try:
                 action_metadata = _tracking_env_action_metadata(eval_env)
@@ -743,6 +793,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             rpm_delta_scale=active_settings.rpm_delta_scale,
             include_dynamics_observation=active_settings.include_dynamics_observation,
             include_previous_action=active_settings.include_previous_action,
+            termination_limits=active_settings.termination_limits,
+            diagnostic_limits=active_settings.diagnostic_limits,
         )
         liftoff_diagnostics = {
             **simple_liftoff_diagnostics,
@@ -751,6 +803,8 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         diagnostic_artifact_fields = evaluation.diagnostics.write_policy_evaluation_diagnostics(eval_diagnostics, diagnostics_dir)
         warnings.extend(_movement_warnings(eval_metrics=eval_metrics, action_metadata=action_metadata))
 
+        termination_limits = _settings_termination_limits(active_settings)
+        diagnostic_limits = _settings_diagnostic_limits(active_settings)
         metrics: dict[str, Any] = {
             "run_type": "training",
             "run_kind": _metadata_text(active_settings.run_metadata, "run_kind", "direct_ppo"),
@@ -817,6 +871,14 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             **dict(active_settings.run_metadata),
             "wandb": _wandb_run_metadata(wandb_settings, wandb_run),
             **eval_metrics,
+            "evaluation_termination_limits_mode": eval_metrics.get("termination_limits_mode"),
+            "evaluation_termination_limits": eval_metrics.get("termination_limits"),
+            "evaluation_diagnostic_limits": eval_metrics.get("diagnostic_limits"),
+            "termination_limits_mode": termination_limits.mode,
+            "termination_limits": termination_limits.to_dict(),
+            "diagnostic_limits": diagnostic_limits.to_dict(),
+            "base_truncation_policy": termination_limits.base_truncation_policy,
+            "terminate_on_base_truncation": termination_limits.terminate_on_base_truncation,
             **diagnostic_artifact_fields,
         }
         metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -962,6 +1024,8 @@ def run_ppo_tracking_smoke_from_config(
         rpm_delta_scale=settings.rpm_delta_scale,
         include_dynamics_observation=settings.include_dynamics_observation,
         include_previous_action=settings.include_previous_action,
+        termination_limits=settings.termination_limits,
+        diagnostic_limits=settings.diagnostic_limits,
         wandb_mode=settings.wandb_mode if wandb_mode is None else wandb_mode,
         training_config_path=settings.training_config_path,
         wandb_project=settings.wandb_project if wandb_project is None else wandb_project,
@@ -1014,6 +1078,8 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
         "rpm_delta_scale": config.get("rpm_delta_scale", envs.actions.DEFAULT_RPM_DELTA_SCALE),
         "include_dynamics_observation": bool(config.get("include_dynamics_observation", DEFAULT_INCLUDE_DYNAMICS_OBSERVATION)),
         "include_previous_action": bool(config.get("include_previous_action", DEFAULT_INCLUDE_PREVIOUS_ACTION)),
+        "termination_limits": config.get("termination_limits"),
+        "diagnostic_limits": config.get("diagnostic_limits"),
         "wandb_mode": str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_AUTO),
         "wandb_project": str(config.get("wandb_project") or utils.wandb.DEFAULT_WANDB_PROJECT),
         "wandb_entity": config.get("wandb_entity") or None,
@@ -1476,6 +1542,14 @@ def _build_manifest(
         "observation_dim": metrics.get("observation_dim"),
         "observation_components": metrics.get("observation_components"),
         "direct_control_limitations": list(metrics.get("direct_control_limitations", [])),
+        "termination_limits_mode": metrics.get("termination_limits_mode"),
+        "termination_limits": metrics.get("termination_limits"),
+        "diagnostic_limits": metrics.get("diagnostic_limits"),
+        "base_truncation_policy": metrics.get("base_truncation_policy"),
+        "terminate_on_base_truncation": metrics.get("terminate_on_base_truncation"),
+        "evaluation_termination_limits_mode": metrics.get("evaluation_termination_limits_mode"),
+        "evaluation_termination_limits": metrics.get("evaluation_termination_limits"),
+        "evaluation_diagnostic_limits": metrics.get("evaluation_diagnostic_limits"),
         "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
         "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
         "effective_rollout_steps": metrics.get(
@@ -1567,6 +1641,14 @@ def _build_run_manifest(
             "observation_dim": metrics.get("observation_dim"),
             "observation_components": metrics.get("observation_components"),
             "direct_control_limitations": list(metrics.get("direct_control_limitations", [])),
+            "termination_limits_mode": metrics.get("termination_limits_mode"),
+            "termination_limits": metrics.get("termination_limits"),
+            "diagnostic_limits": metrics.get("diagnostic_limits"),
+            "base_truncation_policy": metrics.get("base_truncation_policy"),
+            "terminate_on_base_truncation": metrics.get("terminate_on_base_truncation"),
+            "evaluation_termination_limits_mode": metrics.get("evaluation_termination_limits_mode"),
+            "evaluation_termination_limits": metrics.get("evaluation_termination_limits"),
+            "evaluation_diagnostic_limits": metrics.get("evaluation_diagnostic_limits"),
             "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
             "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
             "effective_rollout_steps": metrics.get(
@@ -1589,6 +1671,14 @@ def _build_run_manifest(
         "observation_dim": metrics.get("observation_dim"),
         "observation_components": metrics.get("observation_components"),
         "direct_control_limitations": list(metrics.get("direct_control_limitations", [])),
+        "termination_limits_mode": metrics.get("termination_limits_mode"),
+        "termination_limits": metrics.get("termination_limits"),
+        "diagnostic_limits": metrics.get("diagnostic_limits"),
+        "base_truncation_policy": metrics.get("base_truncation_policy"),
+        "terminate_on_base_truncation": metrics.get("terminate_on_base_truncation"),
+        "evaluation_termination_limits_mode": metrics.get("evaluation_termination_limits_mode"),
+        "evaluation_termination_limits": metrics.get("evaluation_termination_limits"),
+        "evaluation_diagnostic_limits": metrics.get("evaluation_diagnostic_limits"),
         "vec_env_type": metrics.get("vec_env_type", _vec_env_type(settings.num_envs)),
         "vec_monitor_enabled": metrics.get("vec_monitor_enabled", VEC_MONITOR_ENABLED),
         "effective_rollout_steps": metrics.get(
@@ -1653,6 +1743,8 @@ def _write_config_snapshot(source_path: Path | None, destination_path: Path, fal
 
 def _training_config_snapshot_payload(settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
     """Build a fallback training config snapshot from resolved settings."""
+    termination_limits = _settings_termination_limits(settings)
+    diagnostic_limits = _settings_diagnostic_limits(settings)
     return {
         "task_config_path": str(settings.task_config_path),
         "task_index": settings.task_index,
@@ -1670,6 +1762,8 @@ def _training_config_snapshot_payload(settings: PPOTrackingSmokeSettings) -> dic
         "rpm_delta_scale": settings.rpm_delta_scale,
         "include_dynamics_observation": settings.include_dynamics_observation,
         "include_previous_action": settings.include_previous_action,
+        "termination_limits": termination_limits.to_dict(),
+        "diagnostic_limits": diagnostic_limits.to_dict(),
         "ppo": settings.ppo_config.to_dict(),
         "wandb_mode": settings.wandb_mode,
         "wandb_project": settings.wandb_project,
@@ -1792,6 +1886,18 @@ def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
         "observation_components",
         "policy_kwargs",
         "direct_control_limitations",
+        "termination_limits_mode",
+        "termination_limits",
+        "diagnostic_limits",
+        "base_truncation_policy",
+        "terminate_on_base_truncation",
+        "evaluation_termination_limits_mode",
+        "evaluation_termination_limits",
+        "evaluation_diagnostic_limits",
+        "strict_limit_violation_count",
+        "strict_limit_violation_causes",
+        "base_truncation_causes",
+        "project_truncation_causes",
         "direct_rpm_clipping_fraction",
         "direct_rpm_saturation_fraction",
         "mean_abs_x_error",
@@ -1880,6 +1986,8 @@ def _wandb_config(
     task_distribution_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a compact W&B config payload for PPO smoke training."""
+    termination_limits = _settings_termination_limits(settings)
+    diagnostic_limits = _settings_diagnostic_limits(settings)
     return {
         "run_type": _metadata_text(settings.run_metadata, "run_type", "training"),
         "run_kind": _metadata_text(settings.run_metadata, "run_kind", "direct_ppo"),
@@ -1905,6 +2013,11 @@ def _wandb_config(
         "observation_dim": _settings_observation_dim(settings),
         "observation_components": _settings_observation_components(settings),
         "direct_control_limitations": envs.actions.direct_control_limitations(settings.action_interface),
+        "termination_limits_mode": termination_limits.mode,
+        "termination_limits": termination_limits.to_dict(),
+        "diagnostic_limits": diagnostic_limits.to_dict(),
+        "base_truncation_policy": termination_limits.base_truncation_policy,
+        "terminate_on_base_truncation": termination_limits.terminate_on_base_truncation,
         "vec_env_type": _vec_env_type(settings.num_envs),
         "vec_monitor_enabled": VEC_MONITOR_ENABLED,
         "effective_rollout_steps": settings.ppo_config.effective_rollout_steps(settings.num_envs),
@@ -1943,6 +2056,8 @@ def _check_tracking_env(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> tuple[str, ...]:
     """Run Stable-Baselines3's environment checker and return captured warnings."""
     try:
@@ -1958,6 +2073,8 @@ def _check_tracking_env(
         rpm_delta_scale=rpm_delta_scale,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        termination_limits=termination_limits,
+        diagnostic_limits=diagnostic_limits,
     )
     checker_env = _ppo_training_env(real_checker_env, normalize_actions=normalize_actions, action_interface=action_interface)
     try:
@@ -2058,6 +2175,8 @@ def run_liftoff_diagnostics(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     """
     Run short headless rollouts that reveal whether valid actions can lift the drone.
@@ -2082,6 +2201,10 @@ def run_liftoff_diagnostics(
         Whether observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether observations append the previous PPO-facing action.
+    termination_limits
+        Optional hard episode-control safety limits.
+    diagnostic_limits
+        Optional strict diagnostic thresholds.
 
     Returns
     -------
@@ -2107,6 +2230,8 @@ def run_liftoff_diagnostics(
             rpm_delta_scale=rpm_delta_scale,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            termination_limits=termination_limits,
+            diagnostic_limits=diagnostic_limits,
         )
         diagnostics["sampled_action"] = _run_liftoff_rollout(
             diagnostic_task,
@@ -2118,6 +2243,8 @@ def run_liftoff_diagnostics(
             rpm_delta_scale=rpm_delta_scale,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            termination_limits=termination_limits,
+            diagnostic_limits=diagnostic_limits,
         )
         diagnostics["middle_action"] = _run_liftoff_rollout(
             diagnostic_task,
@@ -2129,6 +2256,8 @@ def run_liftoff_diagnostics(
             rpm_delta_scale=rpm_delta_scale,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            termination_limits=termination_limits,
+            diagnostic_limits=diagnostic_limits,
         )
         diagnostics["high_action"] = _run_liftoff_rollout(
             diagnostic_task,
@@ -2140,6 +2269,8 @@ def run_liftoff_diagnostics(
             rpm_delta_scale=rpm_delta_scale,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            termination_limits=termination_limits,
+            diagnostic_limits=diagnostic_limits,
         )
     if model is not None:
         diagnostics["trained_policy"] = _run_liftoff_rollout(
@@ -2152,6 +2283,8 @@ def run_liftoff_diagnostics(
             rpm_delta_scale=rpm_delta_scale,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            termination_limits=termination_limits,
+            diagnostic_limits=diagnostic_limits,
         )
     return diagnostics
 
@@ -2264,6 +2397,8 @@ def _run_liftoff_rollout(
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
+    diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     """Run one diagnostic rollout and return bounds and termination metadata."""
     tracking_env = envs.tracking_env.make_trajectory_tracking_env(
@@ -2275,6 +2410,8 @@ def _run_liftoff_rollout(
         rpm_delta_scale=rpm_delta_scale,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        termination_limits=termination_limits,
+        diagnostic_limits=diagnostic_limits,
     )
     try:
         seed_action_space = getattr(tracking_env.action_space, "seed", None)
@@ -2322,6 +2459,13 @@ def _run_liftoff_rollout(
             "base_info_keys": list(final_info.get("base_info_keys", [])),
             "base_reason_fields": dict(final_info.get("base_reason_fields", {})),
             "base_truncation_causes": list(final_info.get("base_truncation_causes", [])),
+            "project_truncation_causes": list(final_info.get("project_truncation_causes", [])),
+            "strict_limit_violations": list(final_info.get("strict_limit_violations", [])),
+            "strict_limit_violation_count": int(final_info.get("strict_limit_violation_count", 0)),
+            "termination_limits_mode": str(final_info.get("termination_limits_mode", "")),
+            "base_truncation_policy": str(final_info.get("base_truncation_policy", "")),
+            "terminate_on_base_truncation": bool(final_info.get("terminate_on_base_truncation", True)),
+            "recovery_allowed_after_limit_violation": bool(final_info.get("recovery_allowed_after_limit_violation", False)),
             "z_min": _axis_min(position_bounds, axis=2),
             "z_max": _axis_max(position_bounds, axis=2),
             "x_min": _axis_min(position_bounds, axis=0),

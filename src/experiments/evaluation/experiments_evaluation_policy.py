@@ -760,6 +760,9 @@ def _evaluated_model_entry(result: PolicyEvaluationResult, run_root: Path, suite
         "normalize_actions": metrics.get("normalize_actions"),
         "include_dynamics_observation": metrics.get("include_dynamics_observation"),
         "include_previous_action": metrics.get("include_previous_action"),
+        "termination_limits_mode": metrics.get("termination_limits_mode"),
+        "base_truncation_policy": metrics.get("base_truncation_policy"),
+        "strict_limit_violation_count": metrics.get("strict_limit_violation_count"),
     }
 
 
@@ -1115,6 +1118,25 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "normalize_actions",
         "include_dynamics_observation",
         "include_previous_action",
+        "termination_limits_mode",
+        "termination_limits",
+        "diagnostic_limits",
+        "base_truncation_policy",
+        "terminate_on_base_truncation",
+        "strict_limit_violation_count",
+        "strict_limit_violation_causes",
+        "base_truncated_count",
+        "base_truncation_effective_count",
+        "base_truncation_ignored_count",
+        "base_truncation_causes",
+        "project_truncated_count",
+        "project_truncation_causes",
+        "recovery_allowed_after_limit_violation_count",
+        "max_abs_roll_pitch_rad",
+        "max_speed_mps",
+        "max_angular_velocity_radps",
+        "actual_z_min_m",
+        "actual_z_max_m",
         "evaluation_dir",
         "diagnostics_dir",
         "traces_dir",
@@ -1155,6 +1177,7 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "failure_overall_status",
         "failure_primary_mode",
         "failure_modes",
+        "failure_overall_status",
     )
     return {key: metrics.get(key) for key in keys}
 

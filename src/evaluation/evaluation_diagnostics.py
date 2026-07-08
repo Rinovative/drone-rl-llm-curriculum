@@ -58,6 +58,7 @@ ACCEPTABLE_FINAL_POSITION_ERROR_M = 0.35
 Z_INSTABILITY_SPAN_M = 0.75
 Z_INSTABILITY_MEAN_ABS_ERROR_M = 0.4
 ATTITUDE_INSTABILITY_MAX_ABS_ROLL_PITCH_RAD = 0.35
+STRICT_LIMIT_VIOLATION_COUNT_MIN = 1
 
 FAILURE_HOVER_LOCK = "hover_lock"
 FAILURE_INSUFFICIENT_XY_MOTION = "insufficient_xy_motion"
@@ -67,6 +68,7 @@ FAILURE_Z_INSTABILITY = "z_instability"
 FAILURE_ATTITUDE_INSTABILITY = "attitude_instability"
 FAILURE_EARLY_TERMINATION = "early_termination"
 FAILURE_REPEATED_TRUNCATION = "repeated_truncation"
+FAILURE_SAFETY_LIMIT_VIOLATION = "safety_limit_violation"
 FAILURE_REFERENCE_TOO_HARD = "reference_too_fast_or_too_hard"
 FAILURE_NONE = "no_failure_detected"
 DIAGNOSTIC_EXPECTED_TARGET_BOUNDARY_ACTION = "expected_target_boundary_action"
@@ -360,11 +362,14 @@ def build_failure_report(
         failure_modes.append(FAILURE_EARLY_TERMINATION)
     if _int(metrics.get("eval_truncated_count")) > 0:
         failure_modes.append(FAILURE_REPEATED_TRUNCATION)
+    if _int(metrics.get("strict_limit_violation_count")) >= STRICT_LIMIT_VIOLATION_COUNT_MIN:
+        failure_modes.append(FAILURE_SAFETY_LIMIT_VIOLATION)
     if high_error and (
         FAILURE_ACTION_SATURATION in failure_modes
         or FAILURE_Z_INSTABILITY in failure_modes
         or FAILURE_ATTITUDE_INSTABILITY in failure_modes
         or FAILURE_REPEATED_TRUNCATION in failure_modes
+        or FAILURE_SAFETY_LIMIT_VIOLATION in failure_modes
     ):
         failure_modes.append(FAILURE_REFERENCE_TOO_HARD)
 
@@ -416,7 +421,13 @@ def build_curriculum_feedback(
     avoid_next_tasks: list[str]
     constraints: list[str] = []
 
-    if failure_modes & {FAILURE_Z_INSTABILITY, FAILURE_ATTITUDE_INSTABILITY, FAILURE_EARLY_TERMINATION, FAILURE_REPEATED_TRUNCATION}:
+    if failure_modes & {
+        FAILURE_Z_INSTABILITY,
+        FAILURE_ATTITUDE_INSTABILITY,
+        FAILURE_EARLY_TERMINATION,
+        FAILURE_REPEATED_TRUNCATION,
+        FAILURE_SAFETY_LIMIT_VIOLATION,
+    }:
         readiness_level = "unstable"
         recommended_next_tasks = ["hover_stabilization", "takeoff_stabilization", "start_hold_then_line"]
         avoid_next_tasks = ["long_line", "fast_polyline", "circle", "figure_eight"]
@@ -529,7 +540,22 @@ def _make_trace_record(
         "is_tracking_phase": bool(info.get("is_tracking_phase", not bool(info.get("is_start_hold", False)))),
         "base_terminated": bool(info.get("base_terminated", False)),
         "base_truncated": bool(info.get("base_truncated", False)),
+        "base_truncation_effective": bool(info.get("base_truncation_effective", info.get("base_truncated", False))),
+        "base_truncation_ignored": bool(info.get("base_truncation_ignored", False)),
         "base_truncation_causes": list(info.get("base_truncation_causes", [])),
+        "project_truncated": bool(info.get("project_truncated", False)),
+        "project_truncation_causes": list(info.get("project_truncation_causes", [])),
+        "strict_limit_violation": bool(info.get("strict_limit_violation", False)),
+        "strict_limit_violations": list(info.get("strict_limit_violations", [])),
+        "strict_limit_violation_count": _int(info.get("strict_limit_violation_count")),
+        "termination_limits_mode": str(info.get("termination_limits_mode", "")),
+        "termination_limits": _json_ready(info.get("termination_limits", {})),
+        "diagnostic_limits": _json_ready(info.get("diagnostic_limits", {})),
+        "base_truncation_policy": str(info.get("base_truncation_policy", "")),
+        "terminate_on_base_truncation": bool(info.get("terminate_on_base_truncation", True)),
+        "recovery_allowed_after_limit_violation": bool(info.get("recovery_allowed_after_limit_violation", False)),
+        "recovery_steps_after_limit_violation": _int(info.get("recovery_steps_after_limit_violation")),
+        "recovery_steps_limit": _int(info.get("recovery_steps_limit")),
         "base_reason_fields": dict(info.get("base_reason_fields", {})),
     }
     if info.get("applied_action") is not None:
@@ -570,6 +596,8 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
     actual_xy_span_m = _xy_span(position_bounds)
     reference_xy_span_m = _xy_span(reference_bounds)
     roll_pitch = _array_field(records, "roll_pitch_yaw", min_width=ROLL_PITCH_DIMENSIONS)[:, :ROLL_PITCH_DIMENSIONS]
+    velocities = _array_field(records, "velocity")[:, :POSITION_DIMENSIONS]
+    angular_velocities = _array_field(records, "angular_velocity")[:, :POSITION_DIMENSIONS]
     return {
         "episode_index": _int(records[0].get("episode_index")),
         "start_step_index": _int(records[0].get("step_index")),
@@ -597,6 +625,14 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
         "z_min": _axis_min(position_bounds, axis=2),
         "z_max": _axis_max(position_bounds, axis=2),
         "max_abs_roll_pitch_rad": float(np.max(np.abs(roll_pitch))) if roll_pitch.size else 0.0,
+        "max_speed_mps": _max_row_norm(velocities),
+        "max_angular_velocity_radps": _max_row_norm(angular_velocities),
+        "strict_limit_violation_count": _strict_limit_violation_count(records),
+        "strict_limit_violation_causes": _unique_list_field(records, "strict_limit_violations"),
+        "base_truncation_causes": _unique_list_field(records, "base_truncation_causes"),
+        "project_truncation_causes": _unique_list_field(records, "project_truncation_causes"),
+        "base_truncated_count": int(sum(1 for record in records if bool(record.get("base_truncated")))),
+        "project_truncated_count": int(sum(1 for record in records if bool(record.get("project_truncated")))),
         "terminated": bool(records[-1].get("terminated")),
         "truncated": bool(records[-1].get("truncated")),
         "termination_reason": str(records[-1].get("termination_reason", "running")),
@@ -628,6 +664,10 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         action_space=action_space,
         real_action_space=real_action_space,
     )
+    roll_pitch = _array_field(records, "roll_pitch_yaw", min_width=ROLL_PITCH_DIMENSIONS)[:, :ROLL_PITCH_DIMENSIONS]
+    velocities = _array_field(records, "velocity")[:, :POSITION_DIMENSIONS]
+    angular_velocities = _array_field(records, "angular_velocity")[:, :POSITION_DIMENSIONS]
+    first_record = records[0]
     return {
         "mean_eval_reward": float(np.mean(rewards)),
         "final_eval_reward": float(rewards[-1]),
@@ -642,6 +682,8 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         "real_action_bounds": _position_bounds(_array_field(records, "real_action")),
         "actions_normalized": any(bool(record.get("actions_normalized", False)) for record in records),
         "actual_z_span_m": _axis_span(position_bounds, axis=2),
+        "actual_z_min_m": _axis_min(position_bounds, axis=2),
+        "actual_z_max_m": _axis_max(position_bounds, axis=2),
         "actual_xy_span_m": actual_xy_span_m,
         "reference_z_span_m": _axis_span(reference_bounds, axis=2),
         "reference_xy_span_m": reference_xy_span_m,
@@ -653,6 +695,25 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         "final_abs_y_error": float(axis_errors[-1, 1]),
         "final_abs_z_error": float(axis_errors[-1, 2]),
         "episode_count": len(episode_summaries),
+        "max_abs_roll_pitch_rad": float(np.max(np.abs(roll_pitch))) if roll_pitch.size else 0.0,
+        "max_speed_mps": _max_row_norm(velocities),
+        "max_angular_velocity_radps": _max_row_norm(angular_velocities),
+        "strict_limit_violation_count": _strict_limit_violation_count(records),
+        "strict_limit_violation_causes": _unique_list_field(records, "strict_limit_violations"),
+        "base_truncated_count": int(sum(1 for record in records if bool(record.get("base_truncated")))),
+        "base_truncation_effective_count": int(sum(1 for record in records if bool(record.get("base_truncation_effective")))),
+        "base_truncation_ignored_count": int(sum(1 for record in records if bool(record.get("base_truncation_ignored")))),
+        "base_truncation_causes": _unique_list_field(records, "base_truncation_causes"),
+        "project_truncated_count": int(sum(1 for record in records if bool(record.get("project_truncated")))),
+        "project_truncation_causes": _unique_list_field(records, "project_truncation_causes"),
+        "recovery_allowed_after_limit_violation_count": int(
+            sum(1 for record in records if bool(record.get("recovery_allowed_after_limit_violation")))
+        ),
+        "termination_limits_mode": str(first_record.get("termination_limits_mode", "")),
+        "termination_limits": _json_ready(first_record.get("termination_limits", {})),
+        "diagnostic_limits": _json_ready(first_record.get("diagnostic_limits", {})),
+        "base_truncation_policy": str(first_record.get("base_truncation_policy", "")),
+        "terminate_on_base_truncation": bool(first_record.get("terminate_on_base_truncation", True)),
         **_trace_action_metadata(records),
         **action_metrics,
         **real_action_metrics,
@@ -1032,9 +1093,19 @@ def _failure_evidence(metrics: Mapping[str, Any], episode_summaries: Sequence[Ma
         "problematic_action_saturation_dimensions": _json_ready(metrics.get("problematic_action_saturation_dimensions", [])),
         "eval_terminated_count": _int(metrics.get("eval_terminated_count")),
         "eval_truncated_count": _int(metrics.get("eval_truncated_count")),
+        "strict_limit_violation_count": _int(metrics.get("strict_limit_violation_count")),
+        "strict_limit_violation_causes": _json_ready(metrics.get("strict_limit_violation_causes", [])),
+        "base_truncation_causes": _json_ready(metrics.get("base_truncation_causes", [])),
+        "project_truncation_causes": _json_ready(metrics.get("project_truncation_causes", [])),
+        "base_truncated_count": _int(metrics.get("base_truncated_count")),
+        "project_truncated_count": _int(metrics.get("project_truncated_count")),
+        "termination_limits_mode": str(metrics.get("termination_limits_mode", "")),
+        "base_truncation_policy": str(metrics.get("base_truncation_policy", "")),
         "actual_z_span_m": _float(metrics.get("actual_z_span_m")),
         "mean_abs_z_error": _float(metrics.get("mean_abs_z_error")),
         "max_abs_roll_pitch_rad": _max_episode_value(episode_summaries, "max_abs_roll_pitch_rad"),
+        "max_speed_mps": _float(metrics.get("max_speed_mps")),
+        "max_angular_velocity_radps": _float(metrics.get("max_angular_velocity_radps")),
     }
 
 
@@ -1123,6 +1194,34 @@ def _xy_tracking_ratio(actual_xy_span_m: float, reference_xy_span_m: float) -> f
     if reference_xy_span_m <= XY_TRACKING_RATIO_MIN_REFERENCE_SPAN_M:
         return None
     return float(actual_xy_span_m / reference_xy_span_m)
+
+
+def _max_row_norm(values: np.ndarray) -> float:
+    """Return the maximum Euclidean row norm for a numeric 2D array."""
+    if values.size == 0:
+        return 0.0
+    rows = np.asarray(values, dtype=float).reshape(values.shape[0], -1)
+    if rows.shape[1] == 0:
+        return 0.0
+    return float(np.max(np.linalg.norm(rows, axis=1)))
+
+
+def _strict_limit_violation_count(records: Sequence[Mapping[str, Any]]) -> int:
+    """Return the number of trace rows with strict diagnostic violations."""
+    return int(sum(1 for record in records if bool(record.get("strict_limit_violation"))))
+
+
+def _unique_list_field(records: Sequence[Mapping[str, Any]], field: str) -> list[str]:
+    """Return unique string values found in list-like trace fields."""
+    values: list[str] = []
+    for record in records:
+        raw_values = record.get(field, [])
+        candidates = [raw_values] if isinstance(raw_values, str) else list(raw_values) if isinstance(raw_values, (list, tuple)) else []
+        for value in candidates:
+            text = str(value)
+            if text and text not in values:
+                values.append(text)
+    return values
 
 
 def _max_episode_value(episode_summaries: Sequence[Mapping[str, Any]], key: str) -> float:

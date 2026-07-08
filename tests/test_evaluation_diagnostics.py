@@ -210,6 +210,40 @@ def test_diagnostics_keep_direct_rpm_saturation_as_failure() -> None:
     assert diagnostics.failure_report["overall_status"] == "failed"
 
 
+def test_strict_limit_violation_is_reported_even_without_truncation() -> None:
+    """Verify strict diagnostic thresholds flag instability when relaxed termination continues."""
+    records = [_record(index, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0], task_shape="hover") for index in range(3)]
+    records[1]["roll_pitch_yaw"] = [0.0, 0.5, 0.0]
+    records[1]["strict_limit_violation"] = True
+    records[1]["strict_limit_violations"] = ["pitch_above_limit"]
+    records[1]["base_truncated"] = True
+    records[1]["base_truncation_ignored"] = True
+    records[1]["base_truncation_causes"] = ["pitch_above_limit"]
+    for record in records:
+        record["termination_limits_mode"] = "relaxed"
+        record["termination_limits"] = {"mode": "relaxed", "terminate_on_base_truncation": False}
+        record["diagnostic_limits"] = {"mode": "default", "max_roll_pitch_rad": 0.4}
+        record["base_truncation_policy"] = "diagnose_only"
+        record["terminate_on_base_truncation"] = False
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="relaxed_hover",
+        task_shape="hover",
+        total_timesteps=64,
+        eval_steps=3,
+        seed=0,
+    )
+
+    assert diagnostics.metrics["strict_limit_violation_count"] == 1
+    assert diagnostics.metrics["strict_limit_violation_causes"] == ["pitch_above_limit"]
+    assert diagnostics.metrics["base_truncation_ignored_count"] == 1
+    assert diagnostics.failure_report["primary_failure_mode"] == "attitude_instability"
+    assert "safety_limit_violation" in diagnostics.failure_report["failure_modes"]
+    assert diagnostics.curriculum_feedback["readiness_level"] == "unstable"
+
+
 def test_diagnostics_reject_task_shape_mismatch() -> None:
     """Verify traces cannot be summarized against a different task shape."""
     records = [_record(0, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0], task_shape="line")]

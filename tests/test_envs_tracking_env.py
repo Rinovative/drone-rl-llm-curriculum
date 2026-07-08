@@ -65,6 +65,11 @@ def test_tracking_env_reset_returns_compact_observation_and_info() -> None:
         assert info["include_dynamics_observation"] is False
         assert info["include_previous_action"] is False
         assert info["observation_dim"] == BASE_OBSERVATION_DIM
+        assert info["termination_limits_mode"] == "default"
+        assert info["termination_limits"]["terminate_on_base_truncation"] is True
+        assert info["diagnostic_limits"]["mode"] == "default"
+        assert info["base_truncation_policy"] == "terminate"
+        assert info["strict_limit_violation_count"] == 0
         assert [component["name"] for component in info["observation_components"]] == [
             "current_position",
             "reference_position",
@@ -118,6 +123,74 @@ def test_tracking_env_steps_once_with_sampled_action_and_diagnostics() -> None:
         assert np.asarray(info["angular_velocity"]).shape == (3,)
         assert np.asarray(info["last_action"]).shape == (4,)
         assert np.asarray(info["requested_action"]).shape == action.shape
+    finally:
+        tracking_env.close()
+
+
+def test_relaxed_termination_ignores_upstream_pitch_truncation_but_reports_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify relaxed training can continue through strict upstream pitch truncation."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        _hover_task(),
+        gui=False,
+        record=False,
+        termination_limits={"mode": "relaxed"},
+        diagnostic_limits={"mode": "default"},
+    )
+    try:
+        tracking_env.reset(seed=0)
+        state = np.zeros(20, dtype=float)
+        state[:3] = [0.0, 0.0, 1.0]
+        state[8] = 0.5
+        monkeypatch.setattr(tracking_env.base_env, "step", lambda _action: (None, 0.0, False, True, {}))
+        monkeypatch.setattr(tracking_env, "_current_state_vector", lambda: np.array(state, dtype=float, copy=True))
+
+        _, _, terminated, truncated, info = tracking_env.step(np.zeros(tracking_env.action_space.shape, dtype=np.float32))
+
+        assert terminated is False
+        assert truncated is False
+        assert info["base_truncated"] is True
+        assert info["base_truncation_ignored"] is True
+        assert info["base_truncation_policy"] == "diagnose_only"
+        assert info["strict_limit_violation"] is True
+        assert info["strict_limit_violations"] == ["pitch_above_limit"]
+        assert info["strict_limit_violation_count"] == 1
+        assert info["termination_reason"] == "running"
+    finally:
+        tracking_env.close()
+
+
+def test_relaxed_project_limits_truncate_after_recovery_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify relaxed mode still truncates unrecovered hard-limit violations."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        _hover_task(),
+        gui=False,
+        record=False,
+        termination_limits={
+            "mode": "custom",
+            "max_roll_pitch_rad": 0.45,
+            "allow_recovery_steps": 1,
+            "terminate_on_base_truncation": False,
+        },
+        diagnostic_limits={"mode": "default"},
+    )
+    try:
+        tracking_env.reset(seed=0)
+        state = np.zeros(20, dtype=float)
+        state[:3] = [0.0, 0.0, 1.0]
+        state[8] = 0.5
+        monkeypatch.setattr(tracking_env.base_env, "step", lambda _action: (None, 0.0, False, False, {}))
+        monkeypatch.setattr(tracking_env, "_current_state_vector", lambda: np.array(state, dtype=float, copy=True))
+        action = np.zeros(tracking_env.action_space.shape, dtype=np.float32)
+
+        _, _, _, first_truncated, first_info = tracking_env.step(action)
+        _, _, _, second_truncated, second_info = tracking_env.step(action)
+
+        assert first_truncated is False
+        assert first_info["recovery_allowed_after_limit_violation"] is True
+        assert second_truncated is True
+        assert second_info["project_truncated"] is True
+        assert second_info["project_truncation_causes"] == ["pitch_above_limit"]
+        assert second_info["termination_reason"] == "project_truncated:pitch_above_limit"
     finally:
         tracking_env.close()
 

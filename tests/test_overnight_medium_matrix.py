@@ -21,6 +21,7 @@ LANE_ASSIGNMENT = Path("docs/experiments/overnight_lane_assignment.tsv")
 MANUAL_CURRICULUM_UNIT_COUNT = 5
 LLM_CURRICULUM_UNIT_COUNT = 10
 REFERENCE_MEDIUM_TIMESTEPS = 500000
+DIRECT_RPM_MIN_RELAXED_RECOVERY_STEPS = 20
 MANUAL_TOTAL_BUDGET_TIMESTEPS = MANUAL_CURRICULUM_UNIT_COUNT * REFERENCE_MEDIUM_TIMESTEPS
 LLM_BUDGET_PROFILE_TIMESTEPS = {
     "bootstrap": 750000,
@@ -85,10 +86,24 @@ def test_all_listed_configs_exist_and_match_run_names() -> None:
             settings = ppo_tracking.load_ppo_tracking_settings(config_path)
             assert settings.run_name == row["expected_run_name"]
             assert settings.total_timesteps == REFERENCE_MEDIUM_TIMESTEPS
+            assert settings.termination_limits.mode == "relaxed"
+            assert settings.diagnostic_limits.mode == "default"
+            if settings.action_interface == "direct_rpm":
+                assert settings.termination_limits.profile == "direct_rpm_relaxed"
+                assert settings.termination_limits.allow_recovery_steps >= DIRECT_RPM_MIN_RELAXED_RECOVERY_STEPS
+            else:
+                assert settings.termination_limits.profile == "pid_relaxed"
+                assert 0 < settings.termination_limits.allow_recovery_steps < DIRECT_RPM_MIN_RELAXED_RECOVERY_STEPS
+            assert settings.termination_limits.terminate_on_base_truncation is False
         elif row["kind"] == "manual_curriculum":
             settings = manual_training.load_manual_curriculum_settings(config_path)
             manual_training.validate_manual_curriculum(settings)
             reference_settings = ppo_tracking.load_ppo_tracking_settings(settings.reference_medium_config_path)
+            assert reference_settings.termination_limits.mode == "relaxed"
+            if reference_settings.action_interface == "direct_rpm":
+                assert reference_settings.termination_limits.profile == "direct_rpm_relaxed"
+            else:
+                assert reference_settings.termination_limits.profile == "pid_relaxed"
             assert len(settings.stages) == MANUAL_CURRICULUM_UNIT_COUNT
             assert int(row["unit_count"]) == MANUAL_CURRICULUM_UNIT_COUNT
             assert settings.reference_medium_timesteps == REFERENCE_MEDIUM_TIMESTEPS
@@ -103,6 +118,11 @@ def test_all_listed_configs_exist_and_match_run_names() -> None:
             settings = llm_training.load_llm_curriculum_settings(config_path)
             llm_training.validate_llm_curriculum(settings)
             reference_settings = ppo_tracking.load_ppo_tracking_settings(settings.reference_medium_config_path)
+            assert reference_settings.termination_limits.mode == "relaxed"
+            if reference_settings.action_interface == "direct_rpm":
+                assert reference_settings.termination_limits.profile == "direct_rpm_relaxed"
+            else:
+                assert reference_settings.termination_limits.profile == "pid_relaxed"
             assert settings.max_stages == LLM_CURRICULUM_UNIT_COUNT
             assert int(row["unit_count"]) == LLM_CURRICULUM_UNIT_COUNT
             assert settings.reference_medium_timesteps == REFERENCE_MEDIUM_TIMESTEPS

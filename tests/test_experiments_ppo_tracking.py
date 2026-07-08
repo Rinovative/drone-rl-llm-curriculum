@@ -44,6 +44,7 @@ PID_ACTION_DIM = 3
 DIRECT_RPM_ACTION_DIM = 4
 DIRECT_RPM_DELTA_SCALE = 0.05
 POLICY_NET_ARCH = [128, 128]
+STRICT_TEST_LIMIT_VIOLATIONS = 2
 
 EXPECTED_PPO_CONFIG = {
     "policy": "MlpPolicy",
@@ -200,6 +201,9 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
     assert settings.include_dynamics_observation is False
     assert settings.include_previous_action is False
+    assert settings.termination_limits.mode == "default"
+    assert settings.termination_limits.terminate_on_base_truncation is True
+    assert settings.diagnostic_limits.mode == "default"
     assert settings.wandb_mode == "disabled"
     assert settings.wandb_project == utils.wandb.DEFAULT_WANDB_PROJECT
     assert settings.wandb_entity is None
@@ -263,6 +267,8 @@ def test_ppo_tracking_direct_rpm_config_loads() -> None:
     assert settings.rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
     assert settings.include_dynamics_observation is True
     assert settings.include_previous_action is True
+    assert settings.termination_limits.mode == "default"
+    assert settings.diagnostic_limits.mode == "default"
     assert settings.wandb_mode == "disabled"
     assert settings.num_envs == 1
 
@@ -317,6 +323,12 @@ def test_ppo_tracking_settings_reject_batch_size_larger_than_effective_rollout()
 
     with pytest.raises(ValueError, match=r"ppo\.batch_size must be less than or equal to ppo\.n_steps \* num_envs"):
         ppo_tracking.PPOTrackingSmokeSettings(total_timesteps=8, num_envs=CONFIGURED_TEST_NUM_ENVS, ppo_config=config)
+
+
+def test_ppo_tracking_settings_reject_invalid_termination_limits() -> None:
+    """Verify invalid termination-limit config values are rejected."""
+    with pytest.raises(ValueError, match="allow_recovery_steps"):
+        ppo_tracking.PPOTrackingSmokeSettings(termination_limits={"mode": "relaxed", "allow_recovery_steps": -1})
 
 
 def test_ppo_tracking_settings_reject_invalid_eval_steps() -> None:
@@ -463,6 +475,14 @@ def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path
         "curriculum_readiness_level": "line_not_ready",
         "curriculum_recommended_next_tasks": ["short_slow_line"],
         "curriculum_avoid_next_tasks": ["circle"],
+        "termination_limits_mode": "relaxed",
+        "termination_limits": {"mode": "relaxed"},
+        "diagnostic_limits": {"mode": "default"},
+        "base_truncation_policy": "diagnose_only",
+        "terminate_on_base_truncation": False,
+        "evaluation_termination_limits_mode": "default",
+        "strict_limit_violation_count": 2,
+        "strict_limit_violation_causes": ["pitch_above_limit"],
     }
 
     manifest = ppo_tracking._build_manifest(  # noqa: SLF001
@@ -477,6 +497,9 @@ def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path
     assert manifest["evaluation_trace_path"].endswith("evaluation_trace.jsonl")
     assert manifest["failure_primary_mode"] == "hover_lock"
     assert manifest["curriculum_readiness_level"] == "line_not_ready"
+    assert manifest["termination_limits_mode"] == "relaxed"
+    assert manifest["base_truncation_policy"] == "diagnose_only"
+    assert manifest["diagnostics"]["strict_limit_violation_count"] == STRICT_TEST_LIMIT_VIOLATIONS
     assert manifest["ppo_config"] == settings.ppo_config.to_dict()
 
 
@@ -769,6 +792,8 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
         rpm_delta_scale: float = 0.05,
         include_dynamics_observation: bool = False,
         include_previous_action: bool = False,
+        termination_limits: object | None = None,
+        diagnostic_limits: object | None = None,
     ) -> object:
         """Return a lazy factory while recording derived seeds."""
         assert task == {"shape": "line"}
@@ -777,6 +802,8 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
         assert rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
         assert include_dynamics_observation is True
         assert include_previous_action is True
+        assert termination_limits is None
+        assert diagnostic_limits is None
         factory_seeds.append(seed)
 
         def make_env() -> object:
@@ -849,6 +876,8 @@ def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.Mo
         rpm_delta_scale: float = 0.05,
         include_dynamics_observation: bool = False,
         include_previous_action: bool = False,
+        termination_limits: object | None = None,
+        diagnostic_limits: object | None = None,
     ) -> object:
         """Return a lazy factory while recording derived seeds."""
         assert task == {"shape": "line"}
@@ -857,6 +886,8 @@ def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.Mo
         assert rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
         assert include_dynamics_observation is False
         assert include_previous_action is False
+        assert termination_limits is None
+        assert diagnostic_limits is None
         factory_seeds.append(seed)
 
         def make_env() -> object:

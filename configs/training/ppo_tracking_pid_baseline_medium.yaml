@@ -10,6 +10,10 @@ normalize_actions: true
 action_interface: pid_position
 include_dynamics_observation: false
 include_previous_action: false
+termination_limits:
+  mode: relaxed
+diagnostic_limits:
+  mode: default
 ppo:
   policy: MlpPolicy
   device: cpu
