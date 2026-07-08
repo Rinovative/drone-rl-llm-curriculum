@@ -179,6 +179,10 @@ def _fake_policy_evaluation(spec: object, _: object) -> experiments.policy_evalu
         "trace_path": str(trace_path),
         "gif_path": str(gif_path),
         "plot_paths": {"trajectory_xy": str(xy_plot)},
+        "plot_trace_scope": "render_rollout",
+        "plot_trace_step_count": 1,
+        "plot_trace_terminated": False,
+        "plot_trace_truncated": False,
         "failure_report_path": str(diagnostics_dir / "failure_report.json"),
         "episode_summaries_path": str(diagnostics_dir / "episode_summaries.json"),
         "curriculum_feedback_path": str(diagnostics_dir / "curriculum_feedback.json"),
@@ -225,6 +229,7 @@ def _fake_policy_evaluation(spec: object, _: object) -> experiments.policy_evalu
         trace_path=str(trace_path),
         gif_path=str(gif_path),
         plot_paths={"trajectory_xy": str(xy_plot)},
+        plot_trace_scope="render_rollout",
         failure_report_path=str(diagnostics_dir / "failure_report.json"),
         episode_summaries_path=str(diagnostics_dir / "episode_summaries.json"),
         curriculum_feedback_path=str(diagnostics_dir / "curriculum_feedback.json"),
@@ -332,6 +337,7 @@ def test_curriculum_evaluation_own_stage_creates_stage_indexed_dirs_and_summary_
     assert payload["evaluated_models"][0]["gif_path"].replace("\\", "/").endswith("renders/scenario_rollout.gif")
     assert payload["evaluated_models"][0]["trace_path"].replace("\\", "/").endswith("traces/evaluation_trace.jsonl")
     assert "trajectory_xy" in payload["evaluated_models"][0]["plot_paths"]
+    assert payload["evaluated_models"][0]["plot_trace_scope"] == "render_rollout"
 
 
 def test_curriculum_evaluation_benchmark_and_generalization_layouts_include_baseline(

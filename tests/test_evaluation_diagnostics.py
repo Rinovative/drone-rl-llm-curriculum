@@ -173,28 +173,34 @@ def test_tracking_only_metrics_exclude_start_hold_rows() -> None:
         _record(2, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
         _record(3, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
     ]
+    tracking_phase_start_step = 2
+    tracking_phase_start_time_sec = 2.0
+    eval_steps = 4
+    total_timesteps = 64
+
     for index, record in enumerate(records):
         record["start_hold_enabled"] = True
-        record["start_hold_sec"] = 2.0
+        record["start_hold_sec"] = tracking_phase_start_time_sec
         record["exclude_start_hold_from_tracking_metrics"] = True
-        record["tracking_phase_start_step"] = 2
-        record["tracking_phase_start_time_sec"] = 2.0
-        record["is_start_hold"] = index < 2
-        record["is_tracking_phase"] = index >= 2
+        record["tracking_phase_start_step"] = tracking_phase_start_step
+        record["tracking_phase_start_time_sec"] = tracking_phase_start_time_sec
+        record["is_start_hold"] = index < tracking_phase_start_step
+        record["is_tracking_phase"] = index >= tracking_phase_start_step
 
     diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
         trace_records=records,
         action_space=_ActionSpace(),
         training_run_name="start_hold",
         task_shape="line",
-        total_timesteps=64,
-        eval_steps=4,
+        total_timesteps=total_timesteps,
+        eval_steps=eval_steps,
         seed=0,
     )
 
     assert diagnostics.metrics["mean_position_error_m"] == pytest.approx(0.5)
     assert diagnostics.metrics["mean_position_error_tracking_m"] == pytest.approx(0.0)
-    assert diagnostics.metrics["tracking_phase_start_step"] == 2
+    assert diagnostics.metrics["tracking_phase_start_step"] == tracking_phase_start_step
+    assert diagnostics.metrics["tracking_phase_start_time_sec"] == pytest.approx(tracking_phase_start_time_sec)
 
 
 def test_diagnostics_report_no_failure_for_accurate_hover() -> None:

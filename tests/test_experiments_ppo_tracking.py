@@ -19,6 +19,17 @@ LINE_TASK_INDEX = 2
 EXPECTED_SMOKE_TIMESTEPS = 4096
 EXPECTED_SMOKE_EVAL_STEPS = 120
 DIAGNOSTIC_STEPS = 6
+CURRICULUM_DIAGNOSTIC_STEPS = 120
+
+
+def _manual_curriculum_task(stage_name: str) -> dict[str, object]:
+    """Return a copied task from the manual line curriculum fixture."""
+    config = experiments.config.load_experiment_config("configs/curricula/manual_line_curriculum.yaml")
+    for stage in config["stages"]:
+        if stage["stage_name"] == stage_name:
+            return dict(stage["task"])
+    message = f"manual curriculum stage not found: {stage_name}"
+    raise AssertionError(message)
 
 
 def test_ppo_tracking_imports_through_package_alias() -> None:
@@ -276,6 +287,73 @@ def test_ppo_training_env_uses_normalized_action_space_when_enabled() -> None:
         assert training_env.real_action_space is real_env.action_space
     finally:
         training_env.close()
+
+
+def test_task_with_minimum_reference_samples_extends_hold_move_task_without_raising() -> None:
+    """Verify start-hold curriculum diagnostics extend duration instead of failing."""
+    task = _manual_curriculum_task("start_hold_then_short_line")
+
+    diagnostic_task, reference_samples, warnings = experiments.ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
+        task,
+        required_steps=CURRICULUM_DIAGNOSTIC_STEPS,
+    )
+
+    assert reference_samples >= CURRICULUM_DIAGNOSTIC_STEPS + 1
+    assert diagnostic_task["sample_rate_hz"] == task["sample_rate_hz"]
+    assert diagnostic_task["hold_duration_sec"] == task["hold_duration_sec"]
+    assert diagnostic_task["move_duration_sec"] > task["move_duration_sec"]
+    assert diagnostic_task["start_hold_enabled"] is True
+    assert diagnostic_task["start_hold_sec"] == task["start_hold_sec"]
+    assert diagnostic_task["exclude_start_hold_from_tracking_metrics"] is True
+    assert any("move_duration_sec" in warning for warning in warnings)
+
+
+def test_task_with_minimum_reference_samples_prefers_duration_over_sample_rate() -> None:
+    """Verify diagnostics avoid unsafe sample-rate densification for line tasks."""
+    task = _manual_curriculum_task("line")
+    unsafe_sample_rate_task = dict(task)
+    unsafe_sample_rate_task["sample_rate_hz"] = 41.0
+    with pytest.raises(ValueError, match="maximum acceleration"):
+        envs.task_adapter.make_task_reference(unsafe_sample_rate_task)
+
+    diagnostic_task, reference_samples, warnings = experiments.ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
+        task,
+        required_steps=CURRICULUM_DIAGNOSTIC_STEPS,
+    )
+
+    assert reference_samples >= CURRICULUM_DIAGNOSTIC_STEPS + 1
+    assert diagnostic_task["sample_rate_hz"] == task["sample_rate_hz"]
+    assert diagnostic_task["duration_sec"] > task["duration_sec"]
+    assert diagnostic_task["start_hold_enabled"] is True
+    assert diagnostic_task["start_hold_sec"] == task["start_hold_sec"]
+    assert diagnostic_task["exclude_start_hold_from_tracking_metrics"] is True
+    assert any("duration_sec" in warning for warning in warnings)
+    assert not any("sample_rate_hz from" in warning for warning in warnings)
+
+
+def test_task_with_minimum_reference_samples_falls_back_when_extension_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify a failed diagnostic extension returns the original task with a warning."""
+    task = _manual_curriculum_task("line")
+    original_reference = envs.task_adapter.make_task_reference(task)
+    real_make_task_reference = envs.task_adapter.make_task_reference
+
+    def fake_make_task_reference(reference_task: dict[str, object]) -> object:
+        if reference_task.get("duration_sec") != task["duration_sec"]:
+            message = "forced extension failure"
+            raise ValueError(message)
+        return real_make_task_reference(reference_task)
+
+    monkeypatch.setattr(envs.task_adapter, "make_task_reference", fake_make_task_reference)
+
+    diagnostic_task, reference_samples, warnings = experiments.ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
+        task,
+        required_steps=CURRICULUM_DIAGNOSTIC_STEPS,
+    )
+
+    assert diagnostic_task == task
+    assert reference_samples == original_reference.positions.shape[0]
+    assert any("duration extension failed validation" in warning for warning in warnings)
+    assert any("using original diagnostic task" in warning for warning in warnings)
 
 
 def test_liftoff_diagnostics_report_simple_policy_bounds() -> None:

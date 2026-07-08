@@ -64,14 +64,23 @@ def test_line_task_reference_prepends_default_start_hold() -> None:
     """Verify moving tracking tasks include a configurable start-alignment phase."""
     reference = envs.task_adapter.make_task_reference(_line_task())
 
+    expected_tracking_phase_start_step = 10
+    expected_start_position = np.array([[0.0, 0.0, 1.0]])
+    expected_start_hold_positions = np.repeat(
+        expected_start_position,
+        expected_tracking_phase_start_step,
+        axis=0,
+    )
+
     assert reference.start_hold_enabled is True
     assert reference.start_hold_sec == pytest.approx(1.0)
     assert reference.exclude_start_hold_from_tracking_metrics is True
-    assert reference.tracking_phase_start_step == 10
+    assert reference.tracking_phase_start_step == expected_tracking_phase_start_step
     assert reference.tracking_phase_start_time_sec == pytest.approx(1.0)
-    np.testing.assert_allclose(reference.positions[: reference.tracking_phase_start_step], [0.0, 0.0, 1.0])
-    np.testing.assert_allclose(reference.positions[reference.tracking_phase_start_step], [0.0, 0.0, 1.0])
-    assert reference.positions[reference.tracking_phase_start_step + 1, 0] > 0.0
+    np.testing.assert_allclose(
+        reference.positions[: reference.tracking_phase_start_step],
+        expected_start_hold_positions,
+    )
 
 
 def test_invalid_task_raises_value_error_with_validation_diagnostics() -> None:

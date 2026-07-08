@@ -1162,25 +1162,94 @@ def _task_with_minimum_reference_samples(task: dict[str, Any], required_steps: i
     if reference_samples >= required_samples:
         return dict(task), reference_samples, ()
 
-    duration_value = task.get("duration_sec")
     sample_rate_value = task.get("sample_rate_hz")
-    if duration_value is None or sample_rate_value is None:
-        warning = "diagnostic task has too few reference samples and cannot be extended because duration_sec/sample_rate_hz are missing"
+    if sample_rate_value is None:
+        warning = "diagnostic task has too few reference samples and cannot be extended because sample_rate_hz is missing"
         return dict(task), reference_samples, (warning,)
 
-    duration_sec = float(duration_value)
-    sample_rate_hz = float(sample_rate_value)
-    if duration_sec <= 0.0 or sample_rate_hz <= 0.0:
-        warning = "diagnostic task has non-positive duration_sec or sample_rate_hz and cannot be safely extended"
+    try:
+        sample_rate_hz = float(sample_rate_value)
+    except (TypeError, ValueError):
+        warning = "diagnostic task has non-numeric sample_rate_hz and cannot be safely extended"
+        return dict(task), reference_samples, (warning,)
+    if sample_rate_hz <= 0.0:
+        warning = "diagnostic task has non-positive sample_rate_hz and cannot be safely extended"
         return dict(task), reference_samples, (warning,)
 
-    required_sample_rate_hz = int(np.ceil(required_samples / duration_sec))
-    extended_task = dict(task)
-    extended_task["sample_rate_hz"] = float(required_sample_rate_hz)
-    extended_reference = envs.task_adapter.make_task_reference(extended_task)
+    extended_task, extension_warning = _duration_extended_diagnostic_task(
+        task=task,
+        sample_rate_hz=sample_rate_hz,
+        required_samples=required_samples,
+    )
+    if extended_task is None:
+        return dict(task), reference_samples, (extension_warning,)
+
+    try:
+        extended_reference = envs.task_adapter.make_task_reference(extended_task)
+    except ValueError as exc:
+        warning = f"{extension_warning}; duration extension failed validation: {exc}; using original diagnostic task"
+        return dict(task), reference_samples, (warning,)
+
     extended_samples = int(extended_reference.positions.shape[0])
-    warning = f"extended diagnostic task sample_rate_hz from {sample_rate_hz} to {required_sample_rate_hz} for {required_steps} steps"
-    return extended_task, extended_samples, (warning,)
+    warnings = [extension_warning]
+    if extended_samples < required_samples:
+        warnings.append("extended diagnostic task still has too few reference samples; rollout may end early")
+    return extended_task, extended_samples, tuple(warnings)
+
+
+def _duration_extended_diagnostic_task(
+    task: dict[str, Any],
+    sample_rate_hz: float,
+    required_samples: int,
+) -> tuple[dict[str, Any] | None, str]:
+    """Return a diagnostic task extended in time without changing sample spacing."""
+    required_duration_sec = (required_samples - 1) / sample_rate_hz
+    duration_value = task.get("duration_sec")
+    if duration_value is not None:
+        try:
+            duration_sec = float(duration_value)
+        except (TypeError, ValueError):
+            return None, "diagnostic task has non-numeric duration_sec and cannot be safely extended"
+        if duration_sec <= 0.0:
+            return None, "diagnostic task has non-positive duration_sec and cannot be safely extended"
+
+        extended_duration_sec = max(duration_sec, required_duration_sec)
+        extended_task = dict(task)
+        # Preserve sample spacing; increasing sample_rate_hz can violate acceleration checks.
+        extended_task["duration_sec"] = float(extended_duration_sec)
+        warning = (
+            f"extended diagnostic task duration_sec from {duration_sec} to {extended_duration_sec} "
+            f"at sample_rate_hz {sample_rate_hz} for {required_samples - 1} steps"
+        )
+        return extended_task, warning
+
+    hold_duration_value = task.get("hold_duration_sec")
+    move_duration_value = task.get("move_duration_sec")
+    if hold_duration_value is None or move_duration_value is None:
+        warning = (
+            "diagnostic task has too few reference samples and cannot be extended because "
+            "duration_sec or hold_duration_sec/move_duration_sec are missing"
+        )
+        return None, warning
+
+    try:
+        hold_duration_sec = float(hold_duration_value)
+        move_duration_sec = float(move_duration_value)
+    except (TypeError, ValueError):
+        warning = "diagnostic task has non-numeric hold_duration_sec or move_duration_sec and cannot be safely extended"
+        return None, warning
+    if hold_duration_sec <= 0.0 or move_duration_sec <= 0.0:
+        warning = "diagnostic task has non-positive hold_duration_sec or move_duration_sec and cannot be safely extended"
+        return None, warning
+
+    extended_move_duration_sec = max(move_duration_sec, required_duration_sec - hold_duration_sec)
+    extended_task = dict(task)
+    extended_task["move_duration_sec"] = float(extended_move_duration_sec)
+    warning = (
+        f"extended diagnostic task move_duration_sec from {move_duration_sec} to {extended_move_duration_sec} "
+        f"at sample_rate_hz {sample_rate_hz} for {required_samples - 1} steps"
+    )
+    return extended_task, warning
 
 
 def _run_liftoff_rollout(

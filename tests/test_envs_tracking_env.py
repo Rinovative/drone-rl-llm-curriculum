@@ -131,6 +131,7 @@ def test_circle_task_can_reset_headlessly() -> None:
         assert info["task_shape"] == validation.contracts.SHAPE_CIRCLE
         assert info["start_hold_enabled"] is True
         assert info["is_start_hold"] is True
-        assert info["tracking_phase_start_step"] == 10
+        expected_tracking_phase_start_step = 10
+        assert info["tracking_phase_start_step"] == expected_tracking_phase_start_step
     finally:
         tracking_env.close()

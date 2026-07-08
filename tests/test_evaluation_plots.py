@@ -143,6 +143,55 @@ def test_policy_rollout_trace_plots_reject_mismatched_error(tmp_path: Path) -> N
         evaluation.plots.write_policy_rollout_trace_plots(records, tmp_path / "plots")
 
 
+def test_trace_plot_data_uses_global_step_axis_for_multi_episode_time_resets() -> None:
+    """Verify multi-episode local time resets are plotted on a global evaluation axis."""
+    records = _trace_records(include_action=False) + _trace_records(include_action=False)
+    for step_index, record in enumerate(records):
+        record["step_index"] = step_index
+        record["episode_index"] = 0 if step_index < TRACE_STEP_COUNT else 1
+        record["episode_step_index"] = step_index % TRACE_STEP_COUNT
+        record["time_sec"] = float(step_index % TRACE_STEP_COUNT) * 0.1
+        record["start_hold_enabled"] = True
+        record["is_tracking_phase"] = (step_index % TRACE_STEP_COUNT) >= 1
+        record["tracking_phase_start_time_sec"] = 0.1
+
+    plot_data = evaluation.plots._prepare_trace_plot_data(evaluation.plots._trace_arrays(records))  # noqa: SLF001
+
+    assert plot_data.uses_global_step_axis is True
+    assert plot_data.x_label == "evaluation step"
+    assert plot_data.x.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    assert [segment.tolist() for segment in plot_data.segments] == [[0, 1, 2], [3, 4, 5]]
+    assert plot_data.reset_boundary_x == (3.0,)
+    assert plot_data.tracking_start_x == (1.0, 4.0)
+
+
+def test_trace_plot_data_splits_detected_time_reset_without_episode_index_change() -> None:
+    """Verify reset-like time drops split trace segments even without episode metadata."""
+    records = _trace_records(include_action=False) + _trace_records(include_action=False)
+    for step_index, record in enumerate(records):
+        record["step_index"] = step_index
+        record["time_sec"] = float(step_index % TRACE_STEP_COUNT) * 0.1
+
+    plot_data = evaluation.plots._prepare_trace_plot_data(evaluation.plots._trace_arrays(records))  # noqa: SLF001
+
+    assert plot_data.uses_global_step_axis is True
+    assert [segment.tolist() for segment in plot_data.segments] == [[0, 1, 2], [3, 4, 5]]
+    assert plot_data.reset_boundary_x == (3.0,)
+
+
+def test_trace_plot_data_keeps_single_episode_time_axis_unchanged() -> None:
+    """Verify single-episode traces keep the original local time axis."""
+    records = _trace_records(include_action=False)
+
+    plot_data = evaluation.plots._prepare_trace_plot_data(evaluation.plots._trace_arrays(records))  # noqa: SLF001
+
+    assert plot_data.uses_global_step_axis is False
+    assert plot_data.x_label == "time s"
+    assert plot_data.x.tolist() == [0.0, 0.1, 0.2]
+    assert [segment.tolist() for segment in plot_data.segments] == [[0, 1, 2]]
+    assert plot_data.reset_boundary_x == ()
+
+
 def test_plots_import_through_package_alias() -> None:
     """Verify plot helpers are exposed by the evaluation package."""
     assert evaluation.plots.write_trajectory_comparison is not None

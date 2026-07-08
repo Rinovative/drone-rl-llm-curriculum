@@ -365,7 +365,7 @@ def _apply_task_start_hold(
     times = np.asarray(trajectory.times, dtype=float)
     positions = np.asarray(trajectory.positions, dtype=float)
     sample_interval = _sample_interval_sec(times)
-    hold_steps = max(1, int(round(requested_sec / sample_interval)))
+    hold_steps = max(1, round(requested_sec / sample_interval))
     effective_hold_sec = float(hold_steps * sample_interval)
     hold_times = times[0] + sample_interval * np.arange(hold_steps, dtype=float)
     hold_positions = np.repeat(positions[0].reshape(1, XYZ_DIMENSIONS), repeats=hold_steps, axis=0)

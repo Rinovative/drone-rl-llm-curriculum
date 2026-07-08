@@ -76,6 +76,15 @@ class PolicyEvaluationArtifactOptions:
 
 
 @dataclass(frozen=True)
+class _RenderArtifactResult:
+    """In-memory render artifact payload used to keep report plots aligned with GIFs."""
+
+    gif_path: Path
+    warnings: list[str]
+    trace_records: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
 class PolicyEvaluationSpec:
     """
     One concrete model/task evaluation specification.
@@ -160,6 +169,7 @@ class PolicyEvaluationResult:
     trace_path: str | None
     gif_path: str | None
     plot_paths: dict[str, str]
+    plot_trace_scope: str
     failure_report_path: str | None
     episode_summaries_path: str | None
     curriculum_feedback_path: str | None
@@ -215,21 +225,32 @@ def run_policy_evaluation(
         trace_path = traces_dir / evaluation.diagnostics.EVALUATION_TRACE_FILENAME
         shutil.copyfile(trace_source, trace_path)
 
-    plot_paths: dict[str, str] = {}
-    if options.plots_enabled:
-        plot_result = evaluation.plots.write_policy_rollout_trace_plots(diagnostics.trace_records, plots_dir)
-        plot_paths = dict(plot_result.plot_paths)
-
     gif_path: Path | None = None
     render_warnings: list[str] = []
+    render_result: _RenderArtifactResult | None = None
     if options.render_enabled:
-        gif_path, render_warnings = _write_render_artifact(
+        render_result = _write_render_artifact(
             spec=spec,
             task=task,
             renders_dir=renders_dir,
             render_steps=int(options.render_max_steps or spec.eval_steps),
             render_fps=options.render_fps,
         )
+        gif_path = render_result.gif_path
+        render_warnings = list(render_result.warnings)
+
+    plot_paths: dict[str, str] = {}
+    plot_trace_scope = "disabled"
+    plot_trace_records: list[dict[str, Any]] = []
+    if options.plots_enabled:
+        if render_result is not None:
+            plot_trace_scope = "render_rollout"
+            plot_trace_records = render_result.trace_records
+        else:
+            plot_trace_scope = "full_evaluation"
+            plot_trace_records = diagnostics.trace_records
+        plot_result = evaluation.plots.write_policy_rollout_trace_plots(plot_trace_records, plots_dir)
+        plot_paths = dict(plot_result.plot_paths)
 
     metrics_payload = {
         "label": spec.label,
@@ -245,6 +266,10 @@ def run_policy_evaluation(
         "trace_path": None if trace_path is None else str(trace_path),
         "gif_path": None if gif_path is None else str(gif_path),
         "plot_paths": dict(plot_paths),
+        "plot_trace_scope": plot_trace_scope,
+        "plot_trace_step_count": len(plot_trace_records),
+        "plot_trace_terminated": bool(plot_trace_records[-1].get("terminated", False)) if plot_trace_records else None,
+        "plot_trace_truncated": bool(plot_trace_records[-1].get("truncated", False)) if plot_trace_records else None,
         "failure_report_path": str(artifact_fields.get("failure_report_path")) if artifact_fields.get("failure_report_path") else None,
         "episode_summaries_path": str(artifact_fields.get("episode_summaries_path")) if artifact_fields.get("episode_summaries_path") else None,
         "curriculum_feedback_path": str(artifact_fields.get("curriculum_feedback_path")) if artifact_fields.get("curriculum_feedback_path") else None,
@@ -285,6 +310,7 @@ def run_policy_evaluation(
         trace_path=None if trace_path is None else str(trace_path),
         gif_path=None if gif_path is None else str(gif_path),
         plot_paths=plot_paths,
+        plot_trace_scope=plot_trace_scope,
         failure_report_path=metrics_payload["failure_report_path"],
         episode_summaries_path=metrics_payload["episode_summaries_path"],
         curriculum_feedback_path=metrics_payload["curriculum_feedback_path"],
@@ -328,8 +354,8 @@ def _write_render_artifact(
     renders_dir: Path,
     render_steps: int,
     render_fps: int,
-) -> tuple[Path, list[str]]:
-    """Write one simulator rollout GIF and return the path with warnings."""
+) -> _RenderArtifactResult:
+    """Write one simulator rollout GIF and return the path, warnings, and plotted trace."""
     from stable_baselines3 import PPO  # noqa: PLC0415
 
     from src.experiments import experiments_policy_render as policy_render  # noqa: PLC0415
@@ -363,7 +389,7 @@ def _write_render_artifact(
 
     gif_path = renders_dir / "scenario_rollout.gif"
     policy_render._write_gif(rollout_payload["frames"], gif_path, settings.frame_interval)  # noqa: SLF001
-    return gif_path, []
+    return _RenderArtifactResult(gif_path=gif_path, warnings=[], trace_records=list(rollout_payload["trace_records"]))
 
 
 def _load_and_validate_task(spec: PolicyEvaluationSpec) -> dict[str, Any]:
@@ -421,6 +447,10 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "trace_path",
         "gif_path",
         "plot_paths",
+        "plot_trace_scope",
+        "plot_trace_step_count",
+        "plot_trace_terminated",
+        "plot_trace_truncated",
         "failure_report_path",
         "episode_summaries_path",
         "curriculum_feedback_path",

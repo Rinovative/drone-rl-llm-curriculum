@@ -48,6 +48,20 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class _TracePlotData:
+    """Prepared arrays and segment metadata for one policy trace plot set."""
+
+    arrays: dict[str, np.ndarray]
+    segments: list[np.ndarray]
+    x: np.ndarray
+    x_label: str
+    episode_count: int
+    uses_global_step_axis: bool
+    reset_boundary_x: tuple[float, ...]
+    tracking_start_x: tuple[float, ...]
+
+
+@dataclass(frozen=True)
 class RolloutTracePlotResult:
     """
     Summary returned after writing trained-policy trace plots.
@@ -152,7 +166,8 @@ def write_policy_rollout_trace_plots(
     """
     records = _load_trace_records(trace_records_or_path)
     arrays = _trace_arrays(records)
-    segments = _episode_segments(arrays)
+    plot_data = _prepare_trace_plot_data(arrays)
+    segments = plot_data.segments
     resolved_dir = Path(output_dir)
     resolved_dir.mkdir(parents=True, exist_ok=True)
 
@@ -171,18 +186,18 @@ def write_policy_rollout_trace_plots(
             arrays["reference"][segment, 1],
             color="#1f77b4",
             linewidth=2.0,
-            label="reference" if segment_index == 0 else None,
+            label=_trace_line_label("reference", plot_data) if segment_index == 0 else None,
         )
         axis.plot(
             arrays["actual"][segment, 0],
             arrays["actual"][segment, 1],
             color="#d62728",
             linewidth=2.0,
-            label="actual" if segment_index == 0 else None,
+            label=_trace_line_label("actual", plot_data) if segment_index == 0 else None,
         )
     axis.set_xlabel("x m")
     axis.set_ylabel("y m")
-    axis.set_title("XY reference vs actual")
+    axis.set_title(_trace_plot_title("XY reference vs actual", plot_data))
     axis.axis("equal")
     axis.legend()
     figure.savefig(xy_path, dpi=140)
@@ -195,23 +210,24 @@ def write_policy_rollout_trace_plots(
     for axis_index, axis in enumerate(axes):
         for segment_index, segment in enumerate(segments):
             axis.plot(
-                arrays["time"][segment],
+                plot_data.x[segment],
                 arrays["reference"][segment, axis_index],
                 color="#1f77b4",
                 linewidth=1.8,
                 label="reference" if axis_index == 0 and segment_index == 0 else None,
             )
             axis.plot(
-                arrays["time"][segment],
+                plot_data.x[segment],
                 arrays["actual"][segment, axis_index],
                 color="#d62728",
                 linewidth=1.6,
                 label="actual" if axis_index == 0 and segment_index == 0 else None,
             )
-        _mark_tracking_starts(axis, arrays=arrays, segments=segments, label=axis_index == 0)
+        _mark_episode_boundaries(axis, plot_data=plot_data, label=axis_index == 0)
+        _mark_tracking_starts(axis, plot_data=plot_data, label=axis_index == 0)
         axis.set_ylabel(f"{labels[axis_index]} m")
-    axes[0].set_title("XYZ vs time")
-    axes[-1].set_xlabel("time s")
+    axes[0].set_title(_trace_plot_title("XYZ trajectory components", plot_data))
+    axes[-1].set_xlabel(plot_data.x_label)
     axes[0].legend()
     figure.savefig(xyz_path, dpi=140)
     plt.close(figure)
@@ -220,11 +236,12 @@ def write_policy_rollout_trace_plots(
     error_path = resolved_dir / CANONICAL_POLICY_PLOT_FILENAMES["position_error"]
     figure, axis = plt.subplots(figsize=(7.0, 3.5), constrained_layout=True)
     for segment in segments:
-        axis.plot(arrays["time"][segment], arrays["position_error"][segment], color="#d62728", linewidth=2.0)
-    _mark_tracking_starts(axis, arrays=arrays, segments=segments, label=True)
-    axis.set_xlabel("time s")
+        axis.plot(plot_data.x[segment], arrays["position_error"][segment], color="#d62728", linewidth=2.0)
+    _mark_episode_boundaries(axis, plot_data=plot_data, label=True)
+    _mark_tracking_starts(axis, plot_data=plot_data, label=True)
+    axis.set_xlabel(plot_data.x_label)
     axis.set_ylabel("position error m")
-    axis.set_title("Position error vs time")
+    axis.set_title(_trace_plot_title("Position error", plot_data))
     figure.savefig(error_path, dpi=140)
     plt.close(figure)
     plot_paths["position_error"] = str(error_path)
@@ -236,15 +253,16 @@ def write_policy_rollout_trace_plots(
         for action_index in range(action_array.shape[1]):
             for segment_index, segment in enumerate(segments):
                 axis.plot(
-                    arrays["time"][segment],
+                    plot_data.x[segment],
                     action_array[segment, action_index],
                     linewidth=1.5,
                     label=f"action {action_index}" if segment_index == 0 else None,
                 )
-        _mark_tracking_starts(axis, arrays=arrays, segments=segments, label=True)
-        axis.set_xlabel("time s")
+        _mark_episode_boundaries(axis, plot_data=plot_data, label=True)
+        _mark_tracking_starts(axis, plot_data=plot_data, label=True)
+        axis.set_xlabel(plot_data.x_label)
         axis.set_ylabel("action")
-        axis.set_title("Action vs time")
+        axis.set_title(_trace_plot_title("Action trace", plot_data))
         axis.legend()
         figure.savefig(action_path, dpi=140)
         plt.close(figure)
@@ -301,6 +319,8 @@ def _trace_arrays(records: Sequence[Mapping[str, Any]]) -> dict[str, np.ndarray]
         message = "rollout trace contains no records"
         raise ValueError(message)
     time = np.asarray([record["time_sec"] for record in records], dtype=float)
+    step_index = np.asarray([record.get("step_index", index) for index, record in enumerate(records)], dtype=float)
+    episode_step_index = np.asarray([record.get("episode_step_index", index) for index, record in enumerate(records)], dtype=int)
     episode_index = np.asarray([record.get("episode_index", 0) for record in records], dtype=int)
     actual = np.asarray([_position_row(record, "actual_position_xyz_m", "current_position") for record in records], dtype=float)
     reference = np.asarray([_position_row(record, "reference_position_xyz_m", "reference_position") for record in records], dtype=float)
@@ -309,27 +329,25 @@ def _trace_arrays(records: Sequence[Mapping[str, Any]]) -> dict[str, np.ndarray]
         message = "trace position fields must have shape (steps, 3)"
         raise ValueError(message)
     position_error = np.linalg.norm(actual - reference, axis=1)
-    if time.shape != reported_position_error.shape or time.shape[0] != actual.shape[0]:
-        message = "trace time and position_error fields must align with positions"
+    if time.shape != reported_position_error.shape or time.shape[0] != actual.shape[0] or step_index.shape[0] != actual.shape[0]:
+        message = "trace time, step_index, and position_error fields must align with positions"
         raise ValueError(message)
     if not np.allclose(reported_position_error, position_error, atol=1.0e-9, rtol=1.0e-9):
         message = "trace position_error_m must equal same-row actual/reference position distance"
         raise ValueError(message)
-    if not all(np.all(np.isfinite(array)) for array in (time, actual, reference, position_error)):
+    if not all(np.all(np.isfinite(array)) for array in (time, step_index, actual, reference, position_error)):
         message = "trace plot fields must contain only finite values"
         raise ValueError(message)
-    for active_episode in np.unique(episode_index):
-        episode_time = time[episode_index == active_episode]
-        if episode_time.shape[0] > 1 and np.any(np.diff(episode_time) < 0.0):
-            message = "trace time_sec must be monotonic within each episode"
-            raise ValueError(message)
     return {
         "time": time,
+        "step_index": step_index,
+        "episode_step_index": episode_step_index,
         "episode_index": episode_index,
         "actual": actual,
         "reference": reference,
         "position_error": position_error,
         "start_hold_enabled": np.asarray([bool(record.get("start_hold_enabled", False)) for record in records], dtype=bool),
+        "is_tracking_phase": np.asarray([bool(record.get("is_tracking_phase", False)) for record in records], dtype=bool),
         "tracking_phase_start_time_sec": np.asarray(
             [float(record.get("tracking_phase_start_time_sec", 0.0)) for record in records],
             dtype=float,
@@ -350,13 +368,49 @@ def _position_row(record: Mapping[str, Any], primary_key: str, fallback_key: str
     return row
 
 
+def _prepare_trace_plot_data(arrays: dict[str, np.ndarray]) -> _TracePlotData:
+    """Return segment metadata and the x-axis that makes episode resets explicit."""
+    segments = _episode_segments(arrays)
+    episode_count = int(np.unique(arrays["episode_index"]).shape[0])
+    use_global_step_axis = episode_count > 1 or len(segments) > 1
+    if use_global_step_axis:
+        x = _global_step_x(arrays["step_index"])
+        x_label = "evaluation step"
+    else:
+        x = np.asarray(arrays["time"], dtype=float)
+        x_label = "time s"
+    reset_boundary_x = tuple(float(x[segment[0]]) for segment in segments[1:] if segment.size > 0)
+    tracking_start_x = _tracking_start_x_values(arrays=arrays, segments=segments, x=x)
+    return _TracePlotData(
+        arrays=arrays,
+        segments=segments,
+        x=x,
+        x_label=x_label,
+        episode_count=episode_count,
+        uses_global_step_axis=use_global_step_axis,
+        reset_boundary_x=reset_boundary_x,
+        tracking_start_x=tracking_start_x,
+    )
+
+
+def _global_step_x(step_index: np.ndarray) -> np.ndarray:
+    """Return a nondecreasing global x-axis for multi-episode time-series plots."""
+    x = np.asarray(step_index, dtype=float)
+    if x.shape[0] > 1 and np.any(np.diff(x) < 0.0):
+        return np.arange(x.shape[0], dtype=float)
+    return x
+
+
 def _episode_segments(arrays: Mapping[str, np.ndarray]) -> list[np.ndarray]:
-    """Return contiguous row indices grouped by episode to avoid reset-spanning lines."""
+    """Return contiguous row indices grouped by episode or detected time reset."""
     episode_index = np.asarray(arrays["episode_index"], dtype=int)
+    time = np.asarray(arrays["time"], dtype=float)
     segments: list[np.ndarray] = []
     start = 0
     for index in range(1, episode_index.shape[0]):
-        if episode_index[index] == episode_index[index - 1]:
+        same_episode = episode_index[index] == episode_index[index - 1]
+        time_did_not_reset = time[index] >= time[index - 1]
+        if same_episode and time_did_not_reset:
             continue
         segments.append(np.arange(start, index))
         start = index
@@ -364,31 +418,68 @@ def _episode_segments(arrays: Mapping[str, np.ndarray]) -> list[np.ndarray]:
     return segments
 
 
-def _mark_tracking_starts(
-    axis: Any,
-    arrays: Mapping[str, np.ndarray],
-    segments: Sequence[np.ndarray],
-    label: bool,
-) -> None:
-    """Draw tracking-start markers on time plots when start-hold metadata is present."""
-    labeled = False
+def _tracking_start_x_values(arrays: Mapping[str, np.ndarray], segments: Sequence[np.ndarray], x: np.ndarray) -> tuple[float, ...]:
+    """Return per-episode tracking-start marker positions on the selected x-axis."""
+    start_values: list[float] = []
     for segment in segments:
-        if not np.any(arrays["start_hold_enabled"][segment]):
+        if segment.size == 0 or not np.any(arrays["start_hold_enabled"][segment]):
+            continue
+        tracking_rows = segment[arrays["is_tracking_phase"][segment]]
+        if tracking_rows.size > 0:
+            start_values.append(float(x[tracking_rows[0]]))
             continue
         start_time = float(arrays["tracking_phase_start_time_sec"][segment][0])
         if not np.isfinite(start_time):
             continue
-        segment_times = arrays["time"][segment]
-        if segment_times.size == 0 or start_time < float(np.min(segment_times)) or start_time > float(np.max(segment_times)):
-            continue
+        candidate_rows = segment[arrays["time"][segment] >= start_time]
+        if candidate_rows.size > 0:
+            start_values.append(float(x[candidate_rows[0]]))
+    return tuple(start_values)
+
+
+def _mark_episode_boundaries(axis: Any, plot_data: _TracePlotData, label: bool) -> None:
+    """Draw reset markers on time-series plots for multi-episode traces."""
+    labeled = False
+    for reset_x in plot_data.reset_boundary_x:
         axis.axvline(
-            start_time,
+            reset_x,
+            color="#888888",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.75,
+            label="episode reset" if label and not labeled else None,
+        )
+        labeled = True
+
+
+def _mark_tracking_starts(axis: Any, plot_data: _TracePlotData, label: bool) -> None:
+    """Draw tracking-start markers on time plots when start-hold metadata is present."""
+    labeled = False
+    for start_x in plot_data.tracking_start_x:
+        axis.axvline(
+            start_x,
             color="#555555",
             linestyle=":",
             linewidth=1.2,
             label="tracking start" if label and not labeled else None,
         )
         labeled = True
+
+
+def _trace_plot_title(base_title: str, plot_data: _TracePlotData) -> str:
+    """Return a plot title that makes multi-episode traces explicit."""
+    if plot_data.episode_count > 1:
+        return f"{base_title} ({plot_data.episode_count} evaluation episodes)"
+    if len(plot_data.segments) > 1:
+        return f"{base_title} ({len(plot_data.segments)} reset segments)"
+    return base_title
+
+
+def _trace_line_label(label: str, plot_data: _TracePlotData) -> str:
+    """Return legend text that distinguishes episode segments from stages."""
+    if plot_data.episode_count > 1 or len(plot_data.segments) > 1:
+        return f"{label} episode segments"
+    return label
 
 
 def _optional_action_array(records: Sequence[Mapping[str, Any]], key: str) -> np.ndarray | None:

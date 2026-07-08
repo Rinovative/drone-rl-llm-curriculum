@@ -12,6 +12,8 @@ import pytest
 
 from src import experiments
 
+FULL_EVALUATION_EPISODE_COUNT = 2
+
 
 @dataclass
 class _FakeDiagnostics:
@@ -70,6 +72,9 @@ def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
         return (
             _FakeDiagnostics(
                 metrics={
+                    "episode_count": FULL_EVALUATION_EPISODE_COUNT,
+                    "eval_resets": 1,
+                    "eval_truncated_count": 1,
                     "start_hold_enabled": True,
                     "start_hold_sec": 1.0,
                     "exclude_start_hold_from_tracking_metrics": True,
@@ -90,11 +95,27 @@ def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
                 },
                 trace_records=[
                     {
+                        "source": "evaluation",
+                        "step_index": 0,
+                        "episode_index": 0,
                         "time_sec": 0.0,
                         "actual_position_xyz_m": [0.0, 0.0, 1.0],
                         "reference_position_xyz_m": [0.0, 0.0, 1.0],
                         "position_error_m": 0.0,
-                    }
+                        "terminated": False,
+                        "truncated": True,
+                    },
+                    {
+                        "source": "evaluation",
+                        "step_index": 1,
+                        "episode_index": 1,
+                        "time_sec": 0.0,
+                        "actual_position_xyz_m": [0.0, 0.0, 1.0],
+                        "reference_position_xyz_m": [0.0, 0.0, 1.0],
+                        "position_error_m": 0.0,
+                        "terminated": False,
+                        "truncated": False,
+                    },
                 ],
             ),
             {
@@ -105,11 +126,17 @@ def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
             },
         )
 
-    def fake_write_plots(_: list[dict[str, Any]], plots_dir: Path) -> _FakePlotResult:
+    plotted_records: list[dict[str, Any]] = []
+
+    def fake_write_plots(records: list[dict[str, Any]], plots_dir: Path) -> _FakePlotResult:
+        plotted_records.extend(records)
         plots_dir.mkdir(parents=True, exist_ok=True)
-        plot_path = plots_dir / "trajectory_xy.png"
-        plot_path.write_bytes(b"plot")
-        return _FakePlotResult(plot_paths={"trajectory_xy": str(plot_path)})
+        plot_paths: dict[str, str] = {}
+        for name in experiments.policy_evaluation.evaluation.plots.CANONICAL_POLICY_PLOT_FILENAMES.values():
+            plot_path = plots_dir / name
+            plot_path.write_bytes(b"plot")
+            plot_paths[plot_path.stem] = str(plot_path)
+        return _FakePlotResult(plot_paths=plot_paths)
 
     def fake_render(
         spec: experiments.policy_evaluation.PolicyEvaluationSpec,
@@ -117,12 +144,28 @@ def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
         renders_dir: Path,
         render_steps: int,
         render_fps: int,
-    ) -> tuple[Path, list[str]]:
+    ) -> experiments.policy_evaluation._RenderArtifactResult:
         del spec, task, render_steps, render_fps
         renders_dir.mkdir(parents=True, exist_ok=True)
         path = renders_dir / "scenario_rollout.gif"
         path.write_bytes(b"GIF89a")
-        return path, []
+        return experiments.policy_evaluation._RenderArtifactResult(  # noqa: SLF001
+            gif_path=path,
+            warnings=[],
+            trace_records=[
+                {
+                    "source": "render",
+                    "step_index": 0,
+                    "episode_index": 0,
+                    "time_sec": 0.0,
+                    "actual_position_xyz_m": [0.0, 0.0, 1.0],
+                    "reference_position_xyz_m": [0.0, 0.0, 1.0],
+                    "position_error_m": 0.0,
+                    "terminated": False,
+                    "truncated": True,
+                }
+            ],
+        )
 
     monkeypatch.setattr(experiments.policy_evaluation, "_collect_diagnostics", fake_collect_diagnostics)
     monkeypatch.setattr(experiments.policy_evaluation.evaluation.plots, "write_policy_rollout_trace_plots", fake_write_plots)
@@ -149,6 +192,16 @@ def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
     assert Path(result.manifest_path).exists()
     assert Path(result.trace_path).exists()
     assert result.plot_paths["trajectory_xy"].endswith("trajectory_xy.png")
+    assert result.plot_paths["trajectory_xyz"].endswith("trajectory_xyz.png")
+    assert result.plot_paths["position_error"].endswith("position_error.png")
+    assert result.plot_paths["action_trace"].endswith("action_trace.png")
+    assert result.plot_trace_scope == "render_rollout"
+    assert result.metrics["plot_trace_scope"] == "render_rollout"
+    assert result.metrics["plot_trace_step_count"] == 1
+    assert result.metrics["plot_trace_truncated"] is True
+    assert result.metrics["episode_count"] == FULL_EVALUATION_EPISODE_COUNT
+    assert result.metrics["eval_resets"] == 1
+    assert [record["source"] for record in plotted_records] == ["render"]
 
 
 def test_shared_policy_evaluation_no_render_records_flag_and_skips_gif(
@@ -170,13 +223,22 @@ def test_shared_policy_evaluation_no_render_records_flag_and_skips_gif(
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         trace = diagnostics_dir / "evaluation_trace.jsonl"
         trace.write_text("{}\n", encoding="utf-8")
-        return _FakeDiagnostics(metrics={}, trace_records=[]), {"evaluation_trace_path": str(trace)}
+        return _FakeDiagnostics(metrics={}, trace_records=[{"source": "evaluation", "terminated": False, "truncated": False}]), {
+            "evaluation_trace_path": str(trace)
+        }
+
+    plotted_records: list[dict[str, Any]] = []
+
+    def fake_write_plots(records: list[dict[str, Any]], output: Path) -> _FakePlotResult:
+        del output
+        plotted_records.extend(records)
+        return _FakePlotResult(plot_paths={})
 
     monkeypatch.setattr(experiments.policy_evaluation, "_collect_diagnostics", fake_collect)
     monkeypatch.setattr(
         experiments.policy_evaluation.evaluation.plots,
         "write_policy_rollout_trace_plots",
-        lambda records, output: _FakePlotResult(plot_paths={}),
+        fake_write_plots,
     )
 
     result = experiments.policy_evaluation.run_policy_evaluation(
@@ -195,6 +257,9 @@ def test_shared_policy_evaluation_no_render_records_flag_and_skips_gif(
 
     assert result.render_enabled is False
     assert result.gif_path is None
+    assert result.plot_trace_scope == "full_evaluation"
+    assert result.metrics["plot_trace_scope"] == "full_evaluation"
+    assert [record["source"] for record in plotted_records] == ["evaluation"]
 
 
 def test_shared_policy_evaluation_no_plots_records_flag_and_skips_plot_paths(
@@ -219,7 +284,15 @@ def test_shared_policy_evaluation_no_plots_records_flag_and_skips_plot_paths(
         return _FakeDiagnostics(metrics={}, trace_records=[]), {"evaluation_trace_path": str(trace)}
 
     monkeypatch.setattr(experiments.policy_evaluation, "_collect_diagnostics", fake_collect)
-    monkeypatch.setattr(experiments.policy_evaluation, "_write_render_artifact", lambda *args, **kwargs: (tmp_path / "render.gif", []))
+    monkeypatch.setattr(
+        experiments.policy_evaluation,
+        "_write_render_artifact",
+        lambda *args, **kwargs: experiments.policy_evaluation._RenderArtifactResult(  # noqa: SLF001
+            gif_path=tmp_path / "render.gif",
+            warnings=[],
+            trace_records=[{"source": "render", "terminated": False, "truncated": False}],
+        ),
+    )
 
     result = experiments.policy_evaluation.run_policy_evaluation(
         experiments.policy_evaluation.PolicyEvaluationSpec(
@@ -237,3 +310,5 @@ def test_shared_policy_evaluation_no_plots_records_flag_and_skips_plot_paths(
 
     assert result.plots_enabled is False
     assert result.plot_paths == {}
+    assert result.plot_trace_scope == "disabled"
+    assert result.metrics["plot_trace_scope"] == "disabled"

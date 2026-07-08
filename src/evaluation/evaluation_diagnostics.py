@@ -665,6 +665,8 @@ def _validate_trace_consistency(records: Sequence[Mapping[str, Any]]) -> None:
 
 def _validate_trace_task_shape(records: Sequence[Mapping[str, Any]], task_shape: str) -> None:
     """Raise when trace rows identify a different task than the evaluated task."""
+    if str(task_shape).strip().lower() in {"", "none", "unknown"}:
+        return
     trace_shapes = {str(record.get("task_shape")) for record in records if record.get("task_shape") not in (None, "unknown")}
     if not trace_shapes:
         return
