@@ -1,6 +1,6 @@
 """
 ===============================================================================
-cli_mvp.py
+experiments_cli_mvp.py
 ===============================================================================
 Command-line helper for running or printing the complete MVP smoke sequence.
 
@@ -27,7 +27,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src import evaluation, experiments, utils
+from src import evaluation, utils
+from src.experiments import experiments_config as config_loader
+from src.experiments.training import experiments_training_smoke as training_smoke
 
 DEFAULT_OUTPUT_DIR = utils.artifacts.get_training_run_dir("mvp_smoke")
 DEFAULT_MAX_STEPS = 16
@@ -36,7 +38,7 @@ DEFAULT_MAX_STEPS = 16
 def build_parser() -> argparse.ArgumentParser:
     """Build the MVP CLI argument parser."""
     parser = argparse.ArgumentParser(description="Run or print the tiny deterministic MVP smoke sequence.")
-    parser.add_argument("--config", type=Path, default=experiments.training_smoke.DEFAULT_TRAINING_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=training_smoke.DEFAULT_TRAINING_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
@@ -46,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_repro_commands(
-    config_path: Path = experiments.training_smoke.DEFAULT_TRAINING_CONFIG_PATH,
+    config_path: Path = training_smoke.DEFAULT_TRAINING_CONFIG_PATH,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     max_steps: int = DEFAULT_MAX_STEPS,
 ) -> list[str]:
@@ -69,14 +71,18 @@ def build_repro_commands(
 
     """
     training_command = (
-        f"python -m src.experiments.cli_training_smoke --config {config_path.as_posix()} --output-dir {output_dir.as_posix()} --max-steps {max_steps}"
+        "python -m src.experiments.cli.experiments_cli_training_smoke "
+        f"--config {config_path.as_posix()} --output-dir {output_dir.as_posix()} --max-steps {max_steps}"
     )
-    mvp_command = f"python -m src.experiments.cli_mvp --config {config_path.as_posix()} --output-dir {output_dir.as_posix()} --max-steps {max_steps}"
+    mvp_command = (
+        "python -m src.experiments.cli.experiments_cli_mvp "
+        f"--config {config_path.as_posix()} --output-dir {output_dir.as_posix()} --max-steps {max_steps}"
+    )
     return [training_command, mvp_command]
 
 
 def run_mvp_sequence(
-    config_path: Path = experiments.training_smoke.DEFAULT_TRAINING_CONFIG_PATH,
+    config_path: Path = training_smoke.DEFAULT_TRAINING_CONFIG_PATH,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     max_steps: int = DEFAULT_MAX_STEPS,
     task_index: int | None = None,
@@ -106,13 +112,13 @@ def run_mvp_sequence(
     """
     _ensure_prerequisites()
     metrics_dir, plots_dir = _artifact_dirs(output_dir)
-    training_result = experiments.training_smoke.run_training_smoke_from_config(
+    training_result = training_smoke.run_training_smoke_from_config(
         config_path=config_path,
         output_dir=metrics_dir,
         max_steps=max_steps,
         task_index=task_index,
     )
-    settings = experiments.training_smoke.load_training_smoke_settings(config_path)
+    settings = training_smoke.load_training_smoke_settings(config_path)
     selected_task_index = settings.task_index if task_index is None else task_index
     task = _load_task(settings.task_config_path, selected_task_index)
     metrics_dir.mkdir(parents=True, exist_ok=True)
@@ -175,8 +181,8 @@ def _artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
 def _ensure_prerequisites() -> None:
     """Raise a clear error if required MVP helper modules are unavailable."""
     missing: list[str] = []
-    if not hasattr(experiments.training_smoke, "run_training_smoke_from_config"):
-        missing.append("experiments.training_smoke.run_training_smoke_from_config")
+    if not hasattr(training_smoke, "run_training_smoke_from_config"):
+        missing.append("training_smoke.run_training_smoke_from_config")
     if not hasattr(evaluation, "rollout"):
         missing.append("evaluation.rollout")
     if not hasattr(evaluation, "plots"):
@@ -188,7 +194,7 @@ def _ensure_prerequisites() -> None:
 
 def _load_task(task_config_path: Path, task_index: int) -> dict[str, Any]:
     """Load a copied task mapping for CLI orchestration."""
-    config = experiments.config.load_experiment_config(task_config_path)
+    config = config_loader.load_experiment_config(task_config_path)
     tasks = config.get("tasks")
     if not isinstance(tasks, list):
         message = "task config must contain a top-level tasks list"

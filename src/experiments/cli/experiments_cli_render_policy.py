@@ -1,6 +1,6 @@
 """
 ===============================================================================
-cli_render_policy.py
+experiments_cli_render_policy.py
 ===============================================================================
 Command-line entry point for trained PPO policy rollout rendering.
 
@@ -26,7 +26,7 @@ import argparse
 import json
 from pathlib import Path
 
-from src import experiments
+from src.experiments.rendering import experiments_rendering_policy as policy_render
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,14 +34,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Render a PPO or scripted-reference evaluation run and write artifacts under storage/evaluation_runs/<run_name>.",
     )
-    parser.add_argument("--model-path", type=Path, default=experiments.policy_render.default_model_path())
+    parser.add_argument("--model-path", type=Path, default=policy_render.default_model_path())
     parser.add_argument(
         "--model-run-name",
         type=str,
         default=None,
         help="Training run name used to load a model from storage/training_runs/<model_run_name>/models.",
     )
-    parser.add_argument("--config", type=Path, default=experiments.policy_render.DEFAULT_PPO_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=policy_render.DEFAULT_PPO_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
     parser.add_argument(
         "--task-shape",
@@ -55,27 +55,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-name", type=str, default=None, help="Evaluation run name under storage/evaluation_runs.")
     parser.add_argument(
         "--controller",
-        choices=experiments.policy_render.SUPPORTED_CONTROLLERS,
-        default=experiments.policy_render.PPO_CONTROLLER,
+        choices=policy_render.SUPPORTED_CONTROLLERS,
+        default=policy_render.PPO_CONTROLLER,
         help="Choose PPO rendering or a scripted-reference evaluation baseline.",
     )
-    parser.add_argument("--max-steps", type=int, default=experiments.policy_render.DEFAULT_MAX_STEPS)
-    parser.add_argument("--seed", type=int, default=experiments.policy_render.DEFAULT_SEED)
+    parser.add_argument("--max-steps", type=int, default=policy_render.DEFAULT_MAX_STEPS)
+    parser.add_argument("--seed", type=int, default=policy_render.DEFAULT_SEED)
     parser.add_argument(
         "--camera-mode",
-        choices=experiments.policy_render.SUPPORTED_CAMERA_MODES,
-        default=experiments.policy_render.DEFAULT_CAMERA_MODE,
+        choices=policy_render.SUPPORTED_CAMERA_MODES,
+        default=policy_render.DEFAULT_CAMERA_MODE,
     )
-    parser.add_argument("--camera-distance", type=float, default=experiments.policy_render.DEFAULT_CAMERA_DISTANCE_M)
-    parser.add_argument("--camera-yaw", type=float, default=experiments.policy_render.DEFAULT_CAMERA_YAW_DEG)
-    parser.add_argument("--camera-pitch", type=float, default=experiments.policy_render.DEFAULT_CAMERA_PITCH_DEG)
+    parser.add_argument("--camera-distance", type=float, default=policy_render.DEFAULT_CAMERA_DISTANCE_M)
+    parser.add_argument("--camera-yaw", type=float, default=policy_render.DEFAULT_CAMERA_YAW_DEG)
+    parser.add_argument("--camera-pitch", type=float, default=policy_render.DEFAULT_CAMERA_PITCH_DEG)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run the trained-policy render CLI and return a process status code."""
     args = build_parser().parse_args(argv)
-    result = experiments.policy_render.run_trained_policy_render_from_paths(
+    result = policy_render.run_trained_policy_render_from_paths(
         model_path=args.model_path,
         model_run_name=args.model_run_name,
         config_path=args.config,

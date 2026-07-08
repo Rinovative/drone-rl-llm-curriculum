@@ -1,6 +1,6 @@
 """
 ===============================================================================
-cli_evaluate_curriculum.py
+experiments_cli_evaluate_curriculum.py
 ===============================================================================
 Command-line entry point for curriculum benchmark evaluation.
 
@@ -25,26 +25,27 @@ import argparse
 import json
 from pathlib import Path
 
-from src import experiments, utils
+from src import utils
+from src.experiments.curriculum import experiments_curriculum_evaluation as curriculum_evaluation
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the curriculum evaluation CLI parser."""
     parser = argparse.ArgumentParser(description="Evaluate trained curriculum PPO models on own-stage or named benchmark tasks.")
     parser.add_argument("--summary", type=Path, required=True)
-    parser.add_argument("--mode", choices=experiments.curriculum_evaluation.SUPPORTED_EVALUATION_MODES, required=True)
+    parser.add_argument("--mode", choices=curriculum_evaluation.SUPPORTED_EVALUATION_MODES, required=True)
     parser.add_argument("--benchmark", default=None)
-    parser.add_argument("--benchmark-config", type=Path, default=experiments.curriculum_evaluation.DEFAULT_BENCHMARK_CONFIG_PATH)
+    parser.add_argument("--benchmark-config", type=Path, default=curriculum_evaluation.DEFAULT_BENCHMARK_CONFIG_PATH)
     parser.add_argument(
         "--model-scope",
-        choices=experiments.curriculum_evaluation.SUPPORTED_MODEL_SCOPES,
-        default=experiments.curriculum_evaluation.DEFAULT_MODEL_SCOPE,
+        choices=curriculum_evaluation.SUPPORTED_MODEL_SCOPES,
+        default=curriculum_evaluation.DEFAULT_MODEL_SCOPE,
     )
     parser.add_argument("--include-baseline-model", type=Path, default=None)
     parser.add_argument("--baseline-label", default="baseline")
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--no-render", action="store_true", help="Disable default simulator GIF rendering.")
-    parser.add_argument("--render-fps", type=int, default=experiments.curriculum_evaluation.DEFAULT_RENDER_FPS)
+    parser.add_argument("--render-fps", type=int, default=curriculum_evaluation.DEFAULT_RENDER_FPS)
     parser.add_argument("--render-max-steps", type=int, default=None)
     parser.add_argument("--no-plots", action="store_true", help="Disable default trajectory plot generation.")
     parser.add_argument(
@@ -59,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the curriculum evaluation CLI and return a process status code."""
     args = build_parser().parse_args(argv)
-    result = experiments.curriculum_evaluation.run_curriculum_evaluation(
+    result = curriculum_evaluation.run_curriculum_evaluation(
         summary_path=args.summary,
         mode=args.mode,
         benchmark=args.benchmark,

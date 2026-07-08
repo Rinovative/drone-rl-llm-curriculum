@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from src import experiments
+from src.experiments.training import experiments_training_ppo_config as ppo_config
 
 LEGACY_LEARNING_RATE = 0.0005
 LEGACY_N_STEPS = 16
@@ -33,7 +33,7 @@ VALID_PPO_CONFIG = {
 
 def test_ppo_config_loads_nested_config_values() -> None:
     """Verify nested ppo config values are resolved without hidden defaults."""
-    config = experiments.ppo_config.load_ppo_config_from_mapping({"ppo": VALID_PPO_CONFIG})
+    config = ppo_config.load_ppo_config_from_mapping({"ppo": VALID_PPO_CONFIG})
 
     assert config.to_dict() == VALID_PPO_CONFIG
     assert config.to_sb3_kwargs() == VALID_PPO_CONFIG
@@ -41,7 +41,7 @@ def test_ppo_config_loads_nested_config_values() -> None:
 
 def test_ppo_config_preserves_legacy_flat_keys() -> None:
     """Verify existing flat PPO keys remain a low-risk compatibility path."""
-    config = experiments.ppo_config.load_ppo_config_from_mapping(
+    config = ppo_config.load_ppo_config_from_mapping(
         {
             "learning_rate": LEGACY_LEARNING_RATE,
             "n_steps": LEGACY_N_STEPS,
@@ -79,24 +79,24 @@ def test_ppo_config_rejects_invalid_values(updates: dict[str, object], match: st
     values = {**VALID_PPO_CONFIG, **updates}
 
     with pytest.raises(ValueError, match=match):
-        experiments.ppo_config.PPOConfig(**values)
+        ppo_config.PPOConfig(**values)
 
 
 def test_ppo_config_rejects_non_mapping_section() -> None:
     """Verify ppo config sections must be YAML mappings."""
     with pytest.raises(ValueError, match="ppo config section must be a mapping"):
-        experiments.ppo_config.load_ppo_config_from_mapping({"ppo": ["not", "a", "mapping"]})
+        ppo_config.load_ppo_config_from_mapping({"ppo": ["not", "a", "mapping"]})
 
 
 def test_ppo_config_rejects_unknown_nested_keys() -> None:
     """Verify misspelled nested PPO keys fail instead of being ignored."""
     with pytest.raises(ValueError, match="unsupported keys: typo_learning_rate"):
-        experiments.ppo_config.load_ppo_config_from_mapping({"ppo": {"typo_learning_rate": 0.001}})
+        ppo_config.load_ppo_config_from_mapping({"ppo": {"typo_learning_rate": 0.001}})
 
 
 def test_ppo_config_validates_total_timesteps_against_configured_rollout() -> None:
     """Verify tiny training budgets must make rollout size explicit."""
-    config = experiments.ppo_config.PPOConfig(n_steps=CONFIGURED_N_STEPS, batch_size=CONFIGURED_BATCH_SIZE)
+    config = ppo_config.PPOConfig(n_steps=CONFIGURED_N_STEPS, batch_size=CONFIGURED_BATCH_SIZE)
 
     config.validate_total_timesteps(CONFIGURED_N_STEPS)
     with pytest.raises(ValueError, match=r"total_timesteps must be greater than or equal to ppo\.n_steps"):

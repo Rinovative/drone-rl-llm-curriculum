@@ -1,6 +1,6 @@
 """
 ===============================================================================
-experiments_ppo_tracking.py
+experiments_training_ppo_tracking.py
 ===============================================================================
 Run tiny Stable-Baselines3 PPO smoke training on TrajectoryTrackingEnv.
 
@@ -33,9 +33,10 @@ from typing import Any
 
 import numpy as np
 
-from src import envs, evaluation, experiments, utils
+from src import envs, evaluation, utils
+from src.experiments import experiments_config as config_loader
 
-from . import experiments_ppo_config as ppo_config
+from . import experiments_training_ppo_config as ppo_config
 
 DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking.yaml")
 DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
@@ -226,7 +227,7 @@ def load_ppo_tracking_settings(path: str | Path) -> PPOTrackingSmokeSettings:
 
     """
     config_path = Path(path)
-    config = experiments.config.load_experiment_config(config_path)
+    config = config_loader.load_experiment_config(config_path)
     return _settings_from_mapping(config, training_config_path=config_path)
 
 
@@ -667,7 +668,7 @@ def _select_task(
     task_shape: str | None,
 ) -> tuple[dict[str, Any], str, int, tuple[str, ...]]:
     """Load one configured training task by index or shape."""
-    config = experiments.config.load_experiment_config(task_config_path)
+    config = config_loader.load_experiment_config(task_config_path)
     tasks = config.get("tasks")
     if not isinstance(tasks, list):
         message = "task config must contain a top-level tasks list"

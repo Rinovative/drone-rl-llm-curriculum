@@ -1068,24 +1068,46 @@ Avoid creating many separate docs before the final artifact contract is stable. 
   - main plots no longer look like multiple stages are overlaid when only multiple reset episodes were present.
 - expected commit message: `Stabilize curriculum diagnostics and report plots`.
 
-### Phase 1: PPO config extraction
+### Phase 1: Completed - PPO config extraction
 
+- status: completed and validated locally before the Phase 2 package restructure.
 - goal: remove hardcoded PPO parameters and hidden rollout caps from the training path.
-- files likely changed: `configs/training/ppo_tracking.yaml`, `src/experiments/experiments_ppo_tracking.py` initially or new `src/experiments/training/experiments_training_ppo_config.py` if restructuring already happened, `tests/test_experiments_ppo_tracking.py`, `tests/test_utils_wandb.py`.
-- files likely moved/renamed: none if done before Phase 2; otherwise later move with the restructuring phase.
-- files likely merged/deleted: none.
-- tests to run: `pytest tests/test_experiments_ppo_tracking.py tests/test_utils_wandb.py -q` plus a tiny monkeypatched PPO test if available.
-- risks: SB3 expects compatible `n_steps` and `batch_size`; small tests need explicit tiny PPO config.
+- implementation note: PPO config extraction was implemented in the current flat `src/experiments` package structure before moving files. The focused config module started as `src/experiments/experiments_ppo_config.py`; Phase 2 is responsible for moving it into `src/experiments/training/`.
+- completed changes:
+  - added explicit nested `ppo:` settings to `configs/training/ppo_tracking.yaml`.
+  - added deterministic PPO hyperparameter validation and SB3 keyword conversion.
+  - updated PPO tracking training so `PPO(...)` receives resolved config values instead of hardcoded constructor values or hidden rollout-step caps.
+  - stored resolved PPO config in metrics, manifests, and W&B config payloads.
+  - preserved a low-risk compatibility path for legacy flat PPO keys.
+- files changed during Phase 1:
+  - `configs/training/ppo_tracking.yaml`
+  - `src/experiments/experiments_ppo_config.py`
+  - `src/experiments/experiments_ppo_tracking.py`
+  - `tests/test_experiments_ppo_config.py`
+  - `tests/test_experiments_ppo_tracking.py`
+  - `tests/test_utils_wandb.py`
+- validation completed:
+  - `ruff format .`
+  - `ruff check .`
+  - `mypy src`
+  - focused PPO config/tracking tests
+  - full `pytest -q`
+  - short direct PPO smoke run
+- files moved/renamed: none during Phase 1; file movement is Phase 2.
+- files merged/deleted: none.
+- risks closed:
+  - PPO rollout length is now explicit through config values.
+  - tiny tests must choose compatible `ppo.n_steps` and `ppo.batch_size` instead of relying on hidden caps.
 - expected commit message: `Extract PPO hyperparameters into training config`.
 
 ### Phase 2: experiments/CLI package restructuring
 
-- goal: split `src/experiments` into subpackages without changing behavior.
+- goal: split `src/experiments` into subpackages without changing runtime behavior. This is a clean breaking import-path restructure, not a compatibility-wrapper migration.
 - files likely changed: all `src/experiments/*.py` import paths, `src/experiments/__init__.py`, tests importing `src.experiments`, Docker/job docs or commands if module names change.
 - files likely moved/renamed: move CLIs to `src/experiments/cli/`, training to `src/experiments/training/`, evaluation to `src/experiments/evaluation/`, curriculum to `src/experiments/curriculum/`, rendering to `src/experiments/rendering/`.
-- files likely merged/deleted: retire `cli_training_smoke.py`, `experiments_training_smoke.py`, and `cli_mvp.py` only if equivalent smoke/final commands already exist; otherwise keep temporarily.
-- tests to run: `pytest tests/test_experiments_*.py tests/test_cli_mvp.py -q` and CLI help tests.
-- risks: import churn and module execution paths can break Docker/HPC usage.
+- files likely merged/deleted: remove old root-level CLI/library wrapper modules after moving implementation code into subpackages; keep smoke/MVP implementation modules only in their new canonical subpackage locations.
+- tests to run: `pytest tests/test_experiments_*.py tests/test_cli_mvp.py -q` and new canonical CLI help tests.
+- risks: import churn and module execution paths can break Docker/HPC usage; old `src.experiments.cli_*` module paths are intentionally removed, and new `src.experiments.cli.experiments_cli_*` paths are canonical.
 - expected commit message: `Restructure experiment modules into focused subpackages`.
 
 ### Phase 3: artifact/run structure
@@ -1174,28 +1196,12 @@ Avoid creating many separate docs before the final artifact contract is stable. 
 
 ## 19. Immediate next actions
 
-1. Commit the completed Phase 0 stabilization checkpoint if it has not been committed yet. Do not include generated `storage/` artifacts.
+1. Start Phase 2 by restructuring `src/experiments` into focused `cli`, `training`, `evaluation`, `curriculum`, and `rendering` subpackages. Keep `src/experiments/experiments_config.py` at the package root.
 
-2. Start Phase 1 by adding explicit PPO configuration tests. The first tests should require a nested `ppo:` block with values for `policy`, `device`, `learning_rate`, `gamma`, `gae_lambda`, `n_steps`, `batch_size`, `n_epochs`, `clip_range`, `ent_coef`, `vf_coef`, `max_grad_norm`, and `target_kl`.
+2. Move the existing implementation modules according to the Phase 2 mapping, including the Phase 1 PPO config module from `src/experiments/experiments_ppo_config.py` to `src/experiments/training/experiments_training_ppo_config.py`.
 
-3. Implement a focused PPO config loader/validator before restructuring packages. Prefer a small current-location module such as `src/experiments/experiments_ppo_config.py` for now. Do not move it into `src/experiments/training/` until Phase 2.
+3. Remove old root-level wrapper modules instead of preserving compatibility paths; static-analysis clarity is preferred during this cleanup.
 
-4. Update `src/experiments/experiments_ppo_tracking.py` so `PPO(...)` receives its hyperparameters from the resolved config instead of hardcoded constructor values or hidden rollout-step caps.
+4. Keep `src/experiments/__init__.py` simple and static, exposing only the new subpackages and `experiments_config` alias. Do not expose old aliases such as `experiments.ppo_tracking`, `experiments.policy_render`, or `experiments.curriculum_training`.
 
-5. Validate Phase 1 with:
-
-```bash
-ruff format .
-ruff check .
-mypy src
-pytest -q tests/test_experiments_ppo_config.py tests/test_experiments_ppo_tracking.py tests/test_utils_wandb.py
-pytest -q
-
-python -m src.experiments.cli_train_tracking \
-  --config configs/training/ppo_tracking.yaml \
-  --task-shape line \
-  --run-name local_line_ppo_config_smoke \
-  --total-timesteps 512 \
-  --eval-steps 40 \
-  --seed 0 \
-  --wandb-mode disabled
+5. Validate Phase 2 with formatting, linting, type checking, focused experiments tests, new canonical CLI help commands, full `pytest -q`, and a short direct PPO smoke run through the new train-tracking module path.

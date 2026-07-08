@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from src import experiments
-from src.experiments import cli_evaluate_curriculum
+from src.experiments.cli import experiments_cli_evaluate_curriculum as cli_evaluate_curriculum
+from src.experiments.curriculum import experiments_curriculum_evaluation as curriculum_evaluation
+from src.experiments.evaluation import experiments_evaluation_policy as policy_evaluation
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -141,8 +142,8 @@ benchmarks:
     return config_path
 
 
-def _fake_policy_evaluation(spec: object, _: object) -> experiments.policy_evaluation.PolicyEvaluationResult:
-    assert isinstance(spec, experiments.policy_evaluation.PolicyEvaluationSpec)
+def _fake_policy_evaluation(spec: object, _: object) -> policy_evaluation.PolicyEvaluationResult:
+    assert isinstance(spec, policy_evaluation.PolicyEvaluationSpec)
     output_dir = spec.output_dir
     diagnostics_dir = output_dir / "diagnostics"
     traces_dir = output_dir / "traces"
@@ -213,7 +214,7 @@ def _fake_policy_evaluation(spec: object, _: object) -> experiments.policy_evalu
     _write_json(metrics_path, payload)
     _write_json(manifest_path, payload)
 
-    return experiments.policy_evaluation.PolicyEvaluationResult(
+    return policy_evaluation.PolicyEvaluationResult(
         label=spec.label,
         model_role=spec.model_role,
         model_path=str(spec.model_path),
@@ -278,7 +279,7 @@ def test_curriculum_evaluation_requires_benchmark_for_benchmark_and_generalizati
     benchmarks = _benchmark_config(tmp_path)
 
     with pytest.raises(ValueError, match="--benchmark is required for benchmark mode"):
-        experiments.curriculum_evaluation.run_curriculum_evaluation(
+        curriculum_evaluation.run_curriculum_evaluation(
             summary_path=summary_path,
             mode="benchmark",
             benchmark=None,
@@ -286,7 +287,7 @@ def test_curriculum_evaluation_requires_benchmark_for_benchmark_and_generalizati
         )
 
     with pytest.raises(ValueError, match="--benchmark is required for generalization mode"):
-        experiments.curriculum_evaluation.run_curriculum_evaluation(
+        curriculum_evaluation.run_curriculum_evaluation(
             summary_path=summary_path,
             mode="generalization",
             benchmark=None,
@@ -300,7 +301,7 @@ def test_curriculum_evaluation_unknown_benchmark_fails_clearly(tmp_path: Path) -
     benchmarks = _benchmark_config(tmp_path)
 
     with pytest.raises(ValueError, match="benchmark 'missing' not found"):
-        experiments.curriculum_evaluation.run_curriculum_evaluation(
+        curriculum_evaluation.run_curriculum_evaluation(
             summary_path=summary_path,
             mode="benchmark",
             benchmark="missing",
@@ -316,9 +317,9 @@ def test_curriculum_evaluation_own_stage_creates_stage_indexed_dirs_and_summary_
     summary_path = _curriculum_summary(tmp_path)
     benchmarks = _benchmark_config(tmp_path)
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
-    monkeypatch.setattr(experiments.policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
 
-    result = experiments.curriculum_evaluation.run_curriculum_evaluation(
+    result = curriculum_evaluation.run_curriculum_evaluation(
         summary_path=summary_path,
         mode="own-stage",
         benchmark_config_path=benchmarks,
@@ -350,9 +351,9 @@ def test_curriculum_evaluation_benchmark_and_generalization_layouts_include_base
     baseline = tmp_path / "baseline_model.zip"
     baseline.write_bytes(b"model")
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
-    monkeypatch.setattr(experiments.policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
 
-    benchmark_result = experiments.curriculum_evaluation.run_curriculum_evaluation(
+    benchmark_result = curriculum_evaluation.run_curriculum_evaluation(
         summary_path=summary_path,
         mode="benchmark",
         benchmark="line_basic",
@@ -370,7 +371,7 @@ def test_curriculum_evaluation_benchmark_and_generalization_layouts_include_base
     final_entries = [entry for entry in benchmark_payload["evaluated_models"] if entry["stage_index"] == 2]
     assert final_entries[0]["is_final_stage"] is True
 
-    generalization_result = experiments.curriculum_evaluation.run_curriculum_evaluation(
+    generalization_result = curriculum_evaluation.run_curriculum_evaluation(
         summary_path=summary_path,
         mode="generalization",
         benchmark="polyline_basic",
@@ -391,9 +392,9 @@ def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
     summary_path = _curriculum_summary(tmp_path)
     benchmarks = _benchmark_config(tmp_path)
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
-    monkeypatch.setattr(experiments.policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
 
-    result = experiments.curriculum_evaluation.run_curriculum_evaluation(
+    result = curriculum_evaluation.run_curriculum_evaluation(
         summary_path=summary_path,
         mode="benchmark",
         benchmark="line_basic",
@@ -410,7 +411,7 @@ def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
 
 def test_curriculum_evaluation_supported_modes_do_not_expose_progression() -> None:
     """Verify progression mode is intentionally unsupported."""
-    assert set(experiments.curriculum_evaluation.SUPPORTED_EVALUATION_MODES) == {
+    assert set(curriculum_evaluation.SUPPORTED_EVALUATION_MODES) == {
         "own-stage",
         "benchmark",
         "generalization",

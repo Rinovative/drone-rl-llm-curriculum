@@ -1,6 +1,6 @@
 """
 ===============================================================================
-experiments_curriculum.py
+experiments_curriculum_validation.py
 ===============================================================================
 Summarize curriculum trajectory tasks from experiment configuration dictionaries.
 
@@ -27,7 +27,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from src import experiments, validation
+from src import validation
+from src.experiments import experiments_config as config_loader
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -158,7 +159,7 @@ def summarize_config_path(path: str | Path) -> CurriculumValidationSummary:
     Parameters
     ----------
     path
-        YAML configuration path accepted by ``experiments.config.load_experiment_config``.
+        YAML configuration path accepted by ``config_loader.load_experiment_config``.
 
     Returns
     -------
@@ -166,7 +167,7 @@ def summarize_config_path(path: str | Path) -> CurriculumValidationSummary:
         Per-task deterministic validation results and aggregate counts.
 
     """
-    loaded_config = experiments.config.load_experiment_config(path)
+    loaded_config = config_loader.load_experiment_config(path)
     return summarize_config_tasks(loaded_config)
 
 

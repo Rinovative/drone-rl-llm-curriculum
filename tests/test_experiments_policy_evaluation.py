@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from src import experiments
+from src.experiments.evaluation import experiments_evaluation_policy as policy_evaluation
 
 FULL_EVALUATION_EPISODE_COUNT = 2
 
@@ -61,7 +61,7 @@ def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
     _write_task_config(task_config, shape="line")
 
     def fake_collect_diagnostics(
-        spec: experiments.policy_evaluation.PolicyEvaluationSpec,
+        spec: policy_evaluation.PolicyEvaluationSpec,
         task: dict[str, Any],
         diagnostics_dir: Path,
     ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
@@ -132,24 +132,24 @@ def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
         plotted_records.extend(records)
         plots_dir.mkdir(parents=True, exist_ok=True)
         plot_paths: dict[str, str] = {}
-        for name in experiments.policy_evaluation.evaluation.plots.CANONICAL_POLICY_PLOT_FILENAMES.values():
+        for name in policy_evaluation.evaluation.plots.CANONICAL_POLICY_PLOT_FILENAMES.values():
             plot_path = plots_dir / name
             plot_path.write_bytes(b"plot")
             plot_paths[plot_path.stem] = str(plot_path)
         return _FakePlotResult(plot_paths=plot_paths)
 
     def fake_render(
-        spec: experiments.policy_evaluation.PolicyEvaluationSpec,
+        spec: policy_evaluation.PolicyEvaluationSpec,
         task: dict[str, Any],
         renders_dir: Path,
         render_steps: int,
         render_fps: int,
-    ) -> experiments.policy_evaluation._RenderArtifactResult:
+    ) -> policy_evaluation._RenderArtifactResult:
         del spec, task, render_steps, render_fps
         renders_dir.mkdir(parents=True, exist_ok=True)
         path = renders_dir / "scenario_rollout.gif"
         path.write_bytes(b"GIF89a")
-        return experiments.policy_evaluation._RenderArtifactResult(  # noqa: SLF001
+        return policy_evaluation._RenderArtifactResult(  # noqa: SLF001
             gif_path=path,
             warnings=[],
             trace_records=[
@@ -167,12 +167,12 @@ def test_shared_policy_evaluation_writes_deterministic_artifact_paths(
             ],
         )
 
-    monkeypatch.setattr(experiments.policy_evaluation, "_collect_diagnostics", fake_collect_diagnostics)
-    monkeypatch.setattr(experiments.policy_evaluation.evaluation.plots, "write_policy_rollout_trace_plots", fake_write_plots)
-    monkeypatch.setattr(experiments.policy_evaluation, "_write_render_artifact", fake_render)
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect_diagnostics)
+    monkeypatch.setattr(policy_evaluation.evaluation.plots, "write_policy_rollout_trace_plots", fake_write_plots)
+    monkeypatch.setattr(policy_evaluation, "_write_render_artifact", fake_render)
 
-    result = experiments.policy_evaluation.run_policy_evaluation(
-        experiments.policy_evaluation.PolicyEvaluationSpec(
+    result = policy_evaluation.run_policy_evaluation(
+        policy_evaluation.PolicyEvaluationSpec(
             label="stage01_hover_stabilization",
             model_role="stage",
             model_path=model_path,
@@ -215,7 +215,7 @@ def test_shared_policy_evaluation_no_render_records_flag_and_skips_gif(
     _write_task_config(task_config)
 
     def fake_collect(
-        spec: experiments.policy_evaluation.PolicyEvaluationSpec,
+        spec: policy_evaluation.PolicyEvaluationSpec,
         task: dict[str, Any],
         diagnostics_dir: Path,
     ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
@@ -234,15 +234,15 @@ def test_shared_policy_evaluation_no_render_records_flag_and_skips_gif(
         plotted_records.extend(records)
         return _FakePlotResult(plot_paths={})
 
-    monkeypatch.setattr(experiments.policy_evaluation, "_collect_diagnostics", fake_collect)
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
     monkeypatch.setattr(
-        experiments.policy_evaluation.evaluation.plots,
+        policy_evaluation.evaluation.plots,
         "write_policy_rollout_trace_plots",
         fake_write_plots,
     )
 
-    result = experiments.policy_evaluation.run_policy_evaluation(
-        experiments.policy_evaluation.PolicyEvaluationSpec(
+    result = policy_evaluation.run_policy_evaluation(
+        policy_evaluation.PolicyEvaluationSpec(
             label="stage02_line",
             model_role="stage",
             model_path=model_path,
@@ -252,7 +252,7 @@ def test_shared_policy_evaluation_no_render_records_flag_and_skips_gif(
             eval_steps=120,
             seed=0,
         ),
-        experiments.policy_evaluation.PolicyEvaluationArtifactOptions(render_enabled=False),
+        policy_evaluation.PolicyEvaluationArtifactOptions(render_enabled=False),
     )
 
     assert result.render_enabled is False
@@ -273,7 +273,7 @@ def test_shared_policy_evaluation_no_plots_records_flag_and_skips_plot_paths(
     _write_task_config(task_config)
 
     def fake_collect(
-        spec: experiments.policy_evaluation.PolicyEvaluationSpec,
+        spec: policy_evaluation.PolicyEvaluationSpec,
         task: dict[str, Any],
         diagnostics_dir: Path,
     ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
@@ -283,19 +283,19 @@ def test_shared_policy_evaluation_no_plots_records_flag_and_skips_plot_paths(
         trace.write_text("{}\n", encoding="utf-8")
         return _FakeDiagnostics(metrics={}, trace_records=[]), {"evaluation_trace_path": str(trace)}
 
-    monkeypatch.setattr(experiments.policy_evaluation, "_collect_diagnostics", fake_collect)
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
     monkeypatch.setattr(
-        experiments.policy_evaluation,
+        policy_evaluation,
         "_write_render_artifact",
-        lambda *args, **kwargs: experiments.policy_evaluation._RenderArtifactResult(  # noqa: SLF001
+        lambda *args, **kwargs: policy_evaluation._RenderArtifactResult(  # noqa: SLF001
             gif_path=tmp_path / "render.gif",
             warnings=[],
             trace_records=[{"source": "render", "terminated": False, "truncated": False}],
         ),
     )
 
-    result = experiments.policy_evaluation.run_policy_evaluation(
-        experiments.policy_evaluation.PolicyEvaluationSpec(
+    result = policy_evaluation.run_policy_evaluation(
+        policy_evaluation.PolicyEvaluationSpec(
             label="stage02_line",
             model_role="stage",
             model_path=model_path,
@@ -305,7 +305,7 @@ def test_shared_policy_evaluation_no_plots_records_flag_and_skips_plot_paths(
             eval_steps=120,
             seed=0,
         ),
-        experiments.policy_evaluation.PolicyEvaluationArtifactOptions(plots_enabled=False),
+        policy_evaluation.PolicyEvaluationArtifactOptions(plots_enabled=False),
     )
 
     assert result.plots_enabled is False

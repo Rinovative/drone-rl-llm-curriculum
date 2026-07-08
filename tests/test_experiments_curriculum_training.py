@@ -11,8 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from src import experiments
-from src.experiments import cli_train_curriculum
+from src.experiments.cli import experiments_cli_train_curriculum as cli_train_curriculum
+from src.experiments.curriculum import experiments_curriculum_training as curriculum_training
+from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 EXPECTED_CURRICULUM_STAGE_COUNT = 2
 CLI_SEED_OVERRIDE = 3
@@ -22,7 +23,7 @@ EXPECTED_STAGE_COUNT = 5
 
 def test_manual_curriculum_config_loads_and_validates() -> None:
     """Verify the manual line curriculum config exposes the expected stages."""
-    settings = experiments.curriculum_training.load_manual_curriculum_settings("configs/curricula/manual_line_curriculum.yaml")
+    settings = curriculum_training.load_manual_curriculum_settings("configs/curricula/manual_line_curriculum.yaml")
 
     assert settings.curriculum_name == "manual_line_v1"
     assert settings.base_training_config == Path("configs/training/ppo_tracking.yaml")
@@ -36,12 +37,12 @@ def test_manual_curriculum_config_loads_and_validates() -> None:
         "short_slow_line",
         "line",
     ]
-    experiments.curriculum_training.validate_manual_curriculum(settings)
+    curriculum_training.validate_manual_curriculum(settings)
 
 
 def test_manual_curriculum_stage_run_name_derivation() -> None:
     """Verify stage run names match the documented manual curriculum contract."""
-    run_name = experiments.curriculum_training.derive_stage_run_name(
+    run_name = curriculum_training.derive_stage_run_name(
         curriculum_name="manual_line_v1",
         stage_index=3,
         stage_name="start_hold_then_short_line",
@@ -53,7 +54,7 @@ def test_manual_curriculum_stage_run_name_derivation() -> None:
 
 def test_manual_curriculum_invalid_stage_fails_clearly() -> None:
     """Verify invalid configured tasks fail before training."""
-    settings = experiments.curriculum_training.manual_curriculum_settings_from_mapping(
+    settings = curriculum_training.manual_curriculum_settings_from_mapping(
         {
             "curriculum_name": "manual_line_v1",
             "base_training_config": "configs/training/ppo_tracking.yaml",
@@ -80,13 +81,13 @@ def test_manual_curriculum_invalid_stage_fails_clearly() -> None:
     )
 
     with pytest.raises(ValueError, match="invalid curriculum stage 'bad_line'"):
-        experiments.curriculum_training.validate_manual_curriculum(settings)
+        curriculum_training.validate_manual_curriculum(settings)
 
 
 def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify curriculum summary artifacts contain compact per-stage diagnostics metadata."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = experiments.curriculum_training.manual_curriculum_settings_from_mapping(
+    settings = curriculum_training.manual_curriculum_settings_from_mapping(
         {
             "curriculum_name": "manual_line_v1",
             "base_training_config": "configs/training/ppo_tracking.yaml",
@@ -125,7 +126,7 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     )
     calls: list[dict[str, object]] = []
 
-    def fake_run(**kwargs: object) -> experiments.ppo_tracking.PPOTrackingSmokeResult:
+    def fake_run(**kwargs: object) -> ppo_tracking.PPOTrackingSmokeResult:
         run_name = str(kwargs["run_name"])
         initial_model_path = kwargs.get("initial_model_path")
         calls.append(dict(kwargs))
@@ -150,16 +151,16 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
             "model_transfer_enabled": initial_model_path is not None,
             "model_transfer_source": initial_model_path,
         }
-        return experiments.ppo_tracking.PPOTrackingSmokeResult(
+        return ppo_tracking.PPOTrackingSmokeResult(
             model_path=str(tmp_path / f"{run_name}.zip"),
             metrics_path=str(tmp_path / f"{run_name}_metrics.json"),
             manifest_path=str(tmp_path / f"{run_name}_manifest.json"),
             metrics=metrics,
         )
 
-    monkeypatch.setattr(experiments.ppo_tracking, "run_ppo_tracking_smoke_from_config", fake_run)
+    monkeypatch.setattr(ppo_tracking, "run_ppo_tracking_smoke_from_config", fake_run)
 
-    result = experiments.curriculum_training.run_manual_curriculum_training(settings)
+    result = curriculum_training.run_manual_curriculum_training(settings)
     summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
 
     assert Path(result.summary_path).exists()
@@ -192,7 +193,7 @@ def test_manual_curriculum_cli_parser_accepts_expected_options() -> None:
 def test_manual_curriculum_cli_help_works() -> None:
     """Verify the manual curriculum CLI exposes help without running training."""
     completed = subprocess.run(
-        [sys.executable, "-m", "src.experiments.cli_train_curriculum", "--help"],
+        [sys.executable, "-m", "src.experiments.cli.experiments_cli_train_curriculum", "--help"],
         check=False,
         capture_output=True,
         text=True,

@@ -1,6 +1,6 @@
 """
 ===============================================================================
-experiments_render_smoke.py
+experiments_rendering_smoke.py
 ===============================================================================
 Run tiny headless render smoke rollouts with gym-pybullet-drones when available.
 

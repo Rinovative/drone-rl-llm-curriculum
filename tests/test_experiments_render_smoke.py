@@ -8,8 +8,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from src import experiments
-from src.experiments import cli_render_smoke
+from src.experiments.cli import experiments_cli_render_smoke as cli_render_smoke
+from src.experiments.rendering import experiments_rendering_smoke as render_smoke
 
 PARSER_DURATION_SEC = 0.5
 PARSER_MAX_STEPS = 4
@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 
 def test_render_smoke_settings_defaults_are_tiny_and_visual() -> None:
     """Verify render-smoke defaults stay bounded and visually useful."""
-    settings = experiments.render_smoke.RenderSmokeSettings()
+    settings = render_smoke.RenderSmokeSettings()
 
-    assert settings.duration_sec == experiments.render_smoke.DEFAULT_DURATION_SEC
-    assert settings.max_steps == experiments.render_smoke.DEFAULT_MAX_STEPS
-    assert settings.frame_interval == experiments.render_smoke.DEFAULT_FRAME_INTERVAL
+    assert settings.duration_sec == render_smoke.DEFAULT_DURATION_SEC
+    assert settings.max_steps == render_smoke.DEFAULT_MAX_STEPS
+    assert settings.frame_interval == render_smoke.DEFAULT_FRAME_INTERVAL
     assert settings.camera_mode == "follow_external"
     assert settings.task_shape == "circle"
     assert settings.output_dir is None
@@ -51,9 +51,9 @@ def test_cli_parser_exposes_camera_and_task_options() -> None:
         ]
     )
 
-    assert defaults.duration_sec == experiments.render_smoke.DEFAULT_DURATION_SEC
-    assert defaults.max_steps == experiments.render_smoke.DEFAULT_MAX_STEPS
-    assert defaults.output_dir == experiments.render_smoke.default_output_dir()
+    assert defaults.duration_sec == render_smoke.DEFAULT_DURATION_SEC
+    assert defaults.max_steps == render_smoke.DEFAULT_MAX_STEPS
+    assert defaults.output_dir == render_smoke.default_output_dir()
     assert defaults.output_dir.as_posix().endswith("storage/evaluation_runs/render_smoke")
     assert defaults.camera_mode == "follow_external"
     assert defaults.task_shape == "circle"
@@ -67,10 +67,10 @@ def test_cli_parser_exposes_camera_and_task_options() -> None:
 def test_render_smoke_writes_manifest_from_simulator_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify manifest writing with a lightweight fake simulator artifact."""
 
-    def fake_rollout(settings: experiments.render_smoke.RenderSmokeSettings, _output_dir: Path) -> Any:
+    def fake_rollout(settings: render_smoke.RenderSmokeSettings, _output_dir: Path) -> Any:
         artifact_path = _output_dir / "drone_rollout.gif"
         artifact_path.write_bytes(b"GIF89a")
-        return experiments.render_smoke._RolloutArtifacts(  # noqa: SLF001
+        return render_smoke._RolloutArtifacts(  # noqa: SLF001
             render_mode="simulator_external_camera_gif",
             camera_mode=settings.camera_mode,
             task_shape=settings.task_shape,
@@ -82,12 +82,10 @@ def test_render_smoke_writes_manifest_from_simulator_artifacts(tmp_path: Path, m
             positions=((0.0, 0.0, 1.0), (0.2, 0.0, 1.0)),
         )
 
-    monkeypatch.setattr(experiments.render_smoke, "_run_simulator_rollout", fake_rollout)
+    monkeypatch.setattr(render_smoke, "_run_simulator_rollout", fake_rollout)
 
-    result = experiments.render_smoke.run_render_smoke(
-        experiments.render_smoke.RenderSmokeSettings(output_dir=tmp_path, max_steps=FAKE_SIMULATOR_STEPS)
-    )
-    manifest_path = tmp_path / "manifests" / experiments.render_smoke.DEFAULT_OUTPUT_FILENAME
+    result = render_smoke.run_render_smoke(render_smoke.RenderSmokeSettings(output_dir=tmp_path, max_steps=FAKE_SIMULATOR_STEPS))
+    manifest_path = tmp_path / "manifests" / render_smoke.DEFAULT_OUTPUT_FILENAME
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert result.manifest_path == str(manifest_path)
@@ -107,29 +105,29 @@ def test_render_smoke_explicit_output_dir_writes_direct_manifest(tmp_path: Path,
     """Verify explicit output-dir overrides preserve direct artifact placement."""
     explicit_output_dir = tmp_path / "storage" / "results" / "render_smoke_custom"
 
-    def fail_rollout(_settings: experiments.render_smoke.RenderSmokeSettings, _output_dir: Path) -> Any:
+    def fail_rollout(_settings: render_smoke.RenderSmokeSettings, _output_dir: Path) -> Any:
         message = "camera unavailable"
         raise RuntimeError(message)
 
-    monkeypatch.setattr(experiments.render_smoke, "_run_simulator_rollout", fail_rollout)
+    monkeypatch.setattr(render_smoke, "_run_simulator_rollout", fail_rollout)
 
-    result = experiments.render_smoke.run_render_smoke(experiments.render_smoke.RenderSmokeSettings(output_dir=explicit_output_dir, max_steps=2))
+    result = render_smoke.run_render_smoke(render_smoke.RenderSmokeSettings(output_dir=explicit_output_dir, max_steps=2))
 
-    assert result.manifest_path == str(explicit_output_dir / experiments.render_smoke.DEFAULT_OUTPUT_FILENAME)
+    assert result.manifest_path == str(explicit_output_dir / render_smoke.DEFAULT_OUTPUT_FILENAME)
     assert all(Path(path).parent == explicit_output_dir for path in result.manifest["output_files"])
 
 
 def test_render_smoke_fallback_writes_visible_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify fallback artifact creation does not require PyBullet rendering."""
 
-    def fail_rollout(_settings: experiments.render_smoke.RenderSmokeSettings, _output_dir: Path) -> Any:
+    def fail_rollout(_settings: render_smoke.RenderSmokeSettings, _output_dir: Path) -> Any:
         message = "camera unavailable"
         raise RuntimeError(message)
 
-    monkeypatch.setattr(experiments.render_smoke, "_run_simulator_rollout", fail_rollout)
+    monkeypatch.setattr(render_smoke, "_run_simulator_rollout", fail_rollout)
 
-    result = experiments.render_smoke.run_render_smoke(
-        experiments.render_smoke.RenderSmokeSettings(output_dir=tmp_path, max_steps=FALLBACK_STEPS, camera_mode="fixed_external", task_shape="line")
+    result = render_smoke.run_render_smoke(
+        render_smoke.RenderSmokeSettings(output_dir=tmp_path, max_steps=FALLBACK_STEPS, camera_mode="fixed_external", task_shape="line")
     )
     output_files = [Path(path) for path in result.manifest["output_files"]]
 

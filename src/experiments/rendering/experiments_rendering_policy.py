@@ -1,6 +1,6 @@
 """
 ===============================================================================
-experiments_policy_render.py
+experiments_rendering_policy.py
 ===============================================================================
 Render a trained PPO policy rollout on TrajectoryTrackingEnv with external camera capture.
 
@@ -33,7 +33,9 @@ from typing import Any
 
 import numpy as np
 
-from src import envs, evaluation, experiments, utils
+from src import envs, evaluation, utils
+from src.experiments import experiments_config as config_loader
+from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 DEFAULT_PPO_CONFIG_PATH = Path("configs/training/ppo_tracking.yaml")
 DEFAULT_MODEL_RUN_NAME = "ppo_hover_4096_seed0"
@@ -259,11 +261,11 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         message = (
             "trained PPO model was not found at "
             f"{model_path}. Create it with: "
-            "python -m src.experiments.cli_train_tracking --config configs/training/ppo_tracking.yaml"
+            "python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking.yaml"
         )
         raise FileNotFoundError(message)
 
-    ppo_settings = experiments.ppo_tracking.load_ppo_tracking_settings(active_settings.config_path)
+    ppo_settings = ppo_tracking.load_ppo_tracking_settings(active_settings.config_path)
     seed = ppo_settings.seed if active_settings.seed is None else active_settings.seed
     task, task_source, selected_task_index, selection_warnings = _select_task(
         task_config_path=ppo_settings.task_config_path,
@@ -1268,7 +1270,7 @@ def _select_task(
     render_task_shape: str | None,
 ) -> tuple[dict[str, Any], str, int, tuple[str, ...]]:
     """Load one task from config by index or render-task-shape override."""
-    config = experiments.config.load_experiment_config(task_config_path)
+    config = config_loader.load_experiment_config(task_config_path)
     tasks = config.get("tasks")
     if not isinstance(tasks, list):
         message = "task config must contain a top-level tasks list"

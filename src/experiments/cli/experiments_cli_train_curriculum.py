@@ -1,6 +1,6 @@
 """
 ===============================================================================
-cli_train_curriculum.py
+experiments_cli_train_curriculum.py
 ===============================================================================
 Command-line entry point for manual PPO curriculum training.
 
@@ -25,7 +25,8 @@ import argparse
 import json
 from pathlib import Path
 
-from src import experiments, utils
+from src import utils
+from src.experiments.curriculum import experiments_curriculum_training as curriculum_training
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train PPO line tracking through a fixed manual curriculum and write a compact curriculum summary.",
     )
-    parser.add_argument("--config", type=Path, default=experiments.curriculum_training.DEFAULT_CURRICULUM_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=curriculum_training.DEFAULT_CURRICULUM_CONFIG_PATH)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(
         "--wandb-mode",
@@ -47,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the manual curriculum training CLI and return a process status code."""
     args = build_parser().parse_args(argv)
-    result = experiments.curriculum_training.run_manual_curriculum_training_from_config(
+    result = curriculum_training.run_manual_curriculum_training_from_config(
         config_path=args.config,
         seed=args.seed,
         wandb_mode=args.wandb_mode,

@@ -7,8 +7,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from src import experiments
-from src.experiments import cli_training_smoke
+from src.experiments.cli import experiments_cli_training_smoke as cli_training_smoke
+from src.experiments.training import experiments_training_smoke as training_smoke
 
 CONFIG_MAX_STEPS = 16
 TINY_SMOKE_STEPS = 4
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 def test_training_smoke_config_loads_default_settings() -> None:
     """Verify the smoke training config loads into validated settings."""
-    settings = experiments.training_smoke.load_training_smoke_settings("configs/smoke/training_smoke.yaml")
+    settings = training_smoke.load_training_smoke_settings("configs/smoke/training_smoke.yaml")
 
     assert settings.task_config_path.as_posix() == "configs/smoke/trajectory_validation.yaml"
     assert settings.task_index == 0
@@ -33,9 +33,9 @@ def test_training_smoke_config_loads_default_settings() -> None:
 
 def test_deterministic_training_smoke_writes_expected_metrics(tmp_path: Path) -> None:
     """Verify the deterministic fallback runs and writes JSON metrics."""
-    settings = experiments.training_smoke.TrainingSmokeSettings(output_dir=tmp_path, max_steps=TINY_SMOKE_STEPS)
+    settings = training_smoke.TrainingSmokeSettings(output_dir=tmp_path, max_steps=TINY_SMOKE_STEPS)
 
-    result = experiments.training_smoke.run_training_smoke(settings)
+    result = training_smoke.run_training_smoke(settings)
     output_path = tmp_path / "training_smoke_metrics.json"
     payload = json.loads(output_path.read_text(encoding="utf-8"))
 
@@ -54,7 +54,7 @@ def test_training_smoke_default_output_uses_training_metrics_dir(tmp_path: Path,
     storage_root = tmp_path / "storage"
     monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
 
-    result = experiments.training_smoke.run_training_smoke(experiments.training_smoke.TrainingSmokeSettings(max_steps=2))
+    result = training_smoke.run_training_smoke(training_smoke.TrainingSmokeSettings(max_steps=2))
 
     expected_path = storage_root / "training_runs" / "mvp_smoke" / "metrics" / "training_smoke_metrics.json"
     assert result.output_path == str(expected_path)

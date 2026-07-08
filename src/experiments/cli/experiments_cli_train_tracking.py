@@ -1,6 +1,6 @@
 """
 ===============================================================================
-cli_train_tracking.py
+experiments_cli_train_tracking.py
 ===============================================================================
 Command-line entry point for tiny PPO trajectory-tracking smoke training.
 
@@ -26,7 +26,8 @@ import argparse
 import json
 from pathlib import Path
 
-from src import experiments, utils
+from src import utils
+from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
             "and model/metrics/manifests under storage/training_runs/<training_run_name>."
         ),
     )
-    parser.add_argument("--config", type=Path, default=experiments.ppo_tracking.DEFAULT_PPO_TRACKING_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=ppo_tracking.DEFAULT_PPO_TRACKING_CONFIG_PATH)
     parser.add_argument("--task-index", type=int, default=None)
     parser.add_argument(
         "--task-shape",
@@ -74,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the PPO trajectory-tracking smoke CLI and return a process status code."""
     args = build_parser().parse_args(argv)
-    result = experiments.ppo_tracking.run_ppo_tracking_smoke_from_config(
+    result = ppo_tracking.run_ppo_tracking_smoke_from_config(
         config_path=args.config,
         task_index=args.task_index,
         task_shape=args.task_shape,

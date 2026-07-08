@@ -32,7 +32,7 @@ from typing import Any
 
 from src import utils, validation
 from src.experiments import experiments_config as config
-from src.experiments import experiments_policy_evaluation as policy_evaluation
+from src.experiments.evaluation import experiments_evaluation_policy as policy_evaluation
 
 DEFAULT_BENCHMARK_CONFIG_PATH = Path("configs/evaluation/curriculum_benchmarks.yaml")
 SUPPORTED_EVALUATION_MODES = ("own-stage", "benchmark", "generalization")

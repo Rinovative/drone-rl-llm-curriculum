@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from src.experiments import cli_mvp
+from src.experiments.cli import experiments_cli_mvp as cli_mvp
 
 DEFAULT_MAX_STEPS = 16
 
@@ -33,8 +33,8 @@ def test_print_commands_mode_outputs_repro_commands_without_artifacts(tmp_path: 
 
     captured = capsys.readouterr()
     assert status == 0
-    assert "python -m src.experiments.cli_training_smoke" in captured.out
-    assert "python -m src.experiments.cli_mvp" in captured.out
+    assert "python -m src.experiments.cli.experiments_cli_training_smoke" in captured.out
+    assert "python -m src.experiments.cli.experiments_cli_mvp" in captured.out
     assert not (tmp_path / "training_smoke_metrics.json").exists()
 
 

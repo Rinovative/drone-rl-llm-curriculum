@@ -32,7 +32,9 @@ from typing import Any
 
 import yaml
 
-from src import experiments, utils, validation
+from src import utils, validation
+from src.experiments import experiments_config as config_loader
+from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 DEFAULT_CURRICULUM_CONFIG_PATH = Path("configs/curricula/manual_line_curriculum.yaml")
 SUMMARY_METRIC_KEYS = (
@@ -190,7 +192,7 @@ def load_manual_curriculum_settings(path: str | Path) -> ManualCurriculumSetting
 
     """
     config_path = Path(path)
-    config = experiments.config.load_experiment_config(config_path)
+    config = config_loader.load_experiment_config(config_path)
     return manual_curriculum_settings_from_mapping(config, config_path=config_path)
 
 
@@ -226,10 +228,10 @@ def manual_curriculum_settings_from_mapping(
     stages = tuple(_stage_from_mapping(index, stage) for index, stage in enumerate(stages_raw, start=1))
     return ManualCurriculumSettings(
         curriculum_name=str(config.get("curriculum_name") or ""),
-        base_training_config=Path(str(config.get("base_training_config") or experiments.ppo_tracking.DEFAULT_PPO_TRACKING_CONFIG_PATH)),
-        seed=int(config.get("seed", experiments.ppo_tracking.DEFAULT_SEED)),
+        base_training_config=Path(str(config.get("base_training_config") or ppo_tracking.DEFAULT_PPO_TRACKING_CONFIG_PATH)),
+        seed=int(config.get("seed", ppo_tracking.DEFAULT_SEED)),
         wandb_mode=str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_AUTO),
-        normalize_actions=bool(config.get("normalize_actions", experiments.ppo_tracking.DEFAULT_NORMALIZE_ACTIONS)),
+        normalize_actions=bool(config.get("normalize_actions", ppo_tracking.DEFAULT_NORMALIZE_ACTIONS)),
         stages=stages,
         config_path=config_path,
     )
@@ -312,7 +314,7 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
             stage_artifact_root=stage_artifact_root,
         )
         initial_model_path = previous_model_path
-        result = experiments.ppo_tracking.run_ppo_tracking_smoke_from_config(
+        result = ppo_tracking.run_ppo_tracking_smoke_from_config(
             config_path=settings.base_training_config,
             task_config_path=task_config_path,
             task_index=0,
@@ -426,7 +428,7 @@ def _stage_summary_entry(
     stage_index: int,
     stage: ManualCurriculumStage,
     run_name: str,
-    result: experiments.ppo_tracking.PPOTrackingSmokeResult,
+    result: ppo_tracking.PPOTrackingSmokeResult,
     artifact_root: Path,
     previous_model_path: str | None,
     initial_model_path: str | None,

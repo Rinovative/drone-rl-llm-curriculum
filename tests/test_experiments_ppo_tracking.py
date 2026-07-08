@@ -14,8 +14,11 @@ from typing import Any, ClassVar
 import numpy as np
 import pytest
 
-from src import envs, experiments, utils
-from src.experiments import cli_train_tracking
+from src import envs, utils
+from src.experiments import experiments_config
+from src.experiments.cli import experiments_cli_train_tracking as cli_train_tracking
+from src.experiments.training import experiments_training_ppo_config as ppo_config
+from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 EXPECTED_SMOKE_TASK_INDEX = 0
 LINE_TASK_INDEX = 2
@@ -45,7 +48,7 @@ EXPECTED_PPO_CONFIG = {
 
 def _manual_curriculum_task(stage_name: str) -> dict[str, object]:
     """Return a copied task from the manual line curriculum fixture."""
-    config = experiments.config.load_experiment_config("configs/curricula/manual_line_curriculum.yaml")
+    config = experiments_config.load_experiment_config("configs/curricula/manual_line_curriculum.yaml")
     for stage in config["stages"]:
         if stage["stage_name"] == stage_name:
             return dict(stage["task"])
@@ -53,16 +56,16 @@ def _manual_curriculum_task(stage_name: str) -> dict[str, object]:
     raise AssertionError(message)
 
 
-def test_ppo_tracking_imports_through_package_alias() -> None:
-    """Verify PPO tracking helpers are exposed by the experiments package."""
-    assert experiments.ppo_tracking is not None
-    assert experiments.ppo_tracking.PPOTrackingSmokeSettings is not None
+def test_ppo_tracking_canonical_module_imports() -> None:
+    """Verify PPO tracking helpers are exposed by the canonical module."""
+    assert ppo_tracking is not None
+    assert ppo_tracking.PPOTrackingSmokeSettings is not None
 
 
 def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify the smoke YAML file loads into validated settings."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = experiments.ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking.yaml")
+    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking.yaml")
 
     assert settings.training_config_path == Path("configs/training/ppo_tracking.yaml")
     assert settings.task_config_path == Path("configs/smoke/trajectory_validation.yaml")
@@ -83,33 +86,33 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.wandb_name is None
     assert settings.wandb_tags == ()
     assert settings.wandb_dir is None
-    assert experiments.ppo_tracking.default_output_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0"
-    assert experiments.ppo_tracking.default_model_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "models"
-    assert experiments.ppo_tracking.default_manifests_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "manifests"
+    assert ppo_tracking.default_output_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0"
+    assert ppo_tracking.default_model_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "models"
+    assert ppo_tracking.default_manifests_dir() == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "manifests"
     assert utils.wandb.default_wandb_dir("ppo_hover_4096_seed0") == tmp_path / "training_runs" / "ppo_hover_4096_seed0" / "wandb"
 
 
 def test_ppo_tracking_settings_reject_invalid_timesteps() -> None:
     """Verify invalid PPO timestep budgets are rejected."""
     with pytest.raises(ValueError, match="total_timesteps must be positive"):
-        experiments.ppo_tracking.PPOTrackingSmokeSettings(total_timesteps=0)
+        ppo_tracking.PPOTrackingSmokeSettings(total_timesteps=0)
 
 
 def test_ppo_tracking_settings_reject_invalid_eval_steps() -> None:
     """Verify invalid evaluation lengths are rejected."""
     with pytest.raises(ValueError, match="eval_steps must be positive"):
-        experiments.ppo_tracking.PPOTrackingSmokeSettings(eval_steps=0)
+        ppo_tracking.PPOTrackingSmokeSettings(eval_steps=0)
 
 
 def test_ppo_tracking_settings_reject_invalid_run_name() -> None:
     """Verify training run names cannot escape storage/training_runs."""
     with pytest.raises(ValueError, match="run_name"):
-        experiments.ppo_tracking.PPOTrackingSmokeSettings(run_name="../bad")
+        ppo_tracking.PPOTrackingSmokeSettings(run_name="../bad")
 
 
 def test_ppo_tracking_select_task_by_shape_uses_configured_task() -> None:
     """Verify task-shape selection reuses the configured task list."""
-    task, task_source, task_index, warnings = experiments.ppo_tracking._select_task(  # noqa: SLF001
+    task, task_source, task_index, warnings = ppo_tracking._select_task(  # noqa: SLF001
         task_config_path=Path("configs/smoke/trajectory_validation.yaml"),
         default_task_index=0,
         task_shape="line",
@@ -123,14 +126,14 @@ def test_ppo_tracking_select_task_by_shape_uses_configured_task() -> None:
 
 def test_ppo_tracking_paths_resolve_under_run_directories(tmp_path: Path) -> None:
     """Verify caller-provided run roots control generated artifact paths."""
-    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
         task_shape="hover",
         output_dir=tmp_path / "run",
         model_dir=tmp_path / "run" / "models",
     )
 
-    model_path = experiments.ppo_tracking._resolve_model_path(settings)  # noqa: SLF001
-    metrics_path = experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
+    model_path = ppo_tracking._resolve_model_path(settings)  # noqa: SLF001
+    metrics_path = ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
 
     assert model_path == (tmp_path / "run" / "models" / "ppo_hover_4096_seed0.zip").resolve(strict=False)
     assert metrics_path == (tmp_path / "run" / "metrics" / "ppo_hover_4096_seed0_metrics.json").resolve(strict=False)
@@ -138,31 +141,31 @@ def test_ppo_tracking_paths_resolve_under_run_directories(tmp_path: Path) -> Non
 
 def test_ppo_tracking_auto_run_name_uses_resolved_task_shape() -> None:
     """Verify omitted run names are derived from task shape, timesteps, and seed."""
-    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(task_shape="line", total_timesteps=10000, seed=0)
+    settings = ppo_tracking.PPOTrackingSmokeSettings(task_shape="line", total_timesteps=10000, seed=0)
 
-    assert experiments.ppo_tracking._timesteps_label(4096) == "4096"  # noqa: SLF001
-    assert experiments.ppo_tracking._timesteps_label(10000) == "10k"  # noqa: SLF001
-    assert experiments.ppo_tracking._timesteps_label(1000000) == "1m"  # noqa: SLF001
-    assert experiments.ppo_tracking._run_name(settings) == "ppo_line_10k_seed0"  # noqa: SLF001
+    assert ppo_tracking._timesteps_label(4096) == "4096"  # noqa: SLF001
+    assert ppo_tracking._timesteps_label(10000) == "10k"  # noqa: SLF001
+    assert ppo_tracking._timesteps_label(1000000) == "1m"  # noqa: SLF001
+    assert ppo_tracking._run_name(settings) == "ppo_line_10k_seed0"  # noqa: SLF001
 
 
 def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify run-name defaults place training artifacts under one run root."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(run_name="ppo_line_smoke")
+    settings = ppo_tracking.PPOTrackingSmokeSettings(run_name="ppo_line_smoke")
 
     assert (
-        experiments.ppo_tracking._resolve_model_path(settings) == tmp_path / "training_runs" / "ppo_line_smoke" / "models" / "ppo_line_smoke.zip"  # noqa: SLF001
+        ppo_tracking._resolve_model_path(settings) == tmp_path / "training_runs" / "ppo_line_smoke" / "models" / "ppo_line_smoke.zip"  # noqa: SLF001
     )
     assert (
-        experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
+        ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
         == tmp_path / "training_runs" / "ppo_line_smoke" / "metrics" / "ppo_line_smoke_metrics.json"
     )
     assert (
-        experiments.ppo_tracking._resolve_manifest_path(settings)  # noqa: SLF001
+        ppo_tracking._resolve_manifest_path(settings)  # noqa: SLF001
         == tmp_path / "training_runs" / "ppo_line_smoke" / "manifests" / "ppo_line_smoke_manifest.json"
     )
-    wandb_settings = experiments.ppo_tracking._wandb_settings(settings, "line")  # noqa: SLF001
+    wandb_settings = ppo_tracking._wandb_settings(settings, "line")  # noqa: SLF001
     assert wandb_settings.dir == tmp_path / "training_runs" / "ppo_line_smoke" / "wandb"
     assert wandb_settings.name == "ppo_line_smoke"
     assert wandb_settings.group == "ppo_tracking/line"
@@ -170,7 +173,7 @@ def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, mo
 
 def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path) -> None:
     """Verify PPO manifests duplicate compact diagnostics summary and artifact paths."""
-    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(run_name="ppo_line_smoke")
+    settings = ppo_tracking.PPOTrackingSmokeSettings(run_name="ppo_line_smoke")
     metrics = {
         "training_run_name": "ppo_line_smoke",
         "model_path": str(tmp_path / "models" / "ppo_line_smoke.zip"),
@@ -190,7 +193,7 @@ def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path
         "curriculum_avoid_next_tasks": ["circle"],
     }
 
-    manifest = experiments.ppo_tracking._build_manifest(  # noqa: SLF001
+    manifest = ppo_tracking._build_manifest(  # noqa: SLF001
         settings=settings,
         metrics=metrics,
         task_source="config",
@@ -215,7 +218,7 @@ def test_ppo_tracking_diagnostic_artifact_paths_include_feedback_files(tmp_path:
         "metrics_path": str(tmp_path / "metrics.json"),
     }
 
-    artifact_paths = experiments.ppo_tracking._diagnostic_artifact_paths("ppo_line_smoke", metrics)  # noqa: SLF001
+    artifact_paths = ppo_tracking._diagnostic_artifact_paths("ppo_line_smoke", metrics)  # noqa: SLF001
 
     assert artifact_paths == {
         "ppo_line_smoke_failure_report": tmp_path / "failure_report.json",
@@ -227,19 +230,19 @@ def test_ppo_tracking_diagnostic_artifact_paths_include_feedback_files(tmp_path:
 
 def test_ppo_tracking_explicit_output_dir_remains_direct(tmp_path: Path) -> None:
     """Verify explicit output directory overrides preserve direct metrics placement."""
-    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
         task_shape="hover",
         output_dir=tmp_path / "storage" / "results" / "custom",
     )
 
-    metrics_path = experiments.ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
+    metrics_path = ppo_tracking._resolve_metrics_path(settings)  # noqa: SLF001
 
     assert metrics_path == (tmp_path / "storage" / "results" / "custom" / "ppo_hover_4096_seed0_metrics.json").resolve(strict=False)
 
 
 def test_ppo_tracking_dependency_detection_returns_booleans() -> None:
     """Verify dependency detection reports simple boolean availability flags."""
-    dependencies = experiments.ppo_tracking.detect_ppo_tracking_dependencies()
+    dependencies = ppo_tracking.detect_ppo_tracking_dependencies()
 
     assert isinstance(dependencies["stable_baselines3"], bool)
     assert isinstance(dependencies["gymnasium"], bool)
@@ -248,7 +251,7 @@ def test_ppo_tracking_dependency_detection_returns_booleans() -> None:
 
 def test_ppo_runtime_info_reports_cuda_availability() -> None:
     """Verify runtime diagnostics expose torch/CUDA information without requiring GPU."""
-    runtime = experiments.ppo_tracking.detect_ppo_runtime_info()
+    runtime = ppo_tracking.detect_ppo_runtime_info()
 
     assert isinstance(runtime["torch_available"], bool)
     assert isinstance(runtime["torch_cuda_available"], bool)
@@ -257,11 +260,11 @@ def test_ppo_runtime_info_reports_cuda_availability() -> None:
 
 def test_tracking_action_metadata_reports_pid_contract() -> None:
     """Verify action metadata captures the upstream PID action contract."""
-    task = experiments.ppo_tracking._load_task(  # noqa: SLF001
-        experiments.ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
-        experiments.ppo_tracking.DEFAULT_TASK_INDEX,
+    task = ppo_tracking._load_task(  # noqa: SLF001
+        ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        ppo_tracking.DEFAULT_TASK_INDEX,
     )
-    metadata = experiments.ppo_tracking.describe_tracking_env_action_metadata(task)
+    metadata = ppo_tracking.describe_tracking_env_action_metadata(task)
 
     assert metadata["action_space_shape"] == [1, 3]
     assert metadata["action_space_low"] == [[-1.0, -1.0, -1.0]]
@@ -274,9 +277,9 @@ def test_tracking_action_metadata_reports_pid_contract() -> None:
 
 def test_normalized_action_wrapper_maps_to_real_pid_bounds() -> None:
     """Verify normalized PPO actions map explicitly to real tracking action bounds."""
-    task = experiments.ppo_tracking._load_task(  # noqa: SLF001
-        experiments.ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
-        experiments.ppo_tracking.DEFAULT_TASK_INDEX,
+    task = ppo_tracking._load_task(  # noqa: SLF001
+        ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        ppo_tracking.DEFAULT_TASK_INDEX,
     )
     real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False, max_steps=DIAGNOSTIC_STEPS)
     wrapped_env = envs.tracking_env.make_normalized_action_env(real_env)
@@ -297,12 +300,12 @@ def test_normalized_action_wrapper_maps_to_real_pid_bounds() -> None:
 
 def test_ppo_training_env_uses_normalized_action_space_when_enabled() -> None:
     """Verify PPO receives the normalized action wrapper when configured."""
-    task = experiments.ppo_tracking._load_task(  # noqa: SLF001
-        experiments.ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
-        experiments.ppo_tracking.DEFAULT_TASK_INDEX,
+    task = ppo_tracking._load_task(  # noqa: SLF001
+        ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        ppo_tracking.DEFAULT_TASK_INDEX,
     )
     real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False, max_steps=DIAGNOSTIC_STEPS)
-    training_env = experiments.ppo_tracking._ppo_training_env(real_env, normalize_actions=True)  # noqa: SLF001
+    training_env = ppo_tracking._ppo_training_env(real_env, normalize_actions=True)  # noqa: SLF001
     try:
         assert training_env.action_space.shape == (1, 3)
         assert np.allclose(training_env.action_space.low, -1.0)
@@ -316,7 +319,7 @@ def test_task_with_minimum_reference_samples_extends_hold_move_task_without_rais
     """Verify start-hold curriculum diagnostics extend duration instead of failing."""
     task = _manual_curriculum_task("start_hold_then_short_line")
 
-    diagnostic_task, reference_samples, warnings = experiments.ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
+    diagnostic_task, reference_samples, warnings = ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
         task,
         required_steps=CURRICULUM_DIAGNOSTIC_STEPS,
     )
@@ -339,7 +342,7 @@ def test_task_with_minimum_reference_samples_prefers_duration_over_sample_rate()
     with pytest.raises(ValueError, match="maximum acceleration"):
         envs.task_adapter.make_task_reference(unsafe_sample_rate_task)
 
-    diagnostic_task, reference_samples, warnings = experiments.ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
+    diagnostic_task, reference_samples, warnings = ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
         task,
         required_steps=CURRICULUM_DIAGNOSTIC_STEPS,
     )
@@ -368,7 +371,7 @@ def test_task_with_minimum_reference_samples_falls_back_when_extension_fails(mon
 
     monkeypatch.setattr(envs.task_adapter, "make_task_reference", fake_make_task_reference)
 
-    diagnostic_task, reference_samples, warnings = experiments.ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
+    diagnostic_task, reference_samples, warnings = ppo_tracking._task_with_minimum_reference_samples(  # noqa: SLF001
         task,
         required_steps=CURRICULUM_DIAGNOSTIC_STEPS,
     )
@@ -381,11 +384,11 @@ def test_task_with_minimum_reference_samples_falls_back_when_extension_fails(mon
 
 def test_liftoff_diagnostics_report_simple_policy_bounds() -> None:
     """Verify liftoff diagnostics include structured movement summaries."""
-    task = experiments.ppo_tracking._load_task(  # noqa: SLF001
-        experiments.ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
-        experiments.ppo_tracking.DEFAULT_TASK_INDEX,
+    task = ppo_tracking._load_task(  # noqa: SLF001
+        ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        ppo_tracking.DEFAULT_TASK_INDEX,
     )
-    diagnostics = experiments.ppo_tracking.run_liftoff_diagnostics(task, max_steps=DIAGNOSTIC_STEPS, seed=0)
+    diagnostics = ppo_tracking.run_liftoff_diagnostics(task, max_steps=DIAGNOSTIC_STEPS, seed=0)
 
     assert "zero_action" in diagnostics
     assert "high_action" in diagnostics
@@ -404,15 +407,15 @@ def test_evaluate_model_metrics_include_movement_bounds() -> None:
             _ = deterministic
             return np.ones((1, 3), dtype=np.float32), None
 
-    task = experiments.ppo_tracking._load_task(  # noqa: SLF001
-        experiments.ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
-        experiments.ppo_tracking.DEFAULT_TASK_INDEX,
+    task = ppo_tracking._load_task(  # noqa: SLF001
+        ppo_tracking.DEFAULT_TASK_CONFIG_PATH,
+        ppo_tracking.DEFAULT_TASK_INDEX,
     )
     real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False, max_steps=DIAGNOSTIC_STEPS)
     tracking_env = envs.tracking_env.make_normalized_action_env(real_env)
     try:
-        settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(eval_steps=DIAGNOSTIC_STEPS)
-        metrics = experiments.ppo_tracking._evaluate_model(HighActionModel(), tracking_env, settings)  # noqa: SLF001
+        settings = ppo_tracking.PPOTrackingSmokeSettings(eval_steps=DIAGNOSTIC_STEPS)
+        metrics = ppo_tracking._evaluate_model(HighActionModel(), tracking_env, settings)  # noqa: SLF001
     finally:
         tracking_env.close()
 
@@ -463,7 +466,7 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
             """Write a tiny model marker file."""
             Path(path).write_text("fake model", encoding="utf-8")
 
-    configured_ppo = experiments.ppo_config.PPOConfig(
+    configured_ppo = ppo_config.PPOConfig(
         policy="MlpPolicy",
         device="cpu",
         learning_rate=0.0007,
@@ -483,39 +486,39 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
     fake_sb3.PPO = FakePPO
     monkeypatch.setitem(sys.modules, "stable_baselines3", fake_sb3)
     monkeypatch.setattr(
-        experiments.ppo_tracking,
+        ppo_tracking,
         "detect_ppo_tracking_dependencies",
         lambda: {"stable_baselines3": True, "gymnasium": True, "gym_pybullet_drones": True, "torch": True},
     )
-    monkeypatch.setattr(experiments.ppo_tracking, "detect_ppo_runtime_info", lambda: {"torch_available": True})
+    monkeypatch.setattr(ppo_tracking, "detect_ppo_runtime_info", lambda: {"torch_available": True})
     monkeypatch.setattr(
-        experiments.ppo_tracking,
+        ppo_tracking,
         "_select_task",
         lambda **_kwargs: ({"shape": "line"}, "config", 0, ()),
     )
     monkeypatch.setattr(
-        experiments.ppo_tracking,
+        ppo_tracking,
         "run_liftoff_diagnostics",
         lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
-        experiments.ppo_tracking.envs.tracking_env,
+        ppo_tracking.envs.tracking_env,
         "make_trajectory_tracking_env",
         lambda *_args, **_kwargs: FakeTrainingEnv(),
     )
     monkeypatch.setattr(
-        experiments.ppo_tracking,
+        ppo_tracking,
         "_tracking_env_action_metadata",
         lambda _env: {"actions_normalized": False},
     )
-    monkeypatch.setattr(experiments.ppo_tracking, "_movement_warnings", lambda **_kwargs: ())
+    monkeypatch.setattr(ppo_tracking, "_movement_warnings", lambda **_kwargs: ())
     monkeypatch.setattr(
-        experiments.ppo_tracking.evaluation.diagnostics,
+        ppo_tracking.evaluation.diagnostics,
         "collect_policy_evaluation_diagnostics",
         lambda **_kwargs: types.SimpleNamespace(metrics={"mean_position_error_m": 0.1}),
     )
     monkeypatch.setattr(
-        experiments.ppo_tracking.evaluation.diagnostics,
+        ppo_tracking.evaluation.diagnostics,
         "write_policy_evaluation_diagnostics",
         lambda *_args, **_kwargs: {},
     )
@@ -525,8 +528,8 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
         _ = settings
         captured_wandb_config.update(config)
 
-    monkeypatch.setattr(experiments.ppo_tracking.utils.wandb, "start_wandb_run", fake_start_wandb_run)
-    settings = experiments.ppo_tracking.PPOTrackingSmokeSettings(
+    monkeypatch.setattr(ppo_tracking.utils.wandb, "start_wandb_run", fake_start_wandb_run)
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
         run_name="configured_ppo",
         total_timesteps=20,
         ppo_config=configured_ppo,
@@ -537,7 +540,7 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(
         wandb_mode=utils.wandb.WANDB_MODE_DISABLED,
     )
 
-    result = experiments.ppo_tracking.run_ppo_tracking_smoke(settings)
+    result = ppo_tracking.run_ppo_tracking_smoke(settings)
 
     assert len(FakePPO.init_calls) == 1
     constructor_call = FakePPO.init_calls[0]
@@ -566,7 +569,7 @@ def test_cli_train_tracking_parser_accepts_task_shape_and_run_name() -> None:
 def test_cli_train_tracking_help_works() -> None:
     """Verify the PPO tracking CLI exposes help without running training."""
     completed = subprocess.run(
-        [sys.executable, "-m", "src.experiments.cli_train_tracking", "--help"],
+        [sys.executable, "-m", "src.experiments.cli.experiments_cli_train_tracking", "--help"],
         check=False,
         capture_output=True,
         text=True,

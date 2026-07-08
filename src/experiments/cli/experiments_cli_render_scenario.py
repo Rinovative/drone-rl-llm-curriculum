@@ -1,6 +1,6 @@
 """
 ===============================================================================
-cli_render_scenario.py
+experiments_cli_render_scenario.py
 ===============================================================================
 Command-line entry point for continuous multi-phase scenario rendering.
 
@@ -26,7 +26,8 @@ import argparse
 import json
 from pathlib import Path
 
-from src import experiments
+from src.experiments.rendering import experiments_rendering_policy as policy_render
+from src.experiments.rendering import experiments_rendering_scenario as scenario_render
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,11 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Render a multi-phase scenario as one continuous evaluation rollout under storage/evaluation_runs/<run_name>.",
     )
-    parser.add_argument("--config", type=Path, default=experiments.scenario_render.DEFAULT_SCENARIO_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=scenario_render.DEFAULT_SCENARIO_CONFIG_PATH)
     parser.add_argument("--run-name", type=str, default=None, help="Evaluation run name under storage/evaluation_runs.")
     parser.add_argument(
         "--controller",
-        choices=experiments.policy_render.SUPPORTED_CONTROLLERS,
+        choices=policy_render.SUPPORTED_CONTROLLERS,
         default=None,
         help="Override the scenario controller.",
     )
@@ -50,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--camera-mode", choices=experiments.policy_render.SUPPORTED_CAMERA_MODES, default=None)
+    parser.add_argument("--camera-mode", choices=policy_render.SUPPORTED_CAMERA_MODES, default=None)
     parser.add_argument("--camera-distance", type=float, default=None)
     parser.add_argument("--camera-yaw", type=float, default=None)
     parser.add_argument("--camera-pitch", type=float, default=None)
@@ -60,8 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the scenario render CLI and return a process status code."""
     args = build_parser().parse_args(argv)
-    loaded = experiments.scenario_render.load_scenario_render_settings(args.config)
-    settings = experiments.scenario_render.ScenarioRenderSettings(
+    loaded = scenario_render.load_scenario_render_settings(args.config)
+    settings = scenario_render.ScenarioRenderSettings(
         scenario_config_path=loaded.scenario_config_path,
         scenario_name=loaded.scenario_name,
         task_config_path=loaded.task_config_path,
@@ -77,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         camera_pitch=loaded.camera_pitch if args.camera_pitch is None else args.camera_pitch,
         final_hold_sec=loaded.final_hold_sec,
     )
-    result = experiments.scenario_render.run_scenario_render(settings)
+    result = scenario_render.run_scenario_render(settings)
     print(
         json.dumps(
             {

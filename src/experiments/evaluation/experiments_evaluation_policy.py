@@ -1,6 +1,6 @@
 """
 ===============================================================================
-experiments_policy_evaluation.py
+experiments_evaluation_policy.py
 ===============================================================================
 Run one shared PPO policy evaluation pipeline for report-ready artifacts.
 
@@ -358,7 +358,7 @@ def _write_render_artifact(
     """Write one simulator rollout GIF and return the path, warnings, and plotted trace."""
     from stable_baselines3 import PPO  # noqa: PLC0415
 
-    from src.experiments import experiments_policy_render as policy_render  # noqa: PLC0415
+    from src.experiments.rendering import experiments_rendering_policy as policy_render  # noqa: PLC0415
 
     settings = policy_render.PolicyRenderSettings(
         model_path=spec.model_path,

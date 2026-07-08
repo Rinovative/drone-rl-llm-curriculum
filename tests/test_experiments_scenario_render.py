@@ -9,8 +9,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src import experiments
-from src.experiments import cli_render_scenario
+from src.experiments.cli import experiments_cli_render_scenario as cli_render_scenario
+from src.experiments.rendering import experiments_rendering_policy as policy_render
+from src.experiments.rendering import experiments_rendering_scenario as scenario_render
 
 SCRIPTED_CONFIG = Path("configs/scenarios/scripted_reference_line_polyline.yaml")
 SHOWCASE_CONFIG = Path("configs/scenarios/showcase_hover_line_polyline.yaml")
@@ -26,17 +27,17 @@ MANIFEST_TOTAL_STEPS = 2
 
 def test_scenario_render_imports_through_package_alias() -> None:
     """Verify scenario render helpers are exposed by the experiments package."""
-    assert experiments.scenario_render is not None
-    assert experiments.scenario_render.ScenarioRenderSettings is not None
+    assert scenario_render is not None
+    assert scenario_render.ScenarioRenderSettings is not None
 
 
 def test_load_scripted_scenario_settings_parses_concrete_geometry_and_holds() -> None:
     """Verify the scripted scenario config carries local primitive geometry and explicit holds."""
-    settings = experiments.scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
+    settings = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
 
     assert settings.scenario_name == "scripted_reference_line_polyline"
     assert settings.task_config_path == Path("configs/smoke/trajectory_validation.yaml")
-    assert settings.controller == experiments.policy_render.SCRIPTED_REFERENCE_CONTROLLER
+    assert settings.controller == policy_render.SCRIPTED_REFERENCE_CONTROLLER
     assert settings.max_steps == CONFIG_MAX_STEPS
     assert settings.seed == 0
     assert settings.camera_mode == "follow_external"
@@ -47,19 +48,19 @@ def test_load_scripted_scenario_settings_parses_concrete_geometry_and_holds() ->
     assert settings.phases[0].duration_sec == 10.0
     assert settings.phases[0].hold_after_sec == 1.0
     assert settings.phases[0].geometry["delta_position"] == [0.6, 0.0, 0.0]
-    assert settings.phases[0].start_mode == experiments.scenario_render.START_MODE_INITIAL
+    assert settings.phases[0].start_mode == scenario_render.START_MODE_INITIAL
     assert settings.phases[1].phase_type == "polyline"
     assert settings.phases[1].duration_sec == 16.0
     assert settings.phases[1].geometry["waypoints"][-1] == [0.4, 0.4, 0.0]
-    assert settings.phases[1].start_mode == experiments.scenario_render.START_MODE_PREVIOUS_END
+    assert settings.phases[1].start_mode == scenario_render.START_MODE_PREVIOUS_END
 
 
 def test_load_showcase_scenario_settings_requires_ppo_model_run() -> None:
     """Verify the PPO showcase config carries its model-run source."""
-    settings = experiments.scenario_render.load_scenario_render_settings(SHOWCASE_CONFIG)
+    settings = scenario_render.load_scenario_render_settings(SHOWCASE_CONFIG)
 
     assert settings.scenario_name == "showcase_hover_line_polyline"
-    assert settings.controller == experiments.policy_render.PPO_CONTROLLER
+    assert settings.controller == policy_render.PPO_CONTROLLER
     assert settings.model_run_name == "ppo_line_100k_seed0"
     assert settings.phases[0].phase_type == "hover"
     assert settings.phases[0].geometry["hold_current_position"] is True
@@ -68,28 +69,28 @@ def test_load_showcase_scenario_settings_requires_ppo_model_run() -> None:
 def test_ppo_scenario_settings_reject_missing_model_run_name() -> None:
     """Verify PPO scenario rendering cannot silently fall back to old model paths."""
     with pytest.raises(ValueError, match="model_run_name"):
-        experiments.scenario_render.ScenarioRenderSettings(
+        scenario_render.ScenarioRenderSettings(
             scenario_name="bad_ppo",
-            controller=experiments.policy_render.PPO_CONTROLLER,
-            phases=(experiments.scenario_render.ScenarioPhase(name="line", phase_type="line"),),
+            controller=policy_render.PPO_CONTROLLER,
+            phases=(scenario_render.ScenarioPhase(name="line", phase_type="line"),),
         )
 
 
 def test_compose_line_phase_uses_custom_delta_position() -> None:
     """Verify a line phase uses scenario delta_position instead of catalog endpoints."""
-    phase = experiments.scenario_render.ScenarioPhase(
+    phase = scenario_render.ScenarioPhase(
         name="short_line",
         phase_type="line",
         duration_sec=2.0,
         geometry={"delta_position": [0.25, 0.75, 0.0]},
     )
-    settings = experiments.scenario_render.ScenarioRenderSettings(
+    settings = scenario_render.ScenarioRenderSettings(
         scenario_name="line_delta_test",
         phases=(phase,),
         max_steps=30,
     )
 
-    composition = experiments.scenario_render.compose_scenario_reference(settings)
+    composition = scenario_render.compose_scenario_reference(settings)
 
     assert np.allclose(composition.phase_start_positions[0], [0.0, 0.0, 1.0])
     assert np.allclose(composition.phase_end_positions[0], [0.25, 0.75, 1.0])
@@ -98,8 +99,8 @@ def test_compose_line_phase_uses_custom_delta_position() -> None:
 
 def test_compose_polyline_phase_uses_custom_local_waypoints_and_holds() -> None:
     """Verify a polyline phase follows scenario local waypoints and explicit holds."""
-    settings = experiments.scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
-    composition = experiments.scenario_render.compose_scenario_reference(settings)
+    settings = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
+    composition = scenario_render.compose_scenario_reference(settings)
 
     assert composition.reference.shape == "scenario"
     assert composition.reference.positions.shape == (292, 3)
@@ -123,8 +124,8 @@ def test_compose_polyline_phase_uses_custom_local_waypoints_and_holds() -> None:
 
 def test_compose_circle_phase_uses_custom_radius_and_polyline_differs() -> None:
     """Verify configurable circle geometry and a different custom polyline scenario."""
-    settings = experiments.scenario_render.load_scenario_render_settings(CIRCLE_CONFIG)
-    composition = experiments.scenario_render.compose_scenario_reference(settings)
+    settings = scenario_render.load_scenario_render_settings(CIRCLE_CONFIG)
+    composition = scenario_render.compose_scenario_reference(settings)
 
     assert composition.reference.positions.shape == (182, 3)
     assert composition.phase_step_ranges == ({"start": 0, "end": 81}, {"start": 81, "end": 162})
@@ -143,15 +144,15 @@ def test_compose_circle_phase_uses_custom_radius_and_polyline_differs() -> None:
 
 def test_effective_max_steps_cover_reference_or_derive_with_margin() -> None:
     """Verify max_steps is a safety cap and omitted caps derive from reference length."""
-    configured = experiments.scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
-    composition = experiments.scenario_render.compose_scenario_reference(configured)
+    configured = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
+    composition = scenario_render.compose_scenario_reference(configured)
 
-    assert experiments.scenario_render._effective_max_steps(configured, composition) == CONFIG_MAX_STEPS
+    assert scenario_render._effective_max_steps(configured, composition) == CONFIG_MAX_STEPS
 
-    derived = experiments.scenario_render.ScenarioRenderSettings(
+    derived = scenario_render.ScenarioRenderSettings(
         scenario_name="derive_cap",
         phases=(
-            experiments.scenario_render.ScenarioPhase(
+            scenario_render.ScenarioPhase(
                 name="line",
                 phase_type="line",
                 duration_sec=2.0,
@@ -160,16 +161,16 @@ def test_effective_max_steps_cover_reference_or_derive_with_margin() -> None:
         ),
         max_steps=None,
     )
-    derived_composition = experiments.scenario_render.compose_scenario_reference(derived)
-    assert experiments.scenario_render._effective_max_steps(derived, derived_composition) == (
-        derived_composition.total_reference_steps + experiments.scenario_render.DEFAULT_MAX_STEP_SAFETY_MARGIN
+    derived_composition = scenario_render.compose_scenario_reference(derived)
+    assert scenario_render._effective_max_steps(derived, derived_composition) == (
+        derived_composition.total_reference_steps + scenario_render.DEFAULT_MAX_STEP_SAFETY_MARGIN
     )
 
 
 def test_max_steps_smaller_than_reference_fails_clearly() -> None:
     """Verify too-small safety caps fail before producing incomplete scenario rollouts."""
-    settings = experiments.scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
-    too_small = experiments.scenario_render.ScenarioRenderSettings(
+    settings = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
+    too_small = scenario_render.ScenarioRenderSettings(
         scenario_config_path=settings.scenario_config_path,
         scenario_name=settings.scenario_name,
         task_config_path=settings.task_config_path,
@@ -179,34 +180,34 @@ def test_max_steps_smaller_than_reference_fails_clearly() -> None:
         seed=settings.seed,
         final_hold_sec=settings.final_hold_sec,
     )
-    composition = experiments.scenario_render.compose_scenario_reference(too_small)
+    composition = scenario_render.compose_scenario_reference(too_small)
 
     with pytest.raises(ValueError, match="smaller than the composed scenario reference length"):
-        experiments.scenario_render._effective_max_steps(too_small, composition)
+        scenario_render._effective_max_steps(too_small, composition)
 
 
 def test_base_time_limit_covers_composed_scenario_duration() -> None:
     """Verify scenario rendering configures the base env timeout from composed duration."""
-    settings = experiments.scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
-    composition = experiments.scenario_render.compose_scenario_reference(settings)
+    settings = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
+    composition = scenario_render.compose_scenario_reference(settings)
 
-    assert experiments.scenario_render._base_time_limit_sec(composition) > composition.scenario_duration_sec
+    assert scenario_render._base_time_limit_sec(composition) > composition.scenario_duration_sec
     assert composition.scenario_duration_sec >= 29.0
 
 
 def test_phase_composition_rejects_discontinuous_initial_boundary() -> None:
     """Verify adjacent phase boundaries must be continuous."""
-    settings = experiments.scenario_render.ScenarioRenderSettings(
+    settings = scenario_render.ScenarioRenderSettings(
         scenario_name="bad_discontinuous",
         phases=(
-            experiments.scenario_render.ScenarioPhase(
+            scenario_render.ScenarioPhase(
                 name="line_a",
                 phase_type="line",
                 duration_sec=2.0,
                 start_mode="initial",
                 geometry={"delta_position": [0.5, 0.0, 0.0]},
             ),
-            experiments.scenario_render.ScenarioPhase(
+            scenario_render.ScenarioPhase(
                 name="line_b",
                 phase_type="line",
                 duration_sec=2.0,
@@ -217,13 +218,13 @@ def test_phase_composition_rejects_discontinuous_initial_boundary() -> None:
     )
 
     with pytest.raises(ValueError, match="discontinuous"):
-        experiments.scenario_render.compose_scenario_reference(settings)
+        scenario_render.compose_scenario_reference(settings)
 
 
 def test_add_phase_fields_labels_trace_rows_with_required_aliases() -> None:
     """Verify scenario trace enrichment adds phase and hold metadata aliases."""
-    settings = experiments.scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
-    composition = experiments.scenario_render.compose_scenario_reference(settings)
+    settings = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
+    composition = scenario_render.compose_scenario_reference(settings)
     records = [
         {
             "step_index": 0,
@@ -251,7 +252,7 @@ def test_add_phase_fields_labels_trace_rows_with_required_aliases() -> None:
         },
     ]
 
-    enriched = experiments.scenario_render._add_phase_fields(records, composition)
+    enriched = scenario_render._add_phase_fields(records, composition)
 
     assert enriched[0]["global_step"] == 0
     assert enriched[0]["phase_index"] == 0
@@ -276,13 +277,13 @@ def test_add_phase_fields_labels_trace_rows_with_required_aliases() -> None:
 
 def test_scenario_run_name_derivation_matches_contract() -> None:
     """Verify default evaluation run names follow the scenario contract."""
-    scripted = experiments.scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
-    ppo = experiments.scenario_render.load_scenario_render_settings(SHOWCASE_CONFIG)
+    scripted = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
+    ppo = scenario_render.load_scenario_render_settings(SHOWCASE_CONFIG)
 
-    assert experiments.scenario_render._evaluation_run_name(scripted) == "eval_scripted_reference_on_line_polyline"
-    assert experiments.scenario_render._evaluation_run_name(ppo) == "eval_ppo_line_100k_seed0_on_showcase_hover_line_polyline"
-    circle = experiments.scenario_render.load_scenario_render_settings(CIRCLE_CONFIG)
-    assert experiments.scenario_render._evaluation_run_name(circle) == "eval_scripted_reference_on_circle_polyline"
+    assert scenario_render._evaluation_run_name(scripted) == "eval_scripted_reference_on_line_polyline"
+    assert scenario_render._evaluation_run_name(ppo) == "eval_ppo_line_100k_seed0_on_showcase_hover_line_polyline"
+    circle = scenario_render.load_scenario_render_settings(CIRCLE_CONFIG)
+    assert scenario_render._evaluation_run_name(circle) == "eval_scripted_reference_on_circle_polyline"
 
 
 def test_cli_parser_accepts_scenario_overrides() -> None:
@@ -327,12 +328,12 @@ def test_cli_parser_accepts_scenario_overrides() -> None:
 
 def test_build_scenario_manifest_includes_required_fields(tmp_path: Path) -> None:
     """Verify scenario manifests include phase geometry, holds, reset count, and completion metadata."""
-    settings = experiments.scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
-    composition = experiments.scenario_render.compose_scenario_reference(settings)
-    effective_max_steps = experiments.scenario_render._effective_max_steps(settings, composition)
-    base_time_limit_sec = experiments.scenario_render._base_time_limit_sec(composition)
+    settings = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
+    composition = scenario_render.compose_scenario_reference(settings)
+    effective_max_steps = scenario_render._effective_max_steps(settings, composition)
+    base_time_limit_sec = scenario_render._base_time_limit_sec(composition)
     metrics = {"run_type": "evaluation", "evaluation_type": "scenario", "total_steps": MANIFEST_TOTAL_STEPS}
-    completion = experiments.scenario_render._scenario_completion_summary(
+    completion = scenario_render._scenario_completion_summary(
         actual_steps=composition.total_reference_steps,
         requested_max_steps=settings.max_steps,
         effective_max_steps=effective_max_steps,
@@ -347,7 +348,7 @@ def test_build_scenario_manifest_includes_required_fields(tmp_path: Path) -> Non
         termination_reason="tracking_reference_complete",
     )
 
-    payload = experiments.scenario_render._build_scenario_manifest(
+    payload = scenario_render._build_scenario_manifest(
         settings=settings,
         evaluation_run_name="eval_scripted_reference_on_line_polyline",
         scenario_name="scripted_reference_line_polyline",

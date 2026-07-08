@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from src import experiments, validation
+from src import validation
+from src.experiments import experiments_config
 
 EXPECTED_SMOKE_TASK_COUNT = 5
 REQUIRED_SHAPES = {"hover", "circle", "line", "vertical", "polyline"}
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 def test_smoke_config_loads_and_contains_valid_tasks() -> None:
     """Verify the smoke config loads and its tasks pass deterministic validation."""
-    config = experiments.config.load_experiment_config("configs/smoke/trajectory_validation.yaml")
+    config = experiments_config.load_experiment_config("configs/smoke/trajectory_validation.yaml")
 
     assert config["name"] == "trajectory_validation_smoke"
     assert config["seed"] == 0
@@ -44,7 +45,7 @@ def test_empty_yaml_config_fails(tmp_path: Path) -> None:
     config_path.write_text("", encoding="utf-8")
 
     with pytest.raises(ValueError, match="empty"):
-        experiments.config.load_experiment_config(config_path)
+        experiments_config.load_experiment_config(config_path)
 
 
 def test_non_mapping_yaml_config_fails(tmp_path: Path) -> None:
@@ -53,4 +54,4 @@ def test_non_mapping_yaml_config_fails(tmp_path: Path) -> None:
     config_path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="mapping"):
-        experiments.config.load_experiment_config(config_path)
+        experiments_config.load_experiment_config(config_path)

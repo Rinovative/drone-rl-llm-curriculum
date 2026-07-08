@@ -8,7 +8,8 @@ from copy import deepcopy
 
 import pytest
 
-from src import experiments, validation
+from src import validation
+from src.experiments.curriculum import experiments_curriculum_validation as curriculum_validation
 
 VALID_TASK_COUNT = 2
 
@@ -39,7 +40,7 @@ def test_summarize_loaded_config_dictionary_with_valid_tasks() -> None:
     """Verify a loaded config dictionary summarizes valid supported tasks."""
     config = {"tasks": _valid_tasks()}
 
-    summary = experiments.curriculum.summarize_config_tasks(config)
+    summary = curriculum_validation.summarize_config_tasks(config)
 
     assert summary.total_count == VALID_TASK_COUNT
     assert summary.valid_count == VALID_TASK_COUNT
@@ -51,7 +52,7 @@ def test_summarize_loaded_config_dictionary_with_valid_tasks() -> None:
 
 def test_summarize_smoke_config_path() -> None:
     """Verify the smoke config can be loaded and summarized through the path helper."""
-    summary = experiments.curriculum.summarize_config_path("configs/smoke/trajectory_validation.yaml")
+    summary = curriculum_validation.summarize_config_path("configs/smoke/trajectory_validation.yaml")
 
     expected_smoke_shapes = {"hover", "circle", "line", "vertical", "polyline"}
 
@@ -77,7 +78,7 @@ def test_invalid_task_is_reported_without_crashing_summary() -> None:
         ]
     }
 
-    summary = experiments.curriculum.summarize_config_tasks(config)
+    summary = curriculum_validation.summarize_config_tasks(config)
 
     assert summary.total_count == 1
     assert summary.valid_count == 0
@@ -89,19 +90,19 @@ def test_invalid_task_is_reported_without_crashing_summary() -> None:
 def test_missing_task_container_raises_value_error() -> None:
     """Verify configs must contain a task list."""
     with pytest.raises(ValueError, match="tasks"):
-        experiments.curriculum.summarize_config_tasks({"name": "missing"})
+        curriculum_validation.summarize_config_tasks({"name": "missing"})
 
 
 def test_non_list_task_container_raises_value_error() -> None:
     """Verify task containers must be lists."""
     with pytest.raises(ValueError, match="must be a list"):
-        experiments.curriculum.summarize_config_tasks({"tasks": {"shape": "hover"}})
+        curriculum_validation.summarize_config_tasks({"tasks": {"shape": "hover"}})
 
 
 def test_non_mapping_task_entry_raises_value_error() -> None:
     """Verify each task entry must be a mapping."""
     with pytest.raises(ValueError, match="task at index 0"):
-        experiments.curriculum.summarize_config_tasks({"tasks": ["not-a-task"]})
+        curriculum_validation.summarize_config_tasks({"tasks": ["not-a-task"]})
 
 
 def test_summarize_config_does_not_mutate_input() -> None:
@@ -109,7 +110,7 @@ def test_summarize_config_does_not_mutate_input() -> None:
     config = {"tasks": _valid_tasks()}
     original = deepcopy(config)
 
-    experiments.curriculum.summarize_config_tasks(config)
+    curriculum_validation.summarize_config_tasks(config)
 
     assert config == original
 
@@ -118,9 +119,9 @@ def test_task_shape_summary_counts_shapes() -> None:
     """Verify the convenience shape summary returns shape counts only."""
     config = {"tasks": _valid_tasks()}
 
-    assert experiments.curriculum.summarize_task_shapes(config) == {"hover": 1, "line": 1}
+    assert curriculum_validation.summarize_task_shapes(config) == {"hover": 1, "line": 1}
 
 
 def test_curriculum_imports_through_package_alias() -> None:
     """Verify curriculum helpers are exposed by the experiments package."""
-    assert experiments.curriculum.summarize_config_tasks is not None
+    assert curriculum_validation.summarize_config_tasks is not None

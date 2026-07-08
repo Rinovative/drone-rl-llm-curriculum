@@ -1,6 +1,6 @@
 """
 ===============================================================================
-experiments_ppo_config.py
+experiments_training_ppo_config.py
 ===============================================================================
 Validate Stable-Baselines3 PPO hyperparameters loaded from experiment configs.
 

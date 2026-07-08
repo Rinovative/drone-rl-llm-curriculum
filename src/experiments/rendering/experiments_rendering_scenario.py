@@ -1,6 +1,6 @@
 """
 ===============================================================================
-experiments_scenario_render.py
+experiments_rendering_scenario.py
 ===============================================================================
 Render continuous multi-phase evaluation scenarios as one simulator rollout.
 
@@ -34,7 +34,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from src import envs, evaluation, experiments, trajectories, utils, validation
+from src import envs, evaluation, trajectories, utils, validation
+from src.experiments import experiments_config as config_loader
+
+from . import experiments_rendering_policy as policy_render
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -223,21 +226,21 @@ class ScenarioRenderSettings:
     scenario_name: str | None = None
     task_config_path: Path = DEFAULT_TASK_CONFIG_PATH
     phases: tuple[ScenarioPhase, ...] = ()
-    controller: str = experiments.policy_render.SCRIPTED_REFERENCE_CONTROLLER
+    controller: str = policy_render.SCRIPTED_REFERENCE_CONTROLLER
     model_run_name: str | None = None
     run_name: str | None = None
     output_dir: Path | None = None
     max_steps: int | None = DEFAULT_MAX_STEPS
     seed: int | None = DEFAULT_SEED
-    camera_mode: str = experiments.policy_render.DEFAULT_CAMERA_MODE
-    camera_distance: float = experiments.policy_render.DEFAULT_CAMERA_DISTANCE_M
-    camera_yaw: float = experiments.policy_render.DEFAULT_CAMERA_YAW_DEG
-    camera_pitch: float = experiments.policy_render.DEFAULT_CAMERA_PITCH_DEG
+    camera_mode: str = policy_render.DEFAULT_CAMERA_MODE
+    camera_distance: float = policy_render.DEFAULT_CAMERA_DISTANCE_M
+    camera_yaw: float = policy_render.DEFAULT_CAMERA_YAW_DEG
+    camera_pitch: float = policy_render.DEFAULT_CAMERA_PITCH_DEG
     gif_filename: str = DEFAULT_GIF_FILENAME
     manifest_filename: str = DEFAULT_MANIFEST_FILENAME
-    frame_interval: int = experiments.policy_render.DEFAULT_FRAME_INTERVAL
-    image_width: int = experiments.policy_render.DEFAULT_IMAGE_WIDTH
-    image_height: int = experiments.policy_render.DEFAULT_IMAGE_HEIGHT
+    frame_interval: int = policy_render.DEFAULT_FRAME_INTERVAL
+    image_width: int = policy_render.DEFAULT_IMAGE_WIDTH
+    image_height: int = policy_render.DEFAULT_IMAGE_HEIGHT
     final_hold_sec: float = DEFAULT_FINAL_HOLD_SEC
 
     def __post_init__(self) -> None:
@@ -245,10 +248,10 @@ class ScenarioRenderSettings:
         if self.scenario_name is not None and not self.scenario_name.strip():
             message = "scenario_name must be non-empty when provided"
             raise ValueError(message)
-        if self.controller not in experiments.policy_render.SUPPORTED_CONTROLLERS:
-            message = f"controller must be one of: {', '.join(experiments.policy_render.SUPPORTED_CONTROLLERS)}"
+        if self.controller not in policy_render.SUPPORTED_CONTROLLERS:
+            message = f"controller must be one of: {', '.join(policy_render.SUPPORTED_CONTROLLERS)}"
             raise ValueError(message)
-        if self.controller == experiments.policy_render.PPO_CONTROLLER and not self.model_run_name:
+        if self.controller == policy_render.PPO_CONTROLLER and not self.model_run_name:
             message = "PPO scenario rendering requires model_run_name"
             raise ValueError(message)
         if self.model_run_name is not None:
@@ -261,8 +264,8 @@ class ScenarioRenderSettings:
         if self.seed is not None and self.seed < 0:
             message = "seed must be nonnegative"
             raise ValueError(message)
-        if self.camera_mode not in experiments.policy_render.SUPPORTED_CAMERA_MODES:
-            message = f"camera_mode must be one of: {', '.join(experiments.policy_render.SUPPORTED_CAMERA_MODES)}"
+        if self.camera_mode not in policy_render.SUPPORTED_CAMERA_MODES:
+            message = f"camera_mode must be one of: {', '.join(policy_render.SUPPORTED_CAMERA_MODES)}"
             raise ValueError(message)
         if not np.isfinite(self.camera_distance) or self.camera_distance <= 0.0:
             message = "camera_distance must be finite and positive"
@@ -409,7 +412,7 @@ def load_scenario_render_settings(path: str | Path) -> ScenarioRenderSettings:
 
     """
     config_path = Path(path)
-    config = experiments.config.load_experiment_config(config_path)
+    config = config_loader.load_experiment_config(config_path)
     return _settings_from_mapping(config=config, scenario_config_path=config_path)
 
 
@@ -439,10 +442,10 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
     scenario_name = _scenario_name(active_settings)
     evaluation_run_name = _evaluation_run_name(active_settings)
     model_path = _resolve_model_path(active_settings)
-    training_metadata, metadata_warnings = experiments.policy_render._load_training_metadata(active_settings.model_run_name)  # noqa: SLF001
-    training_task_shape = experiments.policy_render._training_task_shape(training_metadata)  # noqa: SLF001
+    training_metadata, metadata_warnings = policy_render._load_training_metadata(active_settings.model_run_name)  # noqa: SLF001
+    training_task_shape = policy_render._training_task_shape(training_metadata)  # noqa: SLF001
 
-    if active_settings.controller == experiments.policy_render.PPO_CONTROLLER and model_path is not None and not model_path.exists():
+    if active_settings.controller == policy_render.PPO_CONTROLLER and model_path is not None and not model_path.exists():
         message = (
             "trained PPO model was not found at "
             f"{model_path}. Scenario PPO rendering only loads models from "
@@ -460,8 +463,8 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         effective_max_steps=effective_max_steps,
     )
     output_dir = _resolve_output_dir(active_settings.output_dir, evaluation_run_name)
-    renders_dir, manifests_dir = experiments.policy_render._artifact_dirs(output_dir)  # noqa: SLF001
-    traces_dir, plots_dir = experiments.policy_render._review_artifact_dirs(output_dir)  # noqa: SLF001
+    renders_dir, manifests_dir = policy_render._artifact_dirs(output_dir)  # noqa: SLF001
+    traces_dir, plots_dir = policy_render._review_artifact_dirs(output_dir)  # noqa: SLF001
     renders_dir.mkdir(parents=True, exist_ok=True)
     manifests_dir.mkdir(parents=True, exist_ok=True)
     traces_dir.mkdir(parents=True, exist_ok=True)
@@ -471,7 +474,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
     trace_path = traces_dir / DEFAULT_TRACE_FILENAME
 
     model: Any | None = None
-    if active_settings.controller == experiments.policy_render.PPO_CONTROLLER:
+    if active_settings.controller == policy_render.PPO_CONTROLLER:
         try:
             from stable_baselines3 import PPO  # noqa: PLC0415
         except ImportError as exc:
@@ -490,7 +493,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         episode_len_sec=base_time_limit_sec,
     )
     try:
-        rollout_payload = experiments.policy_render._run_policy_rollout(  # noqa: SLF001
+        rollout_payload = policy_render._run_policy_rollout(  # noqa: SLF001
             model=model,
             tracking_env=tracking_env,
             settings=policy_settings,
@@ -502,7 +505,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         tracking_env.close()
 
     trace_records = _add_phase_fields(rollout_payload["trace_records"], composition)
-    experiments.policy_render._write_gif(rollout_payload["frames"], gif_path, active_settings.frame_interval)  # noqa: SLF001
+    policy_render._write_gif(rollout_payload["frames"], gif_path, active_settings.frame_interval)  # noqa: SLF001
     trace_result = evaluation.rollout.write_policy_rollout_trace(trace_records, trace_path)
     plot_result = evaluation.plots.write_policy_rollout_trace_plots(trace_path, plots_dir)
 
@@ -512,7 +515,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
     termination_reason = str(
         final_info.get(
             "termination_reason",
-            experiments.policy_render._termination_reason(  # noqa: SLF001
+            policy_render._termination_reason(  # noqa: SLF001
                 terminated=rollout_payload["terminated"],
                 truncated=rollout_payload["truncated"],
                 actual_steps=actual_steps,
@@ -523,7 +526,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
     )
     warnings = [*metadata_warnings]
     warnings.extend(
-        experiments.policy_render._rollout_warnings(  # noqa: SLF001
+        policy_render._rollout_warnings(  # noqa: SLF001
             actual_steps=actual_steps,
             requested_max_steps=effective_max_steps,
             terminated=bool(rollout_payload["terminated"]),
@@ -588,7 +591,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         rollout_reference_positions=reference_positions,
         output_dir=output_dir,
     )
-    experiments.policy_render._write_manifest(manifest_path, manifest)  # noqa: SLF001
+    policy_render._write_manifest(manifest_path, manifest)  # noqa: SLF001
     return ScenarioRenderResult(gif_path=str(gif_path), manifest_path=str(manifest_path), metrics=metrics, warnings=tuple(warnings))
 
 
@@ -751,7 +754,7 @@ def _settings_from_mapping(config: dict[str, Any], scenario_config_path: Path) -
         message = "scenario camera must be a mapping when provided"
         raise TypeError(message)
     scenario_name = _required_text(config, "scenario_name")
-    controller = str(config.get("controller", experiments.policy_render.SCRIPTED_REFERENCE_CONTROLLER))
+    controller = str(config.get("controller", policy_render.SCRIPTED_REFERENCE_CONTROLLER))
     requested_max_steps = None if config.get("max_steps") is None else int(config["max_steps"])
     return ScenarioRenderSettings(
         scenario_config_path=scenario_config_path,
@@ -763,10 +766,10 @@ def _settings_from_mapping(config: dict[str, Any], scenario_config_path: Path) -
         run_name=None if config.get("run_name") is None else str(config["run_name"]),
         max_steps=requested_max_steps,
         seed=None if config.get("seed") is None else int(config.get("seed", DEFAULT_SEED)),
-        camera_mode=str(camera.get("mode", experiments.policy_render.DEFAULT_CAMERA_MODE)),
-        camera_distance=float(camera.get("distance", experiments.policy_render.DEFAULT_CAMERA_DISTANCE_M)),
-        camera_yaw=float(camera.get("yaw", experiments.policy_render.DEFAULT_CAMERA_YAW_DEG)),
-        camera_pitch=float(camera.get("pitch", experiments.policy_render.DEFAULT_CAMERA_PITCH_DEG)),
+        camera_mode=str(camera.get("mode", policy_render.DEFAULT_CAMERA_MODE)),
+        camera_distance=float(camera.get("distance", policy_render.DEFAULT_CAMERA_DISTANCE_M)),
+        camera_yaw=float(camera.get("yaw", policy_render.DEFAULT_CAMERA_YAW_DEG)),
+        camera_pitch=float(camera.get("pitch", policy_render.DEFAULT_CAMERA_PITCH_DEG)),
         final_hold_sec=float(config.get("final_hold_sec", DEFAULT_FINAL_HOLD_SEC)),
     )
 
@@ -816,7 +819,7 @@ def _required_text(mapping: Mapping[str, Any], key: str) -> str:
 
 def _load_task_catalog(path: Path) -> tuple[list[dict[str, Any]], validation.tasks.ValidationLimits | None]:
     """Load task mappings and validation limits from the configured task catalog."""
-    config = experiments.config.load_experiment_config(path)
+    config = config_loader.load_experiment_config(path)
     tasks = config.get("tasks")
     if not isinstance(tasks, list):
         message = "task config must contain a top-level tasks list"
@@ -1451,7 +1454,7 @@ def _base_time_limit_sec(composition: ScenarioComposition) -> float:
 
 def _resolve_model_path(settings: ScenarioRenderSettings) -> Path | None:
     """Resolve the PPO model path from storage/training_runs/<model_run_name>/models."""
-    if settings.controller != experiments.policy_render.PPO_CONTROLLER:
+    if settings.controller != policy_render.PPO_CONTROLLER:
         return None
     if settings.model_run_name is None:
         message = "PPO scenario rendering requires model_run_name"
@@ -1471,10 +1474,10 @@ def _policy_settings(
     model_path: Path | None,
     evaluation_run_name: str,
     effective_max_steps: int,
-) -> experiments.policy_render.PolicyRenderSettings:
+) -> policy_render.PolicyRenderSettings:
     """Build a compatible policy-render settings object for shared rollout helpers."""
-    return experiments.policy_render.PolicyRenderSettings(
-        model_path=model_path or experiments.policy_render.default_model_path(),
+    return policy_render.PolicyRenderSettings(
+        model_path=model_path or policy_render.default_model_path(),
         config_path=active_settings.task_config_path,
         model_run_name=active_settings.model_run_name,
         controller=active_settings.controller,
@@ -1512,12 +1515,12 @@ def _evaluation_run_name(settings: ScenarioRenderSettings) -> str:
     if settings.run_name is not None:
         return settings.run_name
     scenario_slug = _scenario_slug(settings)
-    if settings.controller == experiments.policy_render.PPO_CONTROLLER:
+    if settings.controller == policy_render.PPO_CONTROLLER:
         if settings.model_run_name is None:
             message = "PPO scenario rendering requires model_run_name"
             raise ValueError(message)
         return f"eval_{settings.model_run_name}_on_{scenario_slug}"
-    if settings.controller == experiments.policy_render.SCRIPTED_REFERENCE_CONTROLLER:
+    if settings.controller == policy_render.SCRIPTED_REFERENCE_CONTROLLER:
         return f"eval_scripted_reference_on_{scenario_slug}"
     message = f"unsupported controller: {settings.controller}"
     raise ValueError(message)
@@ -1527,9 +1530,9 @@ def _scenario_slug(settings: ScenarioRenderSettings) -> str:
     """Return a scenario slug without duplicated controller prefixes."""
     slug = _scenario_name(settings)
     prefixes = []
-    if settings.controller == experiments.policy_render.SCRIPTED_REFERENCE_CONTROLLER:
+    if settings.controller == policy_render.SCRIPTED_REFERENCE_CONTROLLER:
         prefixes.append(SCRIPTED_REFERENCE_SCENARIO_PREFIX)
-    if settings.controller == experiments.policy_render.PPO_CONTROLLER:
+    if settings.controller == policy_render.PPO_CONTROLLER:
         prefixes.extend((PPO_SCENARIO_PREFIX, SCRIPTED_REFERENCE_SCENARIO_PREFIX))
         if settings.model_run_name is not None:
             prefixes.append(f"{settings.model_run_name}_")
@@ -1655,13 +1658,13 @@ def _build_scenario_manifest(
     info = {} if final_info is None else final_info
     positions = actual_positions or ([np.asarray(info.get("current_position", []), dtype=float)] if info.get("current_position") is not None else [])
     reference_positions = [np.asarray(row, dtype=float) for row in composition.reference.positions]
-    position_bounds = experiments.policy_render._position_bounds(positions)  # noqa: SLF001
-    reference_position_bounds = experiments.policy_render._position_bounds(reference_positions)  # noqa: SLF001
-    rollout_reference_position_bounds = experiments.policy_render._position_bounds(rollout_reference_positions or [])  # noqa: SLF001
+    position_bounds = policy_render._position_bounds(positions)  # noqa: SLF001
+    reference_position_bounds = policy_render._position_bounds(reference_positions)  # noqa: SLF001
+    rollout_reference_position_bounds = policy_render._position_bounds(rollout_reference_positions or [])  # noqa: SLF001
     return {
         "run_type": "evaluation",
         "evaluation_type": SCENARIO_EVALUATION_TYPE,
-        "mode": experiments.policy_render._mode_for_controller(settings.controller),  # noqa: SLF001
+        "mode": policy_render._mode_for_controller(settings.controller),  # noqa: SLF001
         "evaluation_run_name": evaluation_run_name,
         "scenario_name": scenario_name,
         "render_mode": "simulator_external_camera_gif",
@@ -1728,10 +1731,10 @@ def _build_scenario_manifest(
         "position_bounds": position_bounds,
         "reference_position_bounds": reference_position_bounds,
         "rollout_reference_position_bounds": rollout_reference_position_bounds,
-        "final_position": experiments.policy_render._array_to_jsonable(info.get("current_position", [])),  # noqa: SLF001
-        "final_reference_position": experiments.policy_render._array_to_jsonable(info.get("reference_position", [])),  # noqa: SLF001
+        "final_position": policy_render._array_to_jsonable(info.get("current_position", [])),  # noqa: SLF001
+        "final_reference_position": policy_render._array_to_jsonable(info.get("reference_position", [])),  # noqa: SLF001
         "final_position_error_m": float(info.get("position_error_m", 0.0)),
-        "final_action": experiments.policy_render._array_to_jsonable(final_action if final_action is not None else []),  # noqa: SLF001
+        "final_action": policy_render._array_to_jsonable(final_action if final_action is not None else []),  # noqa: SLF001
         "gif_path": str(gif_path),
         "trace_path": str(trace_path),
         "plot_paths": dict(plot_paths),
@@ -1740,7 +1743,7 @@ def _build_scenario_manifest(
         "waypoint_markers_enabled": True,
         "active_target_marker_enabled": True,
         "actual_path_trail_enabled": True,
-        "overlay_visual_roles": experiments.policy_render.OVERLAY_VISUAL_ROLES,
+        "overlay_visual_roles": policy_render.OVERLAY_VISUAL_ROLES,
         "overlay_geometry_mode": "pybullet_visual_only_no_collision",
         "metrics": metrics,
         "warnings": list(warnings),
