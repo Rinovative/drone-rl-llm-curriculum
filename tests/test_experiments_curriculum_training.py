@@ -57,6 +57,41 @@ def test_manual_curriculum_stage_run_name_derivation() -> None:
     assert run_name == "curriculum_manual_line_smoke_stage03_start_hold_then_short_line_seed0"
 
 
+def test_manual_curriculum_stage_naming_uses_concrete_task_shape() -> None:
+    """Verify generic configured names give way to concrete task shapes in run names."""
+    settings = curriculum_training.manual_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_manual_shape_unit",
+            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "seed": 0,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "stages": [
+                {
+                    "stage_name": "generic_tracking_stage",
+                    "task_shape": "line",
+                    "total_timesteps": 8,
+                    "eval_steps": 4,
+                    "task": {
+                        "task_type": "trajectory",
+                        "shape": "line",
+                        "duration_sec": 3.0,
+                        "sample_rate_hz": 10.0,
+                        "start": [0.0, 0.0, 1.0],
+                        "end": [0.5, 0.0, 1.0],
+                    },
+                }
+            ],
+        }
+    )
+
+    stage = settings.stages[0]
+    assert stage.stage_name == "line"
+    assert curriculum_training.derive_stage_run_name(settings.curriculum_name, 1, stage.stage_name, settings.seed) == (
+        "curriculum_manual_shape_unit_stage01_line_seed0"
+    )
+
+
 def test_manual_curriculum_invalid_stage_fails_clearly() -> None:
     """Verify invalid configured tasks fail before training."""
     settings = curriculum_training.manual_curriculum_settings_from_mapping(

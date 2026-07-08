@@ -134,6 +134,11 @@ class PolicyEvaluationSpec:
     task_index: int = 0
     total_timesteps: int = 0
     normalize_actions: bool = True
+    action_interface: str = "pid_position"
+    rpm_delta_scale: float = 0.05
+    include_dynamics_observation: bool = False
+    include_previous_action: bool = False
+    source_manifest_path: Path | None = None
     evaluation_name: str | None = None
     evaluation_suite_name: str | None = None
     suite_task_name: str | None = None
@@ -310,6 +315,12 @@ def run_policy_evaluation(
         "model_path": str(spec.model_path),
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
+        "source_manifest_path": None if spec.source_manifest_path is None else str(spec.source_manifest_path),
+        "action_interface": spec.action_interface,
+        "rpm_delta_scale": spec.rpm_delta_scale if spec.action_interface == "direct_rpm" else None,
+        "normalize_actions": spec.normalize_actions,
+        "include_dynamics_observation": spec.include_dynamics_observation,
+        "include_previous_action": spec.include_previous_action,
         "evaluation_dir": str(spec.output_dir),
         "diagnostics_dir": str(diagnostics_dir),
         "traces_dir": str(traces_dir),
@@ -422,6 +433,7 @@ def run_direct_policy_own_task_evaluation(
             seed=seed,
             total_timesteps=total_timesteps,
             normalize_actions=normalize_actions,
+            **_evaluation_env_kwargs_from_manifest(run_manifest, manifest_path),
             evaluation_name=OWN_TASK_EVALUATION_NAME,
             evaluation_suite_name=None,
             suite_task_name=OWN_TASK_EVALUATION_NAME,
@@ -570,6 +582,7 @@ def run_direct_policy_suite_evaluation(
                 seed=suite.seed,
                 total_timesteps=total_timesteps,
                 normalize_actions=normalize_actions,
+                **_evaluation_env_kwargs_from_manifest(run_manifest, manifest_path),
                 evaluation_name=suite.evaluation_name,
                 evaluation_suite_name=suite.evaluation_name,
                 suite_task_name=suite_task.task_name,
@@ -741,6 +754,12 @@ def _evaluated_model_entry(result: PolicyEvaluationResult, run_root: Path, suite
         "source_curriculum_kind": metrics.get("source_curriculum_kind"),
         "source_stage": metrics.get("source_stage"),
         "model_scope": metrics.get("model_scope"),
+        "source_manifest_path": metrics.get("source_manifest_path"),
+        "action_interface": metrics.get("action_interface"),
+        "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+        "normalize_actions": metrics.get("normalize_actions"),
+        "include_dynamics_observation": metrics.get("include_dynamics_observation"),
+        "include_previous_action": metrics.get("include_previous_action"),
     }
 
 
@@ -894,6 +913,78 @@ def _required_text(value: Any, field_name: str) -> str:
     return str(value)
 
 
+def _evaluation_env_kwargs_from_manifest(run_manifest: Mapping[str, Any], manifest_path: Path) -> dict[str, Any]:
+    """Return environment identity flags recorded in a training manifest."""
+    raw_config_payload = run_manifest.get("config")
+    config_payload = raw_config_payload if isinstance(raw_config_payload, Mapping) else {}
+    return {
+        "action_interface": str(run_manifest.get("action_interface") or config_payload.get("action_interface") or "pid_position"),
+        "rpm_delta_scale": float(run_manifest.get("rpm_delta_scale") or config_payload.get("rpm_delta_scale") or 0.05),
+        "include_dynamics_observation": bool(
+            run_manifest.get("include_dynamics_observation", config_payload.get("include_dynamics_observation", False))
+        ),
+        "include_previous_action": bool(run_manifest.get("include_previous_action", config_payload.get("include_previous_action", False))),
+        "source_manifest_path": manifest_path,
+    }
+
+
+def _evaluation_env_kwargs_from_stage(stage: Mapping[str, Any]) -> dict[str, Any]:
+    """Return environment identity flags recorded for a curriculum stage."""
+    return {
+        "action_interface": str(stage.get("action_interface") or "pid_position"),
+        "rpm_delta_scale": float(stage.get("rpm_delta_scale") or 0.05),
+        "include_dynamics_observation": bool(stage.get("include_dynamics_observation", False)),
+        "include_previous_action": bool(stage.get("include_previous_action", False)),
+        "source_manifest_path": Path(str(stage["manifest_path"])) if stage.get("manifest_path") else None,
+    }
+
+
+def _make_policy_evaluation_env(spec: PolicyEvaluationSpec, task: Mapping[str, Any], record: bool, max_steps: int | None) -> Any:
+    """Build the PPO-facing evaluation environment from training manifest flags."""
+    real_env = envs.tracking_env.make_trajectory_tracking_env(
+        task,
+        gui=False,
+        record=record,
+        max_steps=max_steps,
+        action_interface=spec.action_interface,
+        rpm_delta_scale=spec.rpm_delta_scale,
+        include_dynamics_observation=spec.include_dynamics_observation,
+        include_previous_action=spec.include_previous_action,
+    )
+    if spec.normalize_actions or envs.actions.parse_action_interface(spec.action_interface) == envs.actions.ActionInterface.DIRECT_RPM:
+        return envs.tracking_env.make_normalized_action_env(real_env)
+    return real_env
+
+
+def _load_ppo_with_evaluation_env(ppo_class: Any, *, spec: PolicyEvaluationSpec, tracking_env: Any) -> Any:
+    """Load a PPO model and re-raise observation mismatches with manifest context."""
+    try:
+        return ppo_class.load(str(spec.model_path), env=tracking_env, device="cpu")
+    except ValueError as exc:
+        if "Observation spaces do not match" not in str(exc):
+            raise
+        model_observation_space = _model_observation_space_for_error(ppo_class, spec.model_path)
+        message = (
+            "evaluation environment observation space does not match the saved PPO model: "
+            f"model_observation_space={model_observation_space}; "
+            f"env_observation_space={getattr(tracking_env, 'observation_space', None)}; "
+            f"manifest_path={spec.source_manifest_path}; model_path={spec.model_path}; "
+            f"action_interface={spec.action_interface}; "
+            f"include_dynamics_observation={spec.include_dynamics_observation}; "
+            f"include_previous_action={spec.include_previous_action}"
+        )
+        raise ValueError(message) from exc
+
+
+def _model_observation_space_for_error(ppo_class: Any, model_path: Path) -> Any:
+    """Best-effort saved model observation-space lookup for error messages."""
+    try:
+        model = ppo_class.load(str(model_path), device="cpu")
+    except Exception:  # noqa: BLE001 - best-effort diagnostic context.
+        return "unavailable"
+    return getattr(model, "observation_space", "unavailable")
+
+
 def _collect_diagnostics(
     spec: PolicyEvaluationSpec,
     task: dict[str, Any],
@@ -902,10 +993,9 @@ def _collect_diagnostics(
     """Run deterministic diagnostics and write diagnostics artifacts."""
     from stable_baselines3 import PPO  # noqa: PLC0415
 
-    real_env = envs.tracking_env.make_trajectory_tracking_env(task, gui=False, record=False)
-    tracking_env = envs.tracking_env.make_normalized_action_env(real_env) if spec.normalize_actions else real_env
+    tracking_env = _make_policy_evaluation_env(spec=spec, task=task, record=False, max_steps=None)
     try:
-        model = PPO.load(str(spec.model_path), env=tracking_env, device="cpu")
+        model = _load_ppo_with_evaluation_env(PPO, spec=spec, tracking_env=tracking_env)
         diagnostics = evaluation.diagnostics.collect_policy_evaluation_diagnostics(
             model=model,
             tracking_env=tracking_env,
@@ -940,15 +1030,9 @@ def _write_render_artifact(
         gif_filename="scenario_rollout.gif",
         frame_interval=_frame_interval_for_fps(render_fps),
     )
-    real_render_env = envs.tracking_env.make_trajectory_tracking_env(
-        task,
-        gui=False,
-        record=False,
-        max_steps=render_steps,
-    )
-    render_env = envs.tracking_env.make_normalized_action_env(real_render_env) if spec.normalize_actions else real_render_env
+    render_env = _make_policy_evaluation_env(spec=spec, task=task, record=False, max_steps=render_steps)
     try:
-        model = PPO.load(str(spec.model_path), env=render_env, device="cpu")
+        model = _load_ppo_with_evaluation_env(PPO, spec=spec, tracking_env=render_env)
         rollout_payload = policy_render._run_policy_rollout(  # noqa: SLF001
             model=model,
             tracking_env=render_env,
@@ -1025,6 +1109,12 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "model_path",
         "task_config_path_used_for_evaluation",
         "task_shape_used_for_evaluation",
+        "source_manifest_path",
+        "action_interface",
+        "rpm_delta_scale",
+        "normalize_actions",
+        "include_dynamics_observation",
+        "include_previous_action",
         "evaluation_dir",
         "diagnostics_dir",
         "traces_dir",

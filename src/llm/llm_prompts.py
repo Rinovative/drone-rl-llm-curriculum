@@ -90,7 +90,10 @@ def build_task_proposal_messages(
     user_prompt = (
         f"{JSON_ONLY_INSTRUCTION}\n"
         "Propose the next training task using this bounded context. Prefer a small, feasible progression from the latest accepted task. "
-        "If adaptive budget profiles are enabled, choose only stage_budget_profile=short, normal, recovery, or extend; never request raw timesteps.\n"
+        "If adaptive budget profiles are enabled, choose only a stage_budget_profile from llm_stage_budget.allowed_profile_names; "
+        "bootstrap is for stage 1 warmup, short is for easy confirmation, normal is default progression, "
+        "recovery is for unstable but promising behavior, and extend is for appropriate but undertrained stages. "
+        "Never request raw timesteps.\n"
         f"Context JSON:\n{_compact_json(context)}"
     )
     return [
@@ -160,8 +163,10 @@ def build_task_repair_messages(
         "Repair the previous invalid proposal. Address every error. "
         "Return either a concrete task with task_type and shape, or a valid task-distribution reference from the supported list "
         "using task_distribution_id or task_distribution_config_path. "
-        "Use supported shapes, supported task-distribution families, safe numeric ranges, and one allowed budget profile. "
-        "If stage_budget_profile is invalid, repair it to short, normal, recovery, or extend. "
+        "Use supported shapes, supported task-distribution families, safe numeric ranges, "
+        "and one budget profile from llm_stage_budget.allowed_profile_names. "
+        "If stage_budget_profile is invalid, repair it to an allowed profile; "
+        "bootstrap is for stage 1 only and arbitrary timestep values are forbidden. "
         "Return a replacement JSON object only.\n"
         f"Repair JSON:\n{_compact_json(repair_payload)}"
     )

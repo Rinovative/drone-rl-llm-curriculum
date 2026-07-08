@@ -164,6 +164,12 @@ class ManualCurriculumSettings:
     wandb_mode: str
     normalize_actions: bool
     stages: tuple[ManualCurriculumStage, ...]
+    reference_medium_config_path: Path | None = None
+    reference_medium_timesteps: int | None = None
+    stage_budget_multiplier: float | None = None
+    stage_total_timesteps: int | None = None
+    manual_total_budget_timesteps: int | None = None
+    manual_stage_count: int | None = None
     config_path: Path | None = None
 
     def __post_init__(self) -> None:
@@ -177,6 +183,13 @@ class ManualCurriculumSettings:
             raise ValueError(message)
         if not self.stages:
             message = "manual curriculum requires at least one stage"
+            raise ValueError(message)
+        _validate_positive_optional_int(self.reference_medium_timesteps, "reference_medium_timesteps")
+        _validate_positive_optional_int(self.stage_total_timesteps, "stage_total_timesteps")
+        _validate_positive_optional_int(self.manual_total_budget_timesteps, "manual_total_budget_timesteps")
+        _validate_positive_optional_int(self.manual_stage_count, "manual_stage_count")
+        if self.stage_budget_multiplier is not None and self.stage_budget_multiplier <= 0.0:
+            message = "stage_budget_multiplier must be positive when provided"
             raise ValueError(message)
 
 
@@ -258,8 +271,51 @@ def manual_curriculum_settings_from_mapping(
         wandb_mode=str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_AUTO),
         normalize_actions=bool(config.get("normalize_actions", ppo_tracking.DEFAULT_NORMALIZE_ACTIONS)),
         stages=stages,
+        reference_medium_config_path=_optional_path(config.get("reference_medium_config_path")),
+        reference_medium_timesteps=_optional_int(config.get("reference_medium_timesteps")),
+        stage_budget_multiplier=_optional_float(config.get("stage_budget_multiplier")),
+        stage_total_timesteps=_optional_int(config.get("stage_total_timesteps")),
+        manual_total_budget_timesteps=_optional_int(config.get("manual_total_budget_timesteps")),
+        manual_stage_count=_optional_int(config.get("manual_stage_count")),
         config_path=config_path,
     )
+
+
+def _validate_positive_optional_int(value: int | None, field_name: str) -> None:
+    """Validate optional positive integer curriculum metadata."""
+    if value is not None and value <= 0:
+        message = f"{field_name} must be positive when provided"
+        raise ValueError(message)
+
+
+def _optional_int(value: Any) -> int | None:
+    """Return an optional integer metadata value from config."""
+    return None if value is None else int(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    """Return an optional float metadata value from config."""
+    return None if value is None else float(value)
+
+
+def _optional_path(value: Any) -> Path | None:
+    """Return an optional path metadata value from config."""
+    return None if value is None else Path(str(value))
+
+
+def _manual_budget_metadata(settings: ManualCurriculumSettings) -> dict[str, Any]:
+    """Return explicit or derived manual budget metadata for summaries."""
+    total_budget = sum(stage.total_timesteps for stage in settings.stages)
+    stage_count = len(settings.stages)
+    return {
+        "reference_medium_config_path": None if settings.reference_medium_config_path is None else str(settings.reference_medium_config_path),
+        "reference_medium_timesteps": settings.reference_medium_timesteps,
+        "stage_budget_multiplier": settings.stage_budget_multiplier,
+        "stage_total_timesteps": settings.stage_total_timesteps,
+        "manual_total_budget_timesteps": settings.manual_total_budget_timesteps or total_budget,
+        "manual_stage_count": settings.manual_stage_count or stage_count,
+        "manual_average_stage_budget_timesteps": total_budget / stage_count,
+    }
 
 
 def validate_manual_curriculum(settings: ManualCurriculumSettings) -> None:
@@ -415,6 +471,12 @@ def run_manual_curriculum_training_from_config(
         wandb_mode=settings.wandb_mode if wandb_mode is None else wandb_mode,
         normalize_actions=settings.normalize_actions,
         stages=settings.stages,
+        reference_medium_config_path=settings.reference_medium_config_path,
+        reference_medium_timesteps=settings.reference_medium_timesteps,
+        stage_budget_multiplier=settings.stage_budget_multiplier,
+        stage_total_timesteps=settings.stage_total_timesteps,
+        manual_total_budget_timesteps=settings.manual_total_budget_timesteps,
+        manual_stage_count=settings.manual_stage_count,
         config_path=settings.config_path,
     )
     return run_manual_curriculum_training(overridden)
@@ -429,14 +491,33 @@ def _stage_from_mapping(index: int, raw_stage: Any) -> ManualCurriculumStage:
     if not isinstance(task, Mapping):
         message = f"stage {index} must contain an explicit task mapping"
         raise TypeError(message)
+    task_payload = dict(task)
+    task_shape = str(raw_stage.get("task_shape") or task_payload.get(validation.contracts.FIELD_SHAPE) or "")
     return ManualCurriculumStage(
-        stage_name=str(raw_stage.get("stage_name") or ""),
-        task_shape=str(raw_stage.get("task_shape") or ""),
-        task=dict(task),
+        stage_name=_stage_display_name(task=task_payload, fallback=str(raw_stage.get("stage_name") or task_shape)),
+        task_shape=task_shape,
+        task=task_payload,
         total_timesteps=int(raw_stage.get("total_timesteps", 0)),
         eval_steps=int(raw_stage.get("eval_steps", 0)),
         notes=str(raw_stage["notes"]) if raw_stage.get("notes") is not None else None,
     )
+
+
+def _stage_display_name(*, task: Mapping[str, Any], fallback: str) -> str:
+    """Return the display name used for manual stage run names and metadata."""
+    fallback_text = str(fallback).strip()
+    if fallback_text and not _is_generic_stage_name(fallback_text):
+        return fallback_text
+    shape = task.get(validation.contracts.FIELD_SHAPE)
+    if isinstance(shape, str) and shape.strip():
+        return shape.strip()
+    return fallback_text or "stage"
+
+
+def _is_generic_stage_name(stage_name: str) -> bool:
+    """Return whether a configured manual name should defer to task shape."""
+    normalized = stage_name.strip().lower()
+    return normalized in {"tracking_medium", "medium_tracking_distribution"} or "generic" in normalized or normalized.endswith("_distribution")
 
 
 def _write_stage_task_config(
@@ -529,6 +610,7 @@ def _build_curriculum_summary(
         "seed": settings.seed,
         "stage_count": len(stage_entries),
         "stage_run_names": [str(stage["run_name"]) for stage in stage_entries],
+        **_manual_budget_metadata(settings),
         "total_configured_timesteps": sum(int(stage.get("total_timesteps", 0)) for stage in stage_entries),
         "total_actual_timesteps": sum(int(stage.get("total_timesteps", 0)) for stage in stage_entries),
         "model_transfer_enabled": model_transfer_enabled,
@@ -608,6 +690,7 @@ def _write_curriculum_config_snapshot(settings: ManualCurriculumSettings) -> Pat
         "seed": settings.seed,
         "wandb_mode": settings.wandb_mode,
         "normalize_actions": settings.normalize_actions,
+        **_manual_budget_metadata(settings),
         "stages": [
             {
                 "stage_name": stage.stage_name,

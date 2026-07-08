@@ -57,6 +57,36 @@ def test_valid_mock_proposal_is_accepted_and_logged(tmp_path: Path) -> None:
     assert events[0]["validation_status"] == "valid"
 
 
+def test_nested_concrete_task_proposal_is_accepted_and_logged(tmp_path: Path) -> None:
+    """Verify nested task wrappers are accepted without top-level task_type or shape."""
+    logger = _logger(tmp_path)
+    response = (
+        '{"proposal_kind":"task","task":{"task_type":"trajectory","shape":"hover_stabilization",'
+        '"duration_sec":2.0,"sample_rate_hz":10.0,"position":[0.0,0.0,1.0]},'
+        '"stage_budget_profile":"normal","budget_rationale":"Normal verification budget."}'
+    )
+
+    result = llm.curriculum.propose_next_task(
+        client=llm.client.MockLLMClient([response]),
+        context=_context(),
+        settings=llm.curriculum.ProposalSettings(max_repair_attempts=0),
+        logger=logger,
+    )
+    events = llm.logging.read_jsonl(logger.log_path)
+
+    assert result.task is not None
+    assert result.proposal_type == "task"
+    assert result.original_proposal is not None
+    assert "task" in result.original_proposal
+    assert result.normalized_proposal is not None
+    assert "task" not in result.normalized_proposal
+    assert result.task["shape"] == "hover_stabilization"
+    assert result.stage_budget_profile == "normal"
+    assert events[0]["original_proposal"]["task"]["shape"] == "hover_stabilization"
+    assert events[0]["accepted_task"]["shape"] == "hover_stabilization"
+    assert events[0]["resolved_task_shape"] == "hover_stabilization"
+
+
 def test_invalid_proposal_is_repaired_once_and_accepted(tmp_path: Path) -> None:
     """Verify parse failures trigger one bounded repair prompt and success accounting."""
     logger = _logger(tmp_path)

@@ -271,6 +271,28 @@ def test_budget_profile_metadata_is_preserved_but_not_passed_to_validation() -> 
     assert result.is_valid
 
 
+def test_nested_concrete_task_proposal_is_extracted_and_validated() -> None:
+    """Verify wrapper metadata is preserved while the nested concrete task is validated."""
+    raw_task = _valid_tasks_by_shape()[0]
+    proposal = {
+        "proposal_kind": "task",
+        "task": raw_task,
+        "stage_budget_profile": "recovery",
+        "budget_rationale": "Previous stage was unstable but promising.",
+    }
+
+    normalized = llm.task_schema.normalize_proposed_task(proposal)
+    validation_task = llm.task_schema.task_without_metadata(normalized)
+    result = llm.task_schema.validate_proposed_task(proposal)
+
+    assert "task" not in normalized
+    assert normalized["task_type"] == raw_task["task_type"]
+    assert normalized["shape"] == raw_task["shape"]
+    assert normalized[llm.task_schema.STAGE_BUDGET_PROFILE_FIELD] == "recovery"
+    assert validation_task == raw_task
+    assert result.is_valid
+
+
 def test_unknown_budget_profile_is_rejected() -> None:
     """Verify arbitrary LLM budget profiles are rejected before validation."""
     raw_task = _valid_tasks_by_shape()[0]
@@ -352,6 +374,7 @@ def test_prompt_contract_mentions_task_distributions_and_supported_families() ->
     assert "tracking_medium" in prompt_contract
     assert "PID" in prompt_contract
     assert "stage_budget_profile" in prompt_contract
+    assert "bootstrap" in prompt_contract
     assert "short" in prompt_contract
     assert "extend" in prompt_contract
     for family in ("hover_stabilization", "line", "circle"):

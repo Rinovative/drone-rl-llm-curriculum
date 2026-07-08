@@ -1,9 +1,9 @@
 task_config_path: configs/training/ppo_tracking_tasks.yaml
 task_index: 0
 task_distribution_config_path: configs/tasks/task_distribution_tracking_medium.yaml
-run_name: direct_ppo_directrpm_dynprev_taskdist_medium_low_lr_medium_seed0
+run_name: direct_ppo_directrpm_dynprev_net128_m-taskdist_medium_seed0
 num_envs: 4
-total_timesteps: 250000
+total_timesteps: 500000
 eval_steps: 240
 seed: 0
 check_env: true
@@ -14,7 +14,7 @@ include_previous_action: true
 ppo:
   policy: MlpPolicy
   device: cpu
-  learning_rate: 0.0001
+  learning_rate: 0.0003
   gamma: 0.99
   gae_lambda: 0.95
   n_steps: 512
@@ -25,11 +25,19 @@ ppo:
   vf_coef: 0.5
   max_grad_norm: 0.5
   target_kl: 0.03
+  policy_kwargs:
+    net_arch:
+      pi:
+      - 128
+      - 128
+      vf:
+      - 128
+      - 128
 wandb_mode: auto
 wandb_project: drone-rl-llm-curriculum
 wandb_entity: null
-wandb_group: direct_ppo/directrpm_dynprev_taskdist_medium_low_lr_medium
-wandb_name: direct_ppo_directrpm_dynprev_taskdist_medium_low_lr_medium_seed0
+wandb_group: direct_ppo/directrpm_dynprev_net128_m-taskdist_medium
+wandb_name: direct_ppo_directrpm_dynprev_net128_m-taskdist_medium_seed0
 wandb_tags:
 - medium
 - experimental
@@ -39,5 +47,5 @@ wandb_tags:
 - direct_rpm
 - dynamics_observation
 - previous_action
-- low_lr
+- net128
 rpm_delta_scale: 0.05

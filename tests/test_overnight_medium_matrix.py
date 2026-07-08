@@ -20,25 +20,34 @@ from src.experiments.training import experiments_training_ppo_tracking as ppo_tr
 LANE_ASSIGNMENT = Path("docs/experiments/overnight_lane_assignment.tsv")
 MANUAL_CURRICULUM_UNIT_COUNT = 5
 LLM_CURRICULUM_UNIT_COUNT = 10
+REFERENCE_MEDIUM_TIMESTEPS = 500000
+MANUAL_TOTAL_BUDGET_TIMESTEPS = MANUAL_CURRICULUM_UNIT_COUNT * REFERENCE_MEDIUM_TIMESTEPS
+LLM_BUDGET_PROFILE_TIMESTEPS = {
+    "bootstrap": 750000,
+    "short": 375000,
+    "normal": 500000,
+    "recovery": 625000,
+    "extend": 750000,
+}
 EXPECTED_EXPERIMENT_IDS = {
     "direct_ppo_pid_baseline_medium_seed0",
     "direct_ppo_pid_dynprev_medium_seed0",
     "direct_ppo_pid_dynprev_net128_medium_seed0",
     "direct_ppo_directrpm_dynprev_medium_seed0",
-    "direct_ppo_pid_dynprev_taskdist_medium_medium_seed0",
-    "direct_ppo_pid_dynprev_net128_taskdist_medium_medium_seed0",
-    "direct_ppo_directrpm_dynprev_taskdist_medium_medium_seed0",
-    "direct_ppo_directrpm_dynprev_net128_taskdist_medium_medium_seed0",
-    "direct_ppo_pid_dynprev_taskdist_medium_low_lr_medium_seed0",
-    "direct_ppo_pid_dynprev_taskdist_medium_ent005_medium_seed0",
-    "direct_ppo_pid_dynprev_net128_taskdist_medium_low_lr_medium_seed0",
-    "direct_ppo_pid_dynprev_net128_taskdist_medium_ent005_medium_seed0",
-    "direct_ppo_directrpm_dynprev_taskdist_medium_low_lr_medium_seed0",
-    "direct_ppo_directrpm_dynprev_taskdist_medium_ent005_medium_seed0",
-    "curriculum_manual_pid_dynprev_taskdist_medium_medium_seed0",
-    "curriculum_manual_directrpm_dynprev_taskdist_medium_medium_seed0",
-    "curriculum_llm_local_pid_dynprev_taskdist_medium_medium_seed0",
-    "curriculum_llm_local_directrpm_dynprev_taskdist_medium_medium_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_seed0",
+    "direct_ppo_pid_dynprev_net128_m-taskdist_medium_seed0",
+    "direct_ppo_directrpm_dynprev_m-taskdist_medium_seed0",
+    "direct_ppo_directrpm_dynprev_net128_m-taskdist_medium_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0",
+    "direct_ppo_pid_dynprev_net128_m-taskdist_medium_low_lr_seed0",
+    "direct_ppo_pid_dynprev_net128_m-taskdist_medium_ent005_seed0",
+    "direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0",
+    "direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0",
+    "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0",
+    "curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0",
+    "curriculum_llm_pid_dynprev_m-taskdist_medium_seed0",
+    "curriculum_llm_directrpm_dynprev_m-taskdist_medium_seed0",
 }
 
 
@@ -75,21 +84,56 @@ def test_all_listed_configs_exist_and_match_run_names() -> None:
         if row["kind"] == "direct_ppo":
             settings = ppo_tracking.load_ppo_tracking_settings(config_path)
             assert settings.run_name == row["expected_run_name"]
+            assert settings.total_timesteps == REFERENCE_MEDIUM_TIMESTEPS
         elif row["kind"] == "manual_curriculum":
             settings = manual_training.load_manual_curriculum_settings(config_path)
             manual_training.validate_manual_curriculum(settings)
+            reference_settings = ppo_tracking.load_ppo_tracking_settings(settings.reference_medium_config_path)
             assert len(settings.stages) == MANUAL_CURRICULUM_UNIT_COUNT
             assert int(row["unit_count"]) == MANUAL_CURRICULUM_UNIT_COUNT
+            assert settings.reference_medium_timesteps == REFERENCE_MEDIUM_TIMESTEPS
+            assert reference_settings.total_timesteps == settings.reference_medium_timesteps
+            assert settings.stage_budget_multiplier == 1.0
+            assert settings.stage_total_timesteps == REFERENCE_MEDIUM_TIMESTEPS
+            assert settings.manual_stage_count == MANUAL_CURRICULUM_UNIT_COUNT
+            assert settings.manual_total_budget_timesteps == MANUAL_TOTAL_BUDGET_TIMESTEPS
+            assert [stage.total_timesteps for stage in settings.stages] == [REFERENCE_MEDIUM_TIMESTEPS] * MANUAL_CURRICULUM_UNIT_COUNT
             assert row["expected_run_name"] == f"curriculum_manual_{settings.curriculum_name.removeprefix('curriculum_manual_')}_seed{settings.seed}"
         elif row["kind"] == "llm_curriculum":
             settings = llm_training.load_llm_curriculum_settings(config_path)
             llm_training.validate_llm_curriculum(settings)
+            reference_settings = ppo_tracking.load_ppo_tracking_settings(settings.reference_medium_config_path)
             assert settings.max_stages == LLM_CURRICULUM_UNIT_COUNT
             assert int(row["unit_count"]) == LLM_CURRICULUM_UNIT_COUNT
+            assert settings.reference_medium_timesteps == REFERENCE_MEDIUM_TIMESTEPS
+            assert reference_settings.total_timesteps == settings.reference_medium_timesteps
             assert settings.llm_stage_budget.enabled is True
+            assert settings.llm_stage_budget.profiles == LLM_BUDGET_PROFILE_TIMESTEPS
+            assert settings.llm_stage_budget.total_budget_cap_timesteps is not None
+            assert settings.llm_stage_budget.total_budget_cap_timesteps >= 10 * REFERENCE_MEDIUM_TIMESTEPS
+            assert settings.llm_stage_budget.total_budget_cap_timesteps <= 12 * REFERENCE_MEDIUM_TIMESTEPS
+            assert settings.bootstrap_stage is not None
+            assert settings.bootstrap_stage.requested_stage_budget_profile == "bootstrap"
             assert row["expected_run_name"] == f"curriculum_llm_{settings.curriculum_name.removeprefix('curriculum_llm_')}_seed{settings.seed}"
         else:
             raise AssertionError(row["kind"])
+
+
+def test_medium_matrix_future_names_do_not_contain_duplicate_medium() -> None:
+    """Verify future config-derived names and W&B config tags avoid duplicated medium labels."""
+    rows = _assignment_rows()
+    scheduled_paths = [Path(row["config_path"]) for row in rows]
+
+    assert all("medium_medium" not in row["experiment_id"] for row in rows)
+    assert all("medium_medium" not in row["expected_run_name"] for row in rows)
+    assert all("medium_medium" not in path.as_posix() for path in scheduled_paths)
+    assert all("medium_medium" not in f"config:{path.stem}" for path in scheduled_paths)
+
+    renamed_config_files = [*Path("configs/training").glob("*m-taskdist_medium*.yaml"), *Path("configs/curricula").glob("*m-taskdist_medium*.yaml")]
+    assert renamed_config_files
+    assert all("medium_medium" not in path.name for path in renamed_config_files)
+    assert "medium_medium" not in Path("scripts/experiment_matrix.sh").read_text(encoding="utf-8")
+    assert "medium_medium" not in LANE_ASSIGNMENT.read_text(encoding="utf-8")
 
 
 def test_task_distribution_training_configs_use_medium_distribution_only() -> None:

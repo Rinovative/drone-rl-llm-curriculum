@@ -10,12 +10,13 @@ LLM curriculum runs use ten adaptive budget stages. The LLM may choose only thes
 
 | profile | stage timesteps | intended use |
 | --- | ---: | --- |
-| short | 20000 | Easy confirmation stages |
-| normal | 30000 | Ordinary progression |
-| recovery | 40000 | Previous stage unstable but promising |
-| extend | 50000 | Use sparingly when appropriate but undertrained |
+| bootstrap | 750000 | Stage 1 policy warmup, 1.5x reference medium |
+| short | 375000 | Easy confirmation stages, 0.75x reference medium |
+| normal | 500000 | Ordinary progression, 1.0x reference medium |
+| recovery | 625000 | Previous stage unstable but promising, 1.25x reference medium |
+| extend | 750000 | Use sparingly when appropriate but undertrained, 1.5x reference medium |
 
-The LLM total stage-budget cap is 350000 timesteps. The resolver reserves enough short-stage budget for all remaining stage slots, falls back to `short` when a requested profile would exceed the cap, and logs every clipping or fallback decision in proposal logs and stage/run summaries.
+The LLM total stage-budget cap is 5500000 timesteps, which is 11x the 500000-step reference medium config. Stage 1 defaults to `bootstrap`; later stages may use `short`, `normal`, `recovery`, or `extend`. The resolver reserves enough short-stage budget for all remaining stage slots, falls back to the largest safe profile that still fits when a requested profile would exceed the cap, and logs every clipping or fallback decision in proposal logs and stage/run summaries.
 
 Start all four lanes from `/workspace/repo` in four terminals:
 

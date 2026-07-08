@@ -372,7 +372,7 @@ def test_ppo_tracking_auto_run_name_uses_resolved_task_shape() -> None:
 
 def test_direct_ppo_wandb_naming_uses_run_name_group_and_identity_tags() -> None:
     """Verify direct PPO W&B identity is derived from resolved run settings."""
-    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml")
+    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml")
     assert settings.task_distribution_settings is not None
 
     wandb_settings = ppo_tracking._wandb_settings(  # noqa: SLF001
@@ -381,8 +381,8 @@ def test_direct_ppo_wandb_naming_uses_run_name_group_and_identity_tags() -> None
         settings.task_distribution_settings.to_metadata(),
     )
 
-    assert wandb_settings.name == "direct_ppo_pid_dynprev_taskdist_medium_medium_seed0"
-    assert wandb_settings.group == "direct_ppo/pid_position/tracking_medium/pid_dynprev_taskdist_medium_medium/seed0"
+    assert wandb_settings.name == "direct_ppo_pid_dynprev_m-taskdist_medium_seed0"
+    assert wandb_settings.group == "direct_ppo/pid_position/tracking_medium/pid_dynprev_m-taskdist_medium/seed0"
     assert "direct_ppo" in wandb_settings.tags
     assert "training" in wandb_settings.tags
     assert "curriculum" not in wandb_settings.tags
@@ -406,14 +406,14 @@ def test_run_name_override_becomes_default_wandb_name(monkeypatch: pytest.Monkey
     monkeypatch.setattr(ppo_tracking, "run_ppo_tracking_smoke", fake_run)
 
     ppo_tracking.run_ppo_tracking_smoke_from_config(
-        config_path="configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml",
-        run_name="curriculum_llm_local_pid_dynprev_taskdist_medium_medium_stage01_line_seed0",
+        config_path="configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
+        run_name="curriculum_llm_pid_dynprev_m-taskdist_medium_stage01_line_seed0",
     )
 
     settings = captured["settings"]
     assert isinstance(settings, ppo_tracking.PPOTrackingSmokeSettings)
-    assert settings.run_name == "curriculum_llm_local_pid_dynprev_taskdist_medium_medium_stage01_line_seed0"
-    assert settings.wandb_name == "curriculum_llm_local_pid_dynprev_taskdist_medium_medium_stage01_line_seed0"
+    assert settings.run_name == "curriculum_llm_pid_dynprev_m-taskdist_medium_stage01_line_seed0"
+    assert settings.wandb_name == "curriculum_llm_pid_dynprev_m-taskdist_medium_stage01_line_seed0"
 
 
 def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -230,7 +230,7 @@ def propose_next_task(
         )
         response_text = client.complete(messages)
         stats["total_proposals"] += 1
-        outcome = _evaluate_response(response_text)
+        outcome = _evaluate_response(response_text, context=context)
         event = _proposal_event(
             context=context,
             attempt_index=attempt_index,
@@ -369,7 +369,7 @@ def _messages_for_attempt(
     )
 
 
-def _evaluate_response(response_text: str) -> _AttemptOutcome:
+def _evaluate_response(response_text: str, *, context: ProposalContext) -> _AttemptOutcome:
     """Parse, normalize, and validate one raw LLM response."""
     try:
         parsed_task = json_parser.parse_json_object(response_text)
@@ -392,6 +392,16 @@ def _evaluate_response(response_text: str) -> _AttemptOutcome:
         return _rejected_outcome(
             error_type="schema",
             reasons=("reason metadata must be a string",),
+            validation_status="not_run",
+            parsed_task=parsed_task,
+            normalized_task=normalized_task,
+        )
+
+    profile_error = _validate_context_stage_budget_profile(normalized_task, context.budget_context)
+    if profile_error is not None:
+        return _rejected_outcome(
+            error_type="schema",
+            reasons=(profile_error,),
             validation_status="not_run",
             parsed_task=parsed_task,
             normalized_task=normalized_task,
@@ -456,6 +466,45 @@ def _proposal_type(task: Mapping[str, Any] | None) -> str | None:
     return str(task.get(task_schema.PROPOSAL_KIND_FIELD, task_schema.PROPOSAL_KIND_TASK))
 
 
+def _validate_context_stage_budget_profile(task: Mapping[str, Any], budget_context: Mapping[str, Any] | None) -> str | None:
+    """Return a profile validation error for this prompt context, if any."""
+    profile = task.get(task_schema.STAGE_BUDGET_PROFILE_FIELD)
+    if profile is None or not budget_context:
+        return None
+    allowed_profiles = _context_allowed_budget_profiles(budget_context)
+    profile_name = str(profile)
+    if allowed_profiles and profile_name not in allowed_profiles:
+        available = ", ".join(allowed_profiles)
+        return f"stage_budget_profile must be one of: {available}"
+    return None
+
+
+def _context_allowed_budget_profiles(budget_context: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return stage-specific allowed budget profile names from prompt context."""
+    raw_names = budget_context.get("allowed_profile_names")
+    if isinstance(raw_names, (list, tuple)):
+        return tuple(str(name) for name in raw_names)
+    raw_profiles = budget_context.get("allowed_profiles")
+    if isinstance(raw_profiles, dict):
+        return tuple(str(name) for name in raw_profiles)
+    return ()
+
+
+def _resolved_concrete_task(task: Mapping[str, Any] | None, proposal_type: str | None) -> dict[str, Any] | None:
+    """Return the already-resolved concrete task for direct task proposals."""
+    if task is None or proposal_type != task_schema.PROPOSAL_KIND_TASK:
+        return None
+    return dict(task)
+
+
+def _resolved_concrete_task_shape(task: Mapping[str, Any] | None) -> str | None:
+    """Return the compact shape from a concrete task mapping."""
+    if task is None:
+        return None
+    value = task.get("shape")
+    return str(value) if value is not None else None
+
+
 def _task_distribution_reference(task: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """Return the constrained distribution reference from a task-like mapping."""
     if _proposal_type(task) != task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION or task is None:
@@ -475,6 +524,8 @@ def _proposal_event(
     outcome: _AttemptOutcome,
 ) -> dict[str, Any]:
     """Return one JSON-ready proposal event."""
+    proposal_type = _proposal_type(outcome.normalized_task)
+    resolved_task = _resolved_concrete_task(outcome.task, proposal_type)
     return {
         "event_type": "llm_proposal_attempt",
         "curriculum_name": context.curriculum_name,
@@ -486,10 +537,14 @@ def _proposal_event(
         "error_type": outcome.error_type,
         "validation_status": outcome.validation_status,
         "rejection_reasons": list(outcome.rejection_reasons),
+        "proposal_failure_reason": "; ".join(outcome.rejection_reasons) if outcome.rejection_reasons else None,
+        "original_proposal": outcome.parsed_task,
         "parsed_task": outcome.parsed_task,
         "normalized_task": outcome.normalized_task,
         "accepted_task": outcome.task,
-        "proposal_type": _proposal_type(outcome.normalized_task),
+        "proposal_type": proposal_type,
+        "resolved_task": resolved_task,
+        "resolved_task_shape": _resolved_concrete_task_shape(resolved_task),
         "task_distribution_reference": _task_distribution_reference(outcome.normalized_task),
         "proposal_fallback_used": False,
         "task_reason": outcome.task_reason,

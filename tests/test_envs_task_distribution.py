@@ -183,9 +183,9 @@ def test_sample_on_reset_false_keeps_stable_task() -> None:
 def test_task_distribution_training_configs_load() -> None:
     """Verify new task-distribution training configs resolve through the PPO loader."""
     for config_path in (
-        "configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml",
-        "configs/training/ppo_tracking_pid_dynprev_net128_taskdist_medium_medium.yaml",
-        "configs/training/ppo_tracking_directrpm_dynprev_taskdist_medium_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_net128_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium.yaml",
     ):
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)
         assert settings.task_distribution_settings is not None

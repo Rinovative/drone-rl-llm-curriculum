@@ -23,11 +23,19 @@ EXPECTED_PID_ACTION_DIM = 3
 EXPECTED_BASE_OBSERVATION_DIM = 10
 EXPECTED_TRAINING_TOTAL_TIMESTEPS = 16
 EXPECTED_LOCAL_LLM_MAX_STAGES = 10
-EXPECTED_LLM_BUDGET_CAP = 350000
-EXPECTED_LLM_BUDGET_PROFILES = {"short": 20000, "normal": 30000, "recovery": 40000, "extend": 50000}
+EXPECTED_REFERENCE_MEDIUM_TIMESTEPS = 500000
+EXPECTED_LLM_BUDGET_CAP = 5500000
+EXPECTED_LLM_BUDGET_PROFILES = {
+    "bootstrap": 750000,
+    "short": 375000,
+    "normal": 500000,
+    "recovery": 625000,
+    "extend": 750000,
+}
+EXPECTED_LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.5, "short": 0.75, "normal": 1.0, "recovery": 1.25, "extend": 1.5}
 BUDGET_TEST_STAGE_COUNT = 4
 BUDGET_TEST_CAP = 110
-BUDGET_TEST_STAGE_BUDGETS = [30, 20, 40, 20]
+BUDGET_TEST_STAGE_BUDGETS = [30, 40, 20, 20]
 TASKDIST_RESOLUTION_EFFECTIVE_SEED = 12
 FALLBACK_FAILED_PROPOSAL_COUNT = 2
 
@@ -252,17 +260,26 @@ def test_llm_curriculum_cli_parser_accepts_expected_options() -> None:
 def test_llm_taskdist_curriculum_configs_load() -> None:
     """Verify local LLM task-distribution curriculum configs resolve with taskdist bases."""
     for config_path in (
-        "configs/curricula/curriculum_llm_local_pid_dynprev_taskdist_medium_medium.yaml",
-        "configs/curricula/curriculum_llm_local_directrpm_dynprev_taskdist_medium_medium.yaml",
+        "configs/curricula/llm_curriculum_pid_dynprev_m-taskdist_medium.yaml",
+        "configs/curricula/llm_curriculum_directrpm_dynprev_m-taskdist_medium.yaml",
     ):
         settings = llm_curriculum_training.load_llm_curriculum_settings(config_path)
         base_settings = ppo_tracking.load_ppo_tracking_settings(settings.base_training_config)
 
         assert settings.llm_provider == "openai_compatible"
         assert settings.max_stages == EXPECTED_LOCAL_LLM_MAX_STAGES
+        assert settings.reference_medium_config_path == settings.base_training_config
+        assert settings.reference_medium_timesteps == EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
+        assert settings.stage_budget_multipliers == EXPECTED_LLM_BUDGET_MULTIPLIERS
+        assert base_settings.total_timesteps == EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
         assert settings.llm_stage_budget.enabled is True
         assert settings.llm_stage_budget.total_budget_cap_timesteps == EXPECTED_LLM_BUDGET_CAP
+        assert settings.llm_stage_budget.total_budget_cap_timesteps is not None
+        assert settings.llm_stage_budget.total_budget_cap_timesteps >= 10 * EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
+        assert settings.llm_stage_budget.total_budget_cap_timesteps <= 12 * EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
         assert settings.llm_stage_budget.profiles == EXPECTED_LLM_BUDGET_PROFILES
+        assert settings.bootstrap_stage is not None
+        assert settings.bootstrap_stage.requested_stage_budget_profile == "bootstrap"
         assert settings.proposal_fallback.enabled is True
         assert settings.proposal_fallback.task_distribution_id == "tracking_medium"
         assert settings.proposal_fallback.default_stage_budget_profile == "short"
@@ -278,7 +295,7 @@ def test_llm_taskdist_reference_resolves_to_concrete_stage_task(tmp_path: Path, 
     settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
         {
             "curriculum_name": "curriculum_llm_taskdist_resolve_unit",
-            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
             "seed": 11,
             "wandb_mode": "disabled",
             "normalize_actions": True,
@@ -318,6 +335,8 @@ def test_llm_taskdist_reference_resolves_to_concrete_stage_task(tmp_path: Path, 
     assert stage["task"].get("shape")
     assert stage["resolved_task"] == stage["task"]
     assert stage["resolved_task_shape"] == stage["task"]["shape"]
+    assert stage["stage_name"] == stage["resolved_task_shape"]
+    assert "tracking_medium" not in stage["run_name"]
     assert stage["resolved_task_sample_metadata"]["task_distribution_env_rank"] == 0
     assert stage["resolved_task_sample_metadata"]["task_distribution_effective_seed"] == TASKDIST_RESOLUTION_EFFECTIVE_SEED
     assert stage["proposal_fallback_used"] is False
@@ -331,7 +350,7 @@ def test_llm_taskdist_fallback_logs_and_resolves_concrete_task(tmp_path: Path, m
     settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
         {
             "curriculum_name": "curriculum_llm_taskdist_fallback_unit",
-            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_taskdist_medium_medium.yaml",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
             "seed": 0,
             "wandb_mode": "disabled",
             "normalize_actions": True,
@@ -344,6 +363,7 @@ def test_llm_taskdist_fallback_logs_and_resolves_concrete_task(tmp_path: Path, m
                 "min_stage_timesteps": 4,
                 "max_stage_timesteps": 10,
                 "profiles": {
+                    "bootstrap": {"total_timesteps": 10},
                     "short": {"total_timesteps": 6},
                     "normal": {"total_timesteps": 8},
                     "recovery": {"total_timesteps": 9},
@@ -414,6 +434,7 @@ def _budget_test_settings() -> llm_curriculum_training.LLMCurriculumSettings:
                 "min_stage_timesteps": 20,
                 "max_stage_timesteps": 50,
                 "profiles": {
+                    "bootstrap": {"total_timesteps": 30},
                     "short": {"total_timesteps": 20},
                     "normal": {"total_timesteps": 30},
                     "recovery": {"total_timesteps": 40},
@@ -424,8 +445,7 @@ def _budget_test_settings() -> llm_curriculum_training.LLMCurriculumSettings:
                 "enabled": True,
                 "stage_name": "hover_stabilization",
                 "task_shape": "hover_stabilization",
-                "stage_budget_profile": "normal",
-                "budget_rationale": "Bootstrap with normal budget.",
+                "budget_rationale": "Bootstrap with default warmup budget.",
                 "total_timesteps": 30,
                 "eval_steps": 4,
                 "task": {
@@ -473,10 +493,16 @@ def test_llm_adaptive_budget_dry_run_logs_metadata_and_enforces_cap(tmp_path: Pa
     assert summary["llm_budget_cap_timesteps"] == BUDGET_TEST_CAP
     assert summary["cumulative_llm_budget_timesteps"] == BUDGET_TEST_CAP
     assert [stage["stage_total_timesteps"] for stage in summary["stages"]] == BUDGET_TEST_STAGE_BUDGETS
+    assert summary["budget_profile_counts"] == {"bootstrap": 1, "recovery": 1, "short": 2}
+    assert summary["stages"][0]["requested_stage_budget_profile"] == "bootstrap"
+    assert summary["stages"][0]["selected_stage_budget_profile"] == "bootstrap"
     assert summary["stages"][1]["requested_stage_budget_profile"] == "extend"
-    assert summary["stages"][1]["selected_stage_budget_profile"] == "short"
+    assert summary["stages"][1]["selected_stage_budget_profile"] == "recovery"
     assert summary["stages"][1]["budget_was_clipped"] is True
+    assert "fell back to 'recovery'" in summary["stages"][1]["budget_fallback_reason"]
     assert summary["stages"][1]["budget_rationale"] == "Probe medium distribution."
+    assert summary["stages"][2]["requested_stage_budget_profile"] == "recovery"
+    assert summary["stages"][2]["selected_stage_budget_profile"] == "short"
     assert len(budget_events) == BUDGET_TEST_STAGE_COUNT
     assert budget_events[-1]["cumulative_llm_budget_timesteps"] == BUDGET_TEST_CAP
     assert any(event.get("stage_budget_profile") == "extend" for event in events if event["event_type"] == "llm_proposal_attempt")
@@ -496,6 +522,7 @@ def test_llm_budget_cap_must_reserve_minimum_budget_for_all_stages() -> None:
             "min_stage_timesteps": 20,
             "max_stage_timesteps": 50,
             "profiles": {
+                "bootstrap": {"total_timesteps": 30},
                 "short": {"total_timesteps": 20},
                 "normal": {"total_timesteps": 30},
                 "recovery": {"total_timesteps": 40},
@@ -519,6 +546,94 @@ def test_llm_budget_cap_must_reserve_minimum_budget_for_all_stages() -> None:
 
     with pytest.raises(ValueError, match="total cap"):
         llm_curriculum_training.llm_curriculum_settings_from_mapping(config)
+
+
+def test_llm_taskdist_stage_names_use_resolved_concrete_shapes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify task-distribution stage names use sampled task shapes instead of the distribution id."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    response = '{"proposal_kind":"task_distribution","task_distribution_id":"tracking_medium"}'
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_stage_name_unit",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
+            "seed": 0,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "max_stages": 4,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "llm": {
+                "provider": "mock",
+                "model": "mock",
+                "max_repair_attempts": 0,
+                "mock_responses": [response, response, response, response],
+            },
+        }
+    )
+
+    result = llm_curriculum_training.run_llm_curriculum_training(settings, dry_run_proposals=True)
+    summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
+    stage_names = [stage["stage_name"] for stage in summary["stages"]]
+
+    assert stage_names == ["line", "hover_stabilization", "figure_eight", "vertical"]
+    assert all("tracking_medium" not in stage["run_name"] for stage in summary["stages"])
+    assert summary["stage_run_names"][2] == "curriculum_llm_stage_name_unit_stage03_figure_eight_seed0"
+    assert summary["stages"][2]["resolved_task_shape"] == "figure_eight"
+    assert summary["stages"][3]["resolved_task_shape"] == "vertical"
+    budget_events = [event for event in events if event["event_type"] == "llm_stage_budget_decision"]
+    assert budget_events[1]["stage_name"] == "hover_stabilization"
+    assert budget_events[2]["stage_name"] == "figure_eight"
+    assert budget_events[2]["accepted_task"]["shape"] == "figure_eight"
+
+
+def test_llm_taskdist_wandb_identity_uses_resolved_stage_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify stage run names and W&B tags use the resolved task-distribution shape."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_wandb_name_unit",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
+            "seed": 2,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "max_stages": 1,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "llm": {
+                "provider": "mock",
+                "model": "mock",
+                "max_repair_attempts": 0,
+                "mock_responses": ['{"proposal_kind":"task_distribution","task_distribution_id":"tracking_medium"}'],
+            },
+        }
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run(**kwargs: object) -> ppo_tracking.PPOTrackingSmokeResult:
+        calls.append(dict(kwargs))
+        run_name = str(kwargs["run_name"])
+        return ppo_tracking.PPOTrackingSmokeResult(
+            model_path=str(tmp_path / f"{run_name}.zip"),
+            metrics_path=str(tmp_path / f"{run_name}_metrics.json"),
+            manifest_path=str(tmp_path / f"{run_name}_manifest.json"),
+            metrics={"seed": kwargs["seed"], "diagnostics_dir": str(tmp_path / run_name / "diagnostics")},
+        )
+
+    monkeypatch.setattr(ppo_tracking, "run_ppo_tracking_smoke_from_config", fake_run)
+
+    result = llm_curriculum_training.run_llm_curriculum_training(settings)
+    summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+
+    assert len(calls) == 1
+    assert calls[0]["run_name"] == "curriculum_llm_wandb_name_unit_stage01_figure_eight_seed2"
+    assert "stage:figure_eight" in calls[0]["wandb_tags"]
+    assert "task:figure_eight" in calls[0]["wandb_tags"]
+    assert calls[0]["run_metadata"]["curriculum_stage_name"] == "figure_eight"
+    assert calls[0]["run_metadata"]["curriculum_stage_run_name"] == calls[0]["run_name"]
+    assert calls[0]["run_metadata"]["accepted_task"]["shape"] == "figure_eight"
+    assert summary["stages"][0]["stage_name"] == "figure_eight"
+    assert summary["stages"][0]["run_name"] == calls[0]["run_name"]
 
 
 def test_old_local_llm_smoke_config_keeps_adaptive_budget_disabled() -> None:

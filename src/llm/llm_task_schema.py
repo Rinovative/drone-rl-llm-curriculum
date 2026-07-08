@@ -31,10 +31,12 @@ from src import envs, validation
 REASON_FIELD = "reason"
 STAGE_BUDGET_PROFILE_FIELD = "stage_budget_profile"
 BUDGET_RATIONALE_FIELD = "budget_rationale"
-DEFAULT_STAGE_BUDGET_PROFILES = ("short", "normal", "recovery", "extend")
+BUDGET_PROFILE_BOOTSTRAP = "bootstrap"
+DEFAULT_STAGE_BUDGET_PROFILES = (BUDGET_PROFILE_BOOTSTRAP, "short", "normal", "recovery", "extend")
 PROPOSAL_KIND_FIELD = "proposal_kind"
 PROPOSAL_KIND_TASK = "task"
 PROPOSAL_KIND_TASK_DISTRIBUTION = "task_distribution"
+TASK_FIELD = "task"
 TASK_DISTRIBUTION_ID_FIELD = "task_distribution_id"
 TASK_DISTRIBUTION_CONFIG_PATH_FIELD = "task_distribution_config_path"
 KNOWN_TASK_DISTRIBUTION_CONFIGS = {
@@ -74,6 +76,7 @@ def build_task_schema() -> dict[str, object]:
         "supported_task_distribution_families": list(envs.task_distribution.supported_task_families()),
         "unsupported_task_distribution_families": list(envs.task_distribution.unsupported_requested_task_families()),
         "optional_metadata_fields": [REASON_FIELD, PROPOSAL_KIND_FIELD, STAGE_BUDGET_PROFILE_FIELD, BUDGET_RATIONALE_FIELD],
+        "nested_task_wrapper_field": TASK_FIELD,
         "allowed_stage_budget_profiles": list(DEFAULT_STAGE_BUDGET_PROFILES),
         "forbidden_example_fields": list(_FORBIDDEN_EXAMPLE_FIELDS),
         "shape_required_fields": _shape_required_fields(),
@@ -106,6 +109,7 @@ def build_task_prompt_contract() -> str:
         f"Use proposal_kind={PROPOSAL_KIND_TASK!r} for one concrete validated task or "
         f"proposal_kind={PROPOSAL_KIND_TASK_DISTRIBUTION!r} to select a known task distribution. "
         f"Concrete tasks use task_type={validation.contracts.TASK_TYPE_TRAJECTORY!r}. "
+        f"Concrete task proposals may put task keys at the top level or wrap them as {TASK_FIELD}={{...}} with metadata on the wrapper. "
         f"Supported shapes: {shapes}. "
         f"Known task keys: {known_fields}. "
         f"Required keys by shape: {required_by_shape}. "
@@ -119,8 +123,9 @@ def build_task_prompt_contract() -> str:
         "tracking_broad is experimental and only after simpler distributions are stable. "
         f"Optional stage budget metadata: {STAGE_BUDGET_PROFILE_FIELD} must be one of {budget_profiles}; "
         f"{BUDGET_RATIONALE_FIELD} may briefly justify the selected profile. "
-        "Use short for easy confirmation stages, normal for progression, recovery after unstable but promising stages, "
-        "and extend sparingly for appropriate but undertrained stages. Do not request arbitrary timesteps, num_envs, "
+        "Use bootstrap mainly for stage 1 policy warmup, short for easy confirmation stages, normal for progression, "
+        "recovery after unstable but promising stages, and extend sparingly for appropriate but undertrained stages. "
+        "Do not request arbitrary timesteps, num_envs, "
         "PPO hyperparameters, action interfaces, or reward changes. "
         f"Optional metadata keys: {REASON_FIELD}, {STAGE_BUDGET_PROFILE_FIELD}, {BUDGET_RATIONALE_FIELD}. "
         "Metadata fields are never used for deterministic trajectory validation. "
@@ -161,19 +166,7 @@ def normalize_proposed_task(raw_task: object) -> dict[str, object]:
     if proposal_kind != PROPOSAL_KIND_TASK:
         message = f"proposal_kind must be one of: {PROPOSAL_KIND_TASK}, {PROPOSAL_KIND_TASK_DISTRIBUTION}"
         raise ValueError(message)
-
-    missing = [key for key in _required_top_level_fields() if key not in normalized]
-    if missing:
-        message = f"proposed task is missing required keys: {', '.join(missing)}"
-        raise ValueError(message)
-
-    allowed_keys = set(_known_task_fields()) | {REASON_FIELD, PROPOSAL_KIND_FIELD, STAGE_BUDGET_PROFILE_FIELD, BUDGET_RATIONALE_FIELD}
-    unknown_keys = sorted(set(normalized) - allowed_keys)
-    if unknown_keys:
-        message = f"proposed task contains unsupported keys: {', '.join(unknown_keys)}"
-        raise ValueError(message)
-    _validate_budget_metadata(normalized)
-    return normalized
+    return _normalize_concrete_task_proposal(normalized)
 
 
 def validate_proposed_task(raw_task: object) -> validation.tasks.ValidationResult:
@@ -237,6 +230,54 @@ def _infer_proposal_kind(raw: Mapping[str, object]) -> str:
     if TASK_DISTRIBUTION_ID_FIELD in raw or TASK_DISTRIBUTION_CONFIG_PATH_FIELD in raw:
         return PROPOSAL_KIND_TASK_DISTRIBUTION
     return PROPOSAL_KIND_TASK
+
+
+def _normalize_concrete_task_proposal(raw: dict[str, object]) -> dict[str, object]:
+    """Normalize a direct or nested concrete task proposal."""
+    if TASK_FIELD in raw:
+        return _normalize_nested_task_wrapper(raw)
+    return _normalize_direct_concrete_task(raw)
+
+
+def _normalize_nested_task_wrapper(raw: dict[str, object]) -> dict[str, object]:
+    """Extract and normalize a concrete task from a proposal wrapper."""
+    allowed_keys = {PROPOSAL_KIND_FIELD, TASK_FIELD, REASON_FIELD, STAGE_BUDGET_PROFILE_FIELD, BUDGET_RATIONALE_FIELD}
+    unknown_keys = sorted(set(raw) - allowed_keys)
+    if unknown_keys:
+        message = f"proposed task wrapper contains unsupported keys: {', '.join(unknown_keys)}"
+        raise ValueError(message)
+    task_value = raw.get(TASK_FIELD)
+    if not isinstance(task_value, Mapping):
+        message = "task proposal wrapper must include a concrete task mapping"
+        raise ValueError(message)  # noqa: TRY004 - normalization contract requires ValueError.
+    normalized = _normalize_direct_concrete_task(dict(task_value))
+    normalized[PROPOSAL_KIND_FIELD] = PROPOSAL_KIND_TASK
+    for metadata_key in (REASON_FIELD, STAGE_BUDGET_PROFILE_FIELD, BUDGET_RATIONALE_FIELD):
+        if metadata_key in raw:
+            normalized[metadata_key] = raw[metadata_key]
+    _validate_budget_metadata(normalized)
+    return normalized
+
+
+def _normalize_direct_concrete_task(raw: dict[str, object]) -> dict[str, object]:
+    """Normalize one concrete task mapping without wrapper fields."""
+    explicit_kind = raw.get(PROPOSAL_KIND_FIELD)
+    if explicit_kind is not None and str(explicit_kind) != PROPOSAL_KIND_TASK:
+        message = f"nested concrete task proposal_kind must be {PROPOSAL_KIND_TASK!r}"
+        raise ValueError(message)
+    missing = [key for key in _required_top_level_fields() if key not in raw]
+    if missing:
+        message = f"proposed task is missing required keys: {', '.join(missing)}"
+        raise ValueError(message)
+
+    allowed_keys = set(_known_task_fields()) | {REASON_FIELD, PROPOSAL_KIND_FIELD, STAGE_BUDGET_PROFILE_FIELD, BUDGET_RATIONALE_FIELD}
+    unknown_keys = sorted(set(raw) - allowed_keys)
+    if unknown_keys:
+        message = f"proposed task contains unsupported keys: {', '.join(unknown_keys)}"
+        raise ValueError(message)
+    normalized = dict(raw)
+    _validate_budget_metadata(normalized)
+    return normalized
 
 
 def _normalize_task_distribution_reference(raw: dict[str, object]) -> dict[str, object]:

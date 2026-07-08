@@ -68,6 +68,10 @@ tasks:
             "eval_steps": 120,
             "total_timesteps": 4096,
             "normalize_actions": True,
+            "action_interface": "direct_rpm",
+            "rpm_delta_scale": 0.07,
+            "include_dynamics_observation": True,
+            "include_previous_action": True,
         },
     )
 
@@ -220,6 +224,17 @@ def _fake_policy_evaluation(spec: object, artifacts: object) -> policy_evaluatio
         "model_path": str(spec.model_path),
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
+        "source_manifest_path": None if spec.source_manifest_path is None else str(spec.source_manifest_path),
+        "action_interface": spec.action_interface,
+        "rpm_delta_scale": spec.rpm_delta_scale if spec.action_interface == "direct_rpm" else None,
+        "normalize_actions": spec.normalize_actions,
+        "include_dynamics_observation": spec.include_dynamics_observation,
+        "include_previous_action": spec.include_previous_action,
+        "source_run_name": spec.source_run_name,
+        "source_run_kind": spec.source_run_kind,
+        "source_curriculum_kind": spec.source_curriculum_kind,
+        "source_stage": spec.source_stage,
+        "model_scope": spec.model_scope,
         "evaluation_dir": str(output_dir),
         "diagnostics_dir": str(diagnostics_dir),
         "traces_dir": str(traces_dir),
@@ -571,6 +586,88 @@ def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
         .replace("\\", "/")
         .endswith("runs/curriculum_manual_line_smoke_seed0/stages/stage02_line/evaluations/line_suite/line_basic")
     )
+
+
+def test_curriculum_final_stage_suite_uses_final_stage_manifest_env_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify final-stage suite evaluation preserves action and observation flags from the stage manifest."""
+    summary_path = _curriculum_summary(tmp_path)
+    suite_path = _one_task_suite(tmp_path)
+    captured_specs: list[policy_evaluation.PolicyEvaluationSpec] = []
+
+    def fake_policy_evaluation(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        artifacts: policy_evaluation.PolicyEvaluationArtifactOptions,
+    ) -> policy_evaluation.PolicyEvaluationResult:
+        captured_specs.append(spec)
+        return _fake_policy_evaluation(spec, artifacts)
+
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", fake_policy_evaluation)
+
+    result = curriculum_evaluation.run_curriculum_evaluation(
+        summary_path=summary_path,
+        suite_path=suite_path,
+        model_scope="final-stage",
+    )
+
+    final_manifest_path = tmp_path / "training" / "stage02_manifest.json"
+    evaluated_model = result.metrics["evaluated_models"][0]
+    assert len(captured_specs) == 1
+    assert captured_specs[0].source_manifest_path == final_manifest_path
+    assert captured_specs[0].action_interface == "direct_rpm"
+    assert captured_specs[0].rpm_delta_scale == 0.07
+    assert captured_specs[0].include_dynamics_observation is True
+    assert captured_specs[0].include_previous_action is True
+    assert captured_specs[0].normalize_actions is True
+    assert evaluated_model["source_manifest_path"] == str(final_manifest_path)
+    assert evaluated_model["action_interface"] == "direct_rpm"
+    assert evaluated_model["rpm_delta_scale"] == 0.07
+    assert evaluated_model["include_dynamics_observation"] is True
+    assert evaluated_model["include_previous_action"] is True
+
+
+def test_llm_curriculum_final_stage_suite_uses_final_stage_manifest_env_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify LLM curriculum final-stage evaluation uses the final-stage manifest flags too."""
+    summary_path = _curriculum_summary(tmp_path)
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    payload["curriculum_kind"] = "llm"
+    payload["curriculum_name"] = "curriculum_llm_line_smoke"
+    payload["run_name"] = "curriculum_llm_line_smoke_seed0"
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    suite_path = _one_task_suite(tmp_path)
+    captured_specs: list[policy_evaluation.PolicyEvaluationSpec] = []
+
+    def fake_policy_evaluation(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        artifacts: policy_evaluation.PolicyEvaluationArtifactOptions,
+    ) -> policy_evaluation.PolicyEvaluationResult:
+        captured_specs.append(spec)
+        return _fake_policy_evaluation(spec, artifacts)
+
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", fake_policy_evaluation)
+
+    result = curriculum_evaluation.run_curriculum_evaluation(
+        summary_path=summary_path,
+        suite_path=suite_path,
+        model_scope="final-stage",
+    )
+
+    evaluated_model = result.metrics["evaluated_models"][0]
+    assert len(captured_specs) == 1
+    assert captured_specs[0].action_interface == "direct_rpm"
+    assert captured_specs[0].include_dynamics_observation is True
+    assert captured_specs[0].include_previous_action is True
+    assert evaluated_model["source_curriculum_kind"] == "llm"
+    assert evaluated_model["action_interface"] == "direct_rpm"
+    assert evaluated_model["include_dynamics_observation"] is True
+    assert evaluated_model["include_previous_action"] is True
 
 
 def test_curriculum_standard_evaluation_runs_stage_owned_default_profile(

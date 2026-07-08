@@ -1,6 +1,6 @@
 """Tests for the shared policy evaluation helper."""
 
-# ruff: noqa: S101, TC002, PT018, ARG005
+# ruff: noqa: S101, PT018, ARG005
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ FULL_EVALUATION_EPISODE_COUNT = 2
 SUITE_EVALUATION_STEPS = 120
 OWN_TASK_EVAL_STEPS = 12
 OWN_TASK_SEED = 4
+EVAL_RPM_DELTA_SCALE = 0.07
+OBSERVATION_MISMATCH_MESSAGE = "Observation spaces do not match: model != env"
 
 
 @dataclass
@@ -643,6 +645,166 @@ def _write_direct_run_manifest(run_root: Path, run_name: str) -> Path:
         encoding="utf-8",
     )
     return run_manifest_path
+
+
+def test_direct_policy_suite_evaluation_uses_manifest_env_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify direct PPO suite evaluation preserves env flags from the training manifest."""
+    run_name = "direct_ppo_line_seed0"
+    run_root = tmp_path / "storage" / "runs" / run_name
+    run_manifest_path = _write_direct_run_manifest(run_root, run_name)
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    run_manifest.update(
+        {
+            "action_interface": "direct_rpm",
+            "rpm_delta_scale": EVAL_RPM_DELTA_SCALE,
+            "include_dynamics_observation": True,
+            "include_previous_action": True,
+            "normalize_actions": True,
+        }
+    )
+    run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    suite_path = tmp_path / "line_eval_suite.yaml"
+    _write_suite_config(suite_path, "line_eval", "line_basic")
+    captured_specs: list[policy_evaluation.PolicyEvaluationSpec] = []
+
+    def fake_collect(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        task: dict[str, Any],
+        diagnostics_dir: Path,
+    ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
+        del task
+        captured_specs.append(spec)
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        trace_path = diagnostics_dir / "evaluation_trace.jsonl"
+        trace_path.write_text("{}\n", encoding="utf-8")
+        return _FakeDiagnostics(metrics={"episode_count": 1}, trace_records=[]), {"evaluation_trace_path": str(trace_path)}
+
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
+
+    result = policy_evaluation.run_direct_policy_suite_evaluation(
+        run_manifest_path=run_manifest_path,
+        suite_path=suite_path,
+        wandb_mode="disabled",
+    )
+
+    metrics = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    evaluated_model = metrics["evaluated_models"][0]
+    assert len(captured_specs) == 1
+    assert captured_specs[0].source_manifest_path == run_manifest_path
+    assert captured_specs[0].action_interface == "direct_rpm"
+    assert captured_specs[0].rpm_delta_scale == EVAL_RPM_DELTA_SCALE
+    assert captured_specs[0].include_dynamics_observation is True
+    assert captured_specs[0].include_previous_action is True
+    assert captured_specs[0].normalize_actions is True
+    assert evaluated_model["source_manifest_path"] == str(run_manifest_path)
+    assert evaluated_model["action_interface"] == "direct_rpm"
+    assert evaluated_model["rpm_delta_scale"] == EVAL_RPM_DELTA_SCALE
+    assert evaluated_model["include_dynamics_observation"] is True
+    assert evaluated_model["include_previous_action"] is True
+
+
+def test_policy_evaluation_env_builder_applies_spec_action_and_observation_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify evaluation env construction uses manifest-derived action and observation settings."""
+    calls: dict[str, Any] = {}
+
+    class FakeEnv:
+        observation_space = "Box(env, (22,), float32)"
+
+    def fake_make_tracking_env(task: dict[str, Any], **kwargs: Any) -> FakeEnv:
+        calls["task"] = task
+        calls["make_kwargs"] = kwargs
+        return FakeEnv()
+
+    def fake_normalized_action_env(env: FakeEnv) -> tuple[str, FakeEnv]:
+        calls["normalized_env"] = env
+        return ("normalized", env)
+
+    monkeypatch.setattr(policy_evaluation.envs.tracking_env, "make_trajectory_tracking_env", fake_make_tracking_env)
+    monkeypatch.setattr(policy_evaluation.envs.tracking_env, "make_normalized_action_env", fake_normalized_action_env)
+    spec = policy_evaluation.PolicyEvaluationSpec(
+        label="line_basic",
+        model_role="suite_task",
+        model_path=tmp_path / "model.zip",
+        task_config_path=tmp_path / "task.yaml",
+        task_shape="line",
+        output_dir=tmp_path / "evaluation",
+        eval_steps=11,
+        seed=3,
+        normalize_actions=False,
+        action_interface="direct_rpm",
+        rpm_delta_scale=EVAL_RPM_DELTA_SCALE,
+        include_dynamics_observation=True,
+        include_previous_action=True,
+    )
+    task = {"task_type": "trajectory", "shape": "line"}
+
+    env = policy_evaluation._make_policy_evaluation_env(spec, task, record=True, max_steps=17)  # noqa: SLF001
+
+    assert env[0] == "normalized"
+    assert calls["task"] == task
+    assert calls["make_kwargs"] == {
+        "gui": False,
+        "record": True,
+        "max_steps": 17,
+        "action_interface": "direct_rpm",
+        "rpm_delta_scale": EVAL_RPM_DELTA_SCALE,
+        "include_dynamics_observation": True,
+        "include_previous_action": True,
+    }
+    assert calls["normalized_env"] is env[1]
+
+
+def test_policy_evaluation_observation_mismatch_error_includes_manifest_context(tmp_path: Path) -> None:
+    """Verify env/model observation mismatches include enough context to fix config drift."""
+    model_path = tmp_path / "model.zip"
+    model_path.write_bytes(b"model")
+    manifest_path = tmp_path / "run_manifest.json"
+    spec = policy_evaluation.PolicyEvaluationSpec(
+        label="line_basic",
+        model_role="suite_task",
+        model_path=model_path,
+        task_config_path=tmp_path / "task.yaml",
+        task_shape="line",
+        output_dir=tmp_path / "evaluation",
+        eval_steps=11,
+        seed=3,
+        action_interface="direct_rpm",
+        include_dynamics_observation=True,
+        include_previous_action=True,
+        source_manifest_path=manifest_path,
+    )
+
+    class FakeModel:
+        observation_space = "Box(model, (22,), float32)"
+
+    class FakeEnv:
+        observation_space = "Box(env, (10,), float32)"
+
+    class FakePPO:
+        @staticmethod
+        def load(path: str, env: object | None = None, device: str = "cpu") -> FakeModel:
+            del path, device
+            if env is not None:
+                raise ValueError(OBSERVATION_MISMATCH_MESSAGE)
+            return FakeModel()
+
+    with pytest.raises(ValueError, match="evaluation environment observation space") as exc_info:
+        policy_evaluation._load_ppo_with_evaluation_env(FakePPO, spec=spec, tracking_env=FakeEnv())  # noqa: SLF001
+
+    message = str(exc_info.value)
+    assert "model_observation_space=Box(model, (22,), float32)" in message
+    assert "env_observation_space=Box(env, (10,), float32)" in message
+    assert f"manifest_path={manifest_path}" in message
+    assert f"model_path={model_path}" in message
+    assert "action_interface=direct_rpm" in message
+    assert "include_dynamics_observation=True" in message
+    assert "include_previous_action=True" in message
 
 
 def test_direct_policy_own_task_evaluation_uses_training_task_snapshot(

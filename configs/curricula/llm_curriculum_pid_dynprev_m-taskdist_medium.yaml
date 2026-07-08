@@ -1,27 +1,37 @@
-curriculum_name: curriculum_llm_local_directrpm_dynprev_taskdist_medium_medium
-base_training_config: configs/training/ppo_tracking_directrpm_dynprev_taskdist_medium_medium.yaml
+curriculum_name: curriculum_llm_pid_dynprev_m-taskdist_medium
+base_training_config: configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml
 seed: 0
 wandb_mode: auto
 normalize_actions: true
 max_stages: 10
+reference_medium_config_path: configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml
+reference_medium_timesteps: 500000
+stage_budget_multipliers:
+  bootstrap: 1.5
+  short: 0.75
+  normal: 1.0
+  recovery: 1.25
+  extend: 1.5
 stage_defaults:
-  total_timesteps: 30000
+  total_timesteps: 500000
   eval_steps: 240
 llm_stage_budget:
   enabled: true
-  total_budget_cap_timesteps: 350000
+  total_budget_cap_timesteps: 5500000
   default_profile: normal
-  min_stage_timesteps: 20000
-  max_stage_timesteps: 50000
+  min_stage_timesteps: 375000
+  max_stage_timesteps: 750000
   profiles:
+    bootstrap:
+      total_timesteps: 750000
     short:
-      total_timesteps: 20000
+      total_timesteps: 375000
     normal:
-      total_timesteps: 30000
+      total_timesteps: 500000
     recovery:
-      total_timesteps: 40000
+      total_timesteps: 625000
     extend:
-      total_timesteps: 50000
+      total_timesteps: 750000
 proposal_fallback:
   enabled: true
   task_distribution_id: tracking_medium
@@ -32,9 +42,9 @@ bootstrap:
   enabled: true
   stage_name: line
   task_shape: line
-  stage_budget_profile: normal
-  budget_rationale: Deterministic bootstrap needs a normal diagnostic budget before LLM adaptation.
-  total_timesteps: 30000
+  stage_budget_profile: bootstrap
+  budget_rationale: Deterministic bootstrap uses 1.5x the reference medium budget before LLM adaptation.
+  total_timesteps: 750000
   eval_steps: 240
   notes: Bootstrap with a deterministic line while the base training config enables medium task-distribution sampling.
   task:

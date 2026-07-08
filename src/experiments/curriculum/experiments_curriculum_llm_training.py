@@ -342,6 +342,9 @@ class LLMCurriculumSettings:
     proposal_settings: llm.curriculum.ProposalSettings
     llm_stage_budget: LLMStageBudgetSettings
     proposal_fallback: LLMProposalFallbackSettings
+    reference_medium_config_path: Path | None = None
+    reference_medium_timesteps: int | None = None
+    stage_budget_multipliers: dict[str, float] | None = None
     config_path: Path | None = None
 
     def __post_init__(self) -> None:
@@ -371,6 +374,14 @@ class LLMCurriculumSettings:
         if not isinstance(self.proposal_fallback, LLMProposalFallbackSettings):
             message = "proposal_fallback must be an LLMProposalFallbackSettings instance"
             raise TypeError(message)
+        if self.reference_medium_timesteps is not None and self.reference_medium_timesteps <= 0:
+            message = "reference_medium_timesteps must be positive when provided"
+            raise ValueError(message)
+        if self.stage_budget_multipliers is not None:
+            for profile, multiplier in self.stage_budget_multipliers.items():
+                if multiplier <= 0.0:
+                    message = f"stage_budget_multipliers.{profile} must be positive"
+                    raise ValueError(message)
         cap = self.llm_stage_budget.total_budget_cap_timesteps
         if self.llm_stage_budget.enabled and cap is not None and cap < self.max_stages * self.llm_stage_budget.min_stage_timesteps:
             message = "llm_stage_budget total cap is too small to reserve the minimum budget for every stage"
@@ -485,6 +496,9 @@ def llm_curriculum_settings_from_mapping(
         proposal_settings=proposal_settings,
         llm_stage_budget=llm_stage_budget,
         proposal_fallback=proposal_fallback,
+        reference_medium_config_path=_optional_path(config.get("reference_medium_config_path")),
+        reference_medium_timesteps=_optional_int(config.get("reference_medium_timesteps")),
+        stage_budget_multipliers=_optional_float_dict(config.get("stage_budget_multipliers"), "stage_budget_multipliers"),
         config_path=config_path,
     )
 
@@ -617,12 +631,6 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 metrics_summary=latest_metrics_summary,
                 failure_reason=str(exc),
             )
-            _log_proposal_fallback(
-                logger=proposal_logger,
-                settings=settings,
-                stage_index=next_stage_index,
-                fallback_proposal=fallback_proposal,
-            )
             stage = _stage_from_proposal(
                 settings=settings,
                 stage_index=next_stage_index,
@@ -634,6 +642,13 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 original_proposal=fallback_proposal["original_proposal"],
                 proposal_fallback_used=True,
                 proposal_failure_reason=str(exc),
+            )
+            _log_proposal_fallback(
+                logger=proposal_logger,
+                settings=settings,
+                stage_index=next_stage_index,
+                fallback_proposal=fallback_proposal,
+                stage=stage,
             )
         else:
             llm.curriculum.merge_proposal_stats(proposal_stats, proposal.stats)
@@ -967,6 +982,7 @@ def _build_curriculum_summary(
         "stage_count": len(stage_entries),
         "stage_run_names": [str(stage["run_name"]) for stage in stage_entries],
         "max_stages": settings.max_stages,
+        **_llm_reference_budget_metadata(settings),
         "llm_stage_budget": _llm_stage_budget_summary(settings.llm_stage_budget),
         "proposal_fallback": _proposal_fallback_summary(settings.proposal_fallback),
         "proposal_fallback_used": any(bool(stage.get("proposal_fallback_used")) for stage in stage_entries),
@@ -1036,6 +1052,7 @@ def _write_curriculum_artifacts(settings: LLMCurriculumSettings, summary: dict[s
             "base_training_config": str(settings.base_training_config),
             "llm_provider": settings.llm_provider,
             "llm_model": settings.llm_model,
+            **_llm_reference_budget_metadata(settings),
             "llm_stage_budget": _llm_stage_budget_summary(settings.llm_stage_budget),
             "proposal_fallback": _proposal_fallback_summary(settings.proposal_fallback),
         },
@@ -1057,6 +1074,7 @@ def _write_curriculum_config_snapshot(settings: LLMCurriculumSettings) -> Path:
         "wandb_mode": settings.wandb_mode,
         "normalize_actions": settings.normalize_actions,
         "max_stages": settings.max_stages,
+        **_llm_reference_budget_metadata(settings),
         "stage_defaults": {
             "total_timesteps": settings.stage_total_timesteps,
             "eval_steps": settings.stage_eval_steps,
@@ -1107,8 +1125,40 @@ def _settings_with_overrides(
         proposal_settings=proposal_settings,
         llm_stage_budget=settings.llm_stage_budget,
         proposal_fallback=settings.proposal_fallback,
+        reference_medium_config_path=settings.reference_medium_config_path,
+        reference_medium_timesteps=settings.reference_medium_timesteps,
+        stage_budget_multipliers=settings.stage_budget_multipliers,
         config_path=settings.config_path,
     )
+
+
+def _optional_int(value: Any) -> int | None:
+    """Return an optional integer metadata value from config."""
+    return None if value is None else int(value)
+
+
+def _optional_path(value: Any) -> Path | None:
+    """Return an optional path metadata value from config."""
+    return None if value is None else Path(str(value))
+
+
+def _optional_float_dict(value: Any, field_name: str) -> dict[str, float] | None:
+    """Return an optional mapping of profile multipliers from config."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        message = f"{field_name} must be a mapping"
+        raise TypeError(message)
+    return {str(key): float(raw_value) for key, raw_value in value.items()}
+
+
+def _llm_reference_budget_metadata(settings: LLMCurriculumSettings) -> dict[str, Any]:
+    """Return reference-medium budget metadata for LLM curriculum summaries."""
+    return {
+        "reference_medium_config_path": None if settings.reference_medium_config_path is None else str(settings.reference_medium_config_path),
+        "reference_medium_timesteps": settings.reference_medium_timesteps,
+        "stage_budget_multipliers": None if settings.stage_budget_multipliers is None else dict(settings.stage_budget_multipliers),
+    }
 
 
 def _llm_stage_budget_settings_from_config(raw_budget: Any, default_total_timesteps: int) -> LLMStageBudgetSettings:
@@ -1204,8 +1254,13 @@ def _stage_from_mapping(raw_stage: Mapping[str, Any], default_total_timesteps: i
         raise TypeError(message)
     task_without_metadata = llm.task_schema.task_without_metadata(dict(task))
     task_shape = str(raw_stage.get("task_shape") or task_without_metadata.get(validation.contracts.FIELD_SHAPE) or "")
+    stage_name = _stage_display_name(
+        resolved_task=task_without_metadata,
+        task_distribution_metadata=None,
+        fallback=str(raw_stage.get("stage_name") or task_shape),
+    )
     return LLMCurriculumStage(
-        stage_name=str(raw_stage.get("stage_name") or task_shape),
+        stage_name=stage_name,
         task_shape=task_shape,
         task=task_without_metadata,
         total_timesteps=int(raw_stage.get("total_timesteps", default_total_timesteps)),
@@ -1242,8 +1297,13 @@ def _stage_from_proposal(
     original = _json_mapping_copy(original_proposal) or dict(task)
     if active_proposal_type == llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION:
         resolved = _resolve_task_distribution_stage_task(settings=settings, task=task, stage_index=stage_index)
+        stage_name = _stage_display_name(
+            resolved_task=resolved["resolved_task"],
+            task_distribution_metadata=resolved["resolved_task_sample_metadata"],
+            fallback=resolved["task_distribution_id"],
+        )
         return LLMCurriculumStage(
-            stage_name=resolved["task_distribution_id"],
+            stage_name=stage_name,
             task_shape=resolved["resolved_task_shape"],
             task=resolved["resolved_task"],
             total_timesteps=settings.stage_total_timesteps,
@@ -1264,8 +1324,9 @@ def _stage_from_proposal(
         )
     task_payload = dict(task)
     task_shape = str(task_payload.get(validation.contracts.FIELD_SHAPE) or "")
+    stage_name = _stage_display_name(resolved_task=task_payload, task_distribution_metadata=None, fallback=task_shape)
     return LLMCurriculumStage(
-        stage_name=task_shape,
+        stage_name=stage_name,
         task_shape=task_shape,
         task=task_payload,
         total_timesteps=settings.stage_total_timesteps,
@@ -1332,6 +1393,25 @@ def _json_mapping_copy(value: Mapping[str, Any] | None) -> dict[str, Any] | None
     return dict(value)
 
 
+def _stage_display_name(
+    *,
+    resolved_task: Mapping[str, Any] | None,
+    task_distribution_metadata: Mapping[str, Any] | None,
+    fallback: str,
+) -> str:
+    """Return the display name used for stage run names and metadata."""
+    if resolved_task is not None:
+        shape = resolved_task.get(validation.contracts.FIELD_SHAPE)
+        if isinstance(shape, str) and shape.strip():
+            return shape.strip()
+    if task_distribution_metadata is not None:
+        sampled_family = task_distribution_metadata.get("task_distribution_sampled_family")
+        if isinstance(sampled_family, str) and sampled_family.strip():
+            return sampled_family.strip()
+    fallback_text = str(fallback).strip()
+    return fallback_text or "stage"
+
+
 def _resolve_llm_stage_budget(
     *,
     settings: LLMCurriculumSettings,
@@ -1341,7 +1421,7 @@ def _resolve_llm_stage_budget(
 ) -> LLMCurriculumStage:
     """Resolve one stage budget through bounded deterministic profile rules."""
     budget_settings = settings.llm_stage_budget
-    requested_profile = stage.requested_stage_budget_profile or budget_settings.default_profile
+    requested_profile = stage.requested_stage_budget_profile or _default_stage_budget_profile(settings, stage_index)
     if requested_profile not in budget_settings.profiles:
         available = ", ".join(sorted(budget_settings.profiles))
         message = f"stage_budget_profile must be one of: {available}"
@@ -1349,34 +1429,40 @@ def _resolve_llm_stage_budget(
     selected_profile = requested_profile
     resolved_timesteps = stage.total_timesteps
     budget_was_clipped = False
-    fallback_reason: str | None = None
+    fallback_reasons: list[str] = []
 
     if budget_settings.enabled:
+        if stage_index > 1 and selected_profile == llm.task_schema.BUDGET_PROFILE_BOOTSTRAP:
+            selected_profile = _post_bootstrap_default_profile(budget_settings)
+            budget_was_clipped = True
+            fallback_reasons.append(f"requested profile {requested_profile!r} is reserved for stage 1; fell back to {selected_profile!r}")
         resolved_timesteps = budget_settings.profiles[selected_profile]
         cap = budget_settings.total_budget_cap_timesteps
         if cap is None:
             message = "enabled llm_stage_budget requires a total budget cap"
             raise ValueError(message)
         remaining_stage_slots = max(settings.max_stages - stage_index, 0)
-        short_profile = "short" if "short" in budget_settings.profiles else min(budget_settings.profiles, key=budget_settings.profiles.__getitem__)
-        reserved_future_timesteps = remaining_stage_slots * budget_settings.profiles[short_profile]
+        reserve_profile = _reserve_budget_profile(budget_settings)
+        reserved_future_timesteps = remaining_stage_slots * budget_settings.profiles[reserve_profile]
         max_allowed_this_stage = cap - cumulative_timesteps - reserved_future_timesteps
         if max_allowed_this_stage < budget_settings.min_stage_timesteps:
             message = "llm_stage_budget cap leaves no valid budget for the current stage while reserving remaining stages"
             raise ValueError(message)
         if resolved_timesteps > max_allowed_this_stage:
             budget_was_clipped = True
-            fallback_reason = (
-                f"requested profile {requested_profile!r} would exceed the total budget cap after reserving "
-                f"{remaining_stage_slots} remaining short stage(s); fell back to {short_profile!r}"
+            safe_profile = _largest_safe_stage_budget_profile(
+                budget_settings=budget_settings,
+                stage_index=stage_index,
+                max_allowed_timesteps=max_allowed_this_stage,
             )
-            selected_profile = short_profile
-            resolved_timesteps = budget_settings.profiles[short_profile]
+            fallback_reasons.append(
+                f"selected profile {selected_profile!r} would exceed the total budget cap after reserving "
+                f"{remaining_stage_slots} remaining {reserve_profile!r} stage(s); fell back to {safe_profile!r}"
+            )
+            selected_profile = safe_profile
+            resolved_timesteps = budget_settings.profiles[selected_profile]
             if resolved_timesteps > max_allowed_this_stage:
-                fallback_reason = (
-                    f"requested profile {requested_profile!r} exceeded the total budget cap and short profile did not fit; "
-                    "clipped to remaining reserved budget"
-                )
+                fallback_reasons.append("fallback profile did not fit; clipped to remaining reserved budget")
                 resolved_timesteps = max_allowed_this_stage
         if resolved_timesteps < budget_settings.min_stage_timesteps or resolved_timesteps > budget_settings.max_stage_timesteps:
             message = "resolved LLM stage budget is outside configured min/max bounds"
@@ -1394,10 +1480,55 @@ def _resolve_llm_stage_budget(
         requested_stage_budget_profile=requested_profile,
         selected_stage_budget_profile=selected_profile,
         budget_was_clipped=budget_was_clipped,
-        budget_fallback_reason=fallback_reason,
+        budget_fallback_reason="; ".join(fallback_reasons) if fallback_reasons else None,
         cumulative_llm_budget_timesteps=cumulative_after,
         llm_budget_cap_timesteps=budget_settings.total_budget_cap_timesteps,
     )
+
+
+def _default_stage_budget_profile(settings: LLMCurriculumSettings, stage_index: int) -> str:
+    """Return the default budget profile for a stage index."""
+    budget_settings = settings.llm_stage_budget
+    if budget_settings.enabled and stage_index == 1 and llm.task_schema.BUDGET_PROFILE_BOOTSTRAP in budget_settings.profiles:
+        return llm.task_schema.BUDGET_PROFILE_BOOTSTRAP
+    return budget_settings.default_profile
+
+
+def _post_bootstrap_default_profile(budget_settings: LLMStageBudgetSettings) -> str:
+    """Return the default profile used if bootstrap is requested after stage 1."""
+    if budget_settings.default_profile != llm.task_schema.BUDGET_PROFILE_BOOTSTRAP:
+        return budget_settings.default_profile
+    return _reserve_budget_profile(budget_settings)
+
+
+def _reserve_budget_profile(budget_settings: LLMStageBudgetSettings) -> str:
+    """Return the profile reserved for future stages under the total cap."""
+    if "short" in budget_settings.profiles:
+        return "short"
+    return min(budget_settings.profiles, key=budget_settings.profiles.__getitem__)
+
+
+def _allowed_budget_profile_names(budget_settings: LLMStageBudgetSettings, stage_index: int) -> tuple[str, ...]:
+    """Return budget profiles allowed for this stage index."""
+    names = tuple(budget_settings.profiles)
+    if stage_index <= 1:
+        return names
+    non_bootstrap = tuple(name for name in names if name != llm.task_schema.BUDGET_PROFILE_BOOTSTRAP)
+    return non_bootstrap or names
+
+
+def _largest_safe_stage_budget_profile(
+    *,
+    budget_settings: LLMStageBudgetSettings,
+    stage_index: int,
+    max_allowed_timesteps: int,
+) -> str:
+    """Return the largest allowed profile that fits, falling back to short."""
+    allowed_profiles = _allowed_budget_profile_names(budget_settings, stage_index)
+    safe_profiles = [name for name in allowed_profiles if budget_settings.profiles[name] <= max_allowed_timesteps]
+    if safe_profiles:
+        return max(safe_profiles, key=lambda name: (budget_settings.profiles[name], name))
+    return _reserve_budget_profile(budget_settings)
 
 
 def _validate_stage_task(stage: LLMCurriculumStage) -> None:
@@ -1483,6 +1614,7 @@ def _log_proposal_fallback(
     settings: LLMCurriculumSettings,
     stage_index: int,
     fallback_proposal: Mapping[str, Any],
+    stage: LLMCurriculumStage,
 ) -> None:
     """Append one explicit safe-fallback event to the proposal log."""
     task = dict(fallback_proposal["task"])
@@ -1497,13 +1629,15 @@ def _log_proposal_fallback(
                 llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: task.get(llm.task_schema.TASK_DISTRIBUTION_ID_FIELD),
                 llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: task.get(llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD),
             },
+            "stage_name": stage.stage_name,
             "original_proposal": fallback_proposal.get("original_proposal"),
-            "accepted_task": task,
+            "accepted_task": dict(stage.task),
             "task_reason": fallback_proposal.get("task_reason"),
             "stage_budget_profile": fallback_proposal.get("stage_budget_profile"),
             "budget_rationale": fallback_proposal.get("budget_rationale"),
             "proposal_fallback_used": True,
             "proposal_failure_reason": fallback_proposal.get("proposal_failure_reason"),
+            **_stage_proposal_metadata(stage),
         }
     )
 
@@ -1511,10 +1645,12 @@ def _log_proposal_fallback(
 def _budget_prompt_context(settings: LLMCurriculumSettings, stage_index: int, cumulative_timesteps: int) -> dict[str, Any]:
     """Return bounded budget context embedded in LLM proposal prompts."""
     budget_settings = settings.llm_stage_budget
+    allowed_profile_names = _allowed_budget_profile_names(budget_settings, stage_index)
     return {
         "enabled": budget_settings.enabled,
-        "allowed_profiles": {name: {"total_timesteps": timesteps} for name, timesteps in budget_settings.profiles.items()},
-        "default_profile": budget_settings.default_profile,
+        "allowed_profile_names": list(allowed_profile_names),
+        "allowed_profiles": {name: {"total_timesteps": budget_settings.profiles[name]} for name in allowed_profile_names},
+        "default_profile": _default_stage_budget_profile(settings, stage_index),
         "min_stage_timesteps": budget_settings.min_stage_timesteps,
         "max_stage_timesteps": budget_settings.max_stage_timesteps,
         "total_budget_cap_timesteps": budget_settings.total_budget_cap_timesteps,
@@ -1522,6 +1658,7 @@ def _budget_prompt_context(settings: LLMCurriculumSettings, stage_index: int, cu
         "next_stage_index": stage_index,
         "remaining_stage_slots_including_current": max(settings.max_stages - stage_index + 1, 0),
         "guidance": {
+            "bootstrap": "stage 1 policy warmup only",
             "short": "easy confirmation stage",
             "normal": "ordinary progression",
             "recovery": "previous stage unstable but promising",
@@ -1577,6 +1714,8 @@ def _stage_proposal_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
     return {
         "proposal_type": stage.proposal_type,
         "original_proposal": stage.original_proposal,
+        "accepted_task": dict(stage.task),
+        "stage_display_name": stage.stage_name,
         "task_distribution_reference": stage.task_distribution_reference,
         "resolved_task": stage.resolved_task or dict(stage.task),
         "resolved_task_shape": stage.resolved_task_shape or stage.task_shape,
@@ -1768,6 +1907,8 @@ def _stage_proposal_metadata_keys() -> tuple[str, ...]:
     return (
         "proposal_type",
         "original_proposal",
+        "accepted_task",
+        "stage_display_name",
         "task_distribution_reference",
         "resolved_task",
         "resolved_task_shape",

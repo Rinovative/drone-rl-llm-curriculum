@@ -533,6 +533,7 @@ def _suite_payloads(
     final_stage_index = int(stages[-1]["stage_index"])
 
     for stage in selected_stages:
+        stage_manifest = _read_json(Path(str(stage["manifest_path"]))) if stage.get("manifest_path") else {}
         stage_index = int(stage["stage_index"])
         stage_name = str(stage["stage_name"])
         stage_dir_name = f"stage{stage_index:02d}_{stage_name}"
@@ -556,8 +557,9 @@ def _suite_payloads(
                     output_dir=stage_output_root / _safe_name(suite_task.task_name),
                     eval_steps=int(eval_steps_override or suite.eval_steps),
                     seed=suite.seed,
-                    total_timesteps=int(stage.get("total_timesteps", 0)),
-                    normalize_actions=bool(stage.get("normalize_actions", True)),
+                    total_timesteps=int(stage.get("total_timesteps", stage_manifest.get("total_timesteps", 0))),
+                    normalize_actions=bool(stage.get("normalize_actions", stage_manifest.get("normalize_actions", True))),
+                    **_stage_evaluation_env_kwargs(stage, stage_manifest),
                     evaluation_name=evaluation_name,
                     evaluation_suite_name=suite.evaluation_name,
                     suite_task_name=suite_task.task_name,
@@ -671,6 +673,7 @@ def _own_stage_payloads(
                     seed=int(stage.get("seed", default_seed)),
                     total_timesteps=int(stage.get("total_timesteps", stage_manifest.get("total_timesteps", 0))),
                     normalize_actions=bool(stage.get("normalize_actions", stage_manifest.get("normalize_actions", True))),
+                    **_stage_evaluation_env_kwargs(stage, stage_manifest),
                     evaluation_name=evaluation_name,
                     evaluation_suite_name=None,
                     suite_task_name=stage_name,
@@ -689,6 +692,18 @@ def _own_stage_payloads(
             }
         )
     return payloads
+
+
+def _stage_evaluation_env_kwargs(stage: Mapping[str, Any], stage_manifest: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return PPO-facing env flags from a curriculum stage and optional manifest."""
+    manifest = stage_manifest or {}
+    return {
+        "action_interface": str(stage.get("action_interface") or manifest.get("action_interface") or "pid_position"),
+        "rpm_delta_scale": float(stage.get("rpm_delta_scale") or manifest.get("rpm_delta_scale") or 0.05),
+        "include_dynamics_observation": bool(stage.get("include_dynamics_observation", manifest.get("include_dynamics_observation", False))),
+        "include_previous_action": bool(stage.get("include_previous_action", manifest.get("include_previous_action", False))),
+        "source_manifest_path": Path(str(stage["manifest_path"])) if stage.get("manifest_path") else None,
+    }
 
 
 def _curriculum_run_name(summary: Mapping[str, Any]) -> str:
@@ -784,6 +799,12 @@ def _evaluated_model_entry(
         "source_curriculum_kind": metrics.get("source_curriculum_kind"),
         "source_stage": metrics.get("source_stage"),
         "model_scope": metrics.get("model_scope"),
+        "source_manifest_path": metrics.get("source_manifest_path"),
+        "action_interface": metrics.get("action_interface"),
+        "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+        "normalize_actions": metrics.get("normalize_actions"),
+        "include_dynamics_observation": metrics.get("include_dynamics_observation"),
+        "include_previous_action": metrics.get("include_previous_action"),
         "canonical_owner": "convenience_baseline" if result.model_role == "baseline" else "curriculum_stage",
     }
     if result.model_role == "baseline":
