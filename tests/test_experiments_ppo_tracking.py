@@ -419,13 +419,13 @@ def test_run_name_override_becomes_default_wandb_name(monkeypatch: pytest.Monkey
 
     ppo_tracking.run_ppo_tracking_smoke_from_config(
         config_path="configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
-        run_name="curriculum_llm_pid_dynprev_m-taskdist_medium_stage01_line_seed0",
+        run_name="llm_curriculum_pid_dynprev_m-taskdist_medium_stage01_line_seed0",
     )
 
     settings = captured["settings"]
     assert isinstance(settings, ppo_tracking.PPOTrackingSmokeSettings)
-    assert settings.run_name == "curriculum_llm_pid_dynprev_m-taskdist_medium_stage01_line_seed0"
-    assert settings.wandb_name == "curriculum_llm_pid_dynprev_m-taskdist_medium_stage01_line_seed0"
+    assert settings.run_name == "llm_curriculum_pid_dynprev_m-taskdist_medium_stage01_line_seed0"
+    assert settings.wandb_name == "llm_curriculum_pid_dynprev_m-taskdist_medium_stage01_line_seed0"
 
 
 def test_ppo_tracking_run_name_controls_default_artifact_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1279,6 +1279,14 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert result.metrics["curriculum_kind"] is None
     assert "artifact_layout" not in result.metrics
     assert Path(result.model_path) == tmp_path / "runs" / "configured_ppo" / "training" / "models" / "configured_ppo.zip"
+    assert Path(result.last_model_path or "") == Path(result.model_path)
+    assert result.best_model_path is None
+    assert result.best_model_metric is None
+    assert result.best_model_step is None
+    assert result.best_model_source == "not_selected_no_eval_callback"
+    assert result.metrics["last_model_path"] == result.model_path
+    assert result.metrics["best_model_path"] is None
+    assert result.metrics["best_model_source"] == "not_selected_no_eval_callback"
     assert Path(result.metrics_path) == tmp_path / "runs" / "configured_ppo" / "training" / "metrics" / "configured_ppo_metrics.json"
     assert Path(result.manifest_path) == tmp_path / "runs" / "configured_ppo" / "training" / "manifest.json"
     assert Path(result.metrics["run_manifest_path"]) == tmp_path / "runs" / "configured_ppo" / "run_manifest.json"
@@ -1310,6 +1318,13 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert manifest["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert manifest["run_kind"] == "direct_ppo"
     assert manifest["curriculum_kind"] is None
+    assert manifest["last_model_path"] == result.model_path
+    assert manifest["last_model_path_relative"] == "training/models/configured_ppo.zip"
+    assert manifest["best_model_path"] is None
+    assert manifest["best_model_path_relative"] is None
+    assert manifest["best_model_metric"] is None
+    assert manifest["best_model_step"] is None
+    assert manifest["best_model_source"] == "not_selected_no_eval_callback"
     assert "artifact_layout" not in manifest
     run_root = tmp_path / "runs" / "configured_ppo"
     training_snapshot = run_root / "config" / "training_config.yaml"
@@ -1355,8 +1370,16 @@ def test_run_ppo_tracking_smoke_passes_resolved_ppo_config(  # noqa: PLR0915
     assert run_manifest["config"]["effective_rollout_steps"] == CONFIGURED_TEST_PPO_N_STEPS * CONFIGURED_TEST_NUM_ENVS
     assert "artifact_layout" not in run_manifest
     assert run_manifest["training"]["manifest_path"] == result.manifest_path
+    assert run_manifest["last_model_path"] == result.model_path
+    assert run_manifest["last_model_path_relative"] == "training/models/configured_ppo.zip"
+    assert run_manifest["best_model_path"] is None
+    assert run_manifest["best_model_source"] == "not_selected_no_eval_callback"
     assert run_manifest["training"]["manifest_path_relative"] == "training/manifest.json"
     assert run_manifest["training"]["model_path_relative"] == "training/models/configured_ppo.zip"
+    assert run_manifest["training"]["last_model_path"] == result.model_path
+    assert run_manifest["training"]["last_model_path_relative"] == "training/models/configured_ppo.zip"
+    assert run_manifest["training"]["best_model_path"] is None
+    assert run_manifest["training"]["best_model_source"] == "not_selected_no_eval_callback"
     assert run_manifest["training"]["metrics_path"] == result.metrics_path
     assert run_manifest["training"]["metrics_path_relative"] == "training/metrics/configured_ppo_metrics.json"
     assert run_manifest["config"]["training_config_snapshot_path"] == str(training_snapshot)

@@ -19,17 +19,22 @@ from src.experiments.training import experiments_training_ppo_tracking as ppo_tr
 
 LANE_ASSIGNMENT = Path("docs/experiments/overnight_lane_assignment.tsv")
 MANUAL_CURRICULUM_UNIT_COUNT = 5
-LLM_CURRICULUM_UNIT_COUNT = 10
+LLM_CURRICULUM_STAGE_COUNT = 10
+LLM_CURRICULUM_UNIT_COUNT = 5
 REFERENCE_MEDIUM_TIMESTEPS = 500000
 DIRECT_RPM_MIN_RELAXED_RECOVERY_STEPS = 20
 MANUAL_TOTAL_BUDGET_TIMESTEPS = MANUAL_CURRICULUM_UNIT_COUNT * REFERENCE_MEDIUM_TIMESTEPS
+LLM_TOTAL_BUDGET_TIMESTEPS = MANUAL_TOTAL_BUDGET_TIMESTEPS
+BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml")
+BOOTSTRAP_HOVER_TARGET_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 1.4]}
 LLM_BUDGET_PROFILE_TIMESTEPS = {
-    "bootstrap": 750000,
-    "short": 375000,
-    "normal": 500000,
-    "recovery": 625000,
-    "extend": 750000,
+    "bootstrap": 500000,
+    "short": 175000,
+    "normal": 250000,
+    "recovery": 325000,
+    "extend": 400000,
 }
+LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recovery": 0.65, "extend": 0.8}
 EXPECTED_EXPERIMENT_IDS = {
     "direct_ppo_pid_baseline_medium_seed0",
     "direct_ppo_pid_dynprev_medium_seed0",
@@ -47,8 +52,8 @@ EXPECTED_EXPERIMENT_IDS = {
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0",
     "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0",
     "curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0",
-    "curriculum_llm_pid_dynprev_m-taskdist_medium_seed0",
-    "curriculum_llm_directrpm_dynprev_m-taskdist_medium_seed0",
+    "llm_curriculum_pid_dynprev_m-taskdist_medium_seed0",
+    "llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0",
 }
 
 
@@ -63,7 +68,7 @@ def test_lane_assignment_contains_exact_approved_matrix() -> None:
 
     assert LANE_ASSIGNMENT.is_file()
     assert {row["experiment_id"] for row in rows} == EXPECTED_EXPERIMENT_IDS
-    assert {row["lane"] for row in rows} == {"1", "2", "3", "4"}
+    assert {row["lane"] for row in rows} == {"1", "2", "3", "4", "5", "6"}
     assert all("final" not in row["config_path"] for row in rows)
     assert all("task_distribution_tracking_small" not in row["config_path"] for row in rows)
 
@@ -74,7 +79,7 @@ def test_lane_unit_counts_are_balanced() -> None:
     for row in _assignment_rows():
         totals[row["lane"]] = totals.get(row["lane"], 0) + int(row["unit_count"])
 
-    assert totals == {"1": 11, "2": 11, "3": 11, "4": 11}
+    assert totals == {"1": 6, "2": 6, "3": 6, "4": 6, "5": 5, "6": 5}
 
 
 def test_all_listed_configs_exist_and_match_run_names() -> None:
@@ -123,18 +128,28 @@ def test_all_listed_configs_exist_and_match_run_names() -> None:
                 assert reference_settings.termination_limits.profile == "direct_rpm_relaxed"
             else:
                 assert reference_settings.termination_limits.profile == "pid_relaxed"
-            assert settings.max_stages == LLM_CURRICULUM_UNIT_COUNT
+            assert settings.max_stages == LLM_CURRICULUM_STAGE_COUNT
             assert int(row["unit_count"]) == LLM_CURRICULUM_UNIT_COUNT
             assert settings.reference_medium_timesteps == REFERENCE_MEDIUM_TIMESTEPS
             assert reference_settings.total_timesteps == settings.reference_medium_timesteps
+            assert settings.curriculum_name.startswith("llm_curriculum_")
+            assert settings.stage_budget_multipliers == LLM_BUDGET_MULTIPLIERS
             assert settings.llm_stage_budget.enabled is True
             assert settings.llm_stage_budget.profiles == LLM_BUDGET_PROFILE_TIMESTEPS
-            assert settings.llm_stage_budget.total_budget_cap_timesteps is not None
-            assert settings.llm_stage_budget.total_budget_cap_timesteps >= 10 * REFERENCE_MEDIUM_TIMESTEPS
-            assert settings.llm_stage_budget.total_budget_cap_timesteps <= 12 * REFERENCE_MEDIUM_TIMESTEPS
+            assert settings.llm_stage_budget.total_budget_cap_timesteps == LLM_TOTAL_BUDGET_TIMESTEPS
+            assert settings.llm_stage_budget.min_stage_timesteps == LLM_BUDGET_PROFILE_TIMESTEPS["short"]
+            assert settings.llm_stage_budget.max_stage_timesteps == LLM_BUDGET_PROFILE_TIMESTEPS["bootstrap"]
             assert settings.bootstrap_stage is not None
+            assert settings.bootstrap_stage.stage_name == "hover_stabilization"
+            assert settings.bootstrap_stage.task_shape == "hover_stabilization"
+            assert settings.bootstrap_stage.total_timesteps == REFERENCE_MEDIUM_TIMESTEPS
             assert settings.bootstrap_stage.requested_stage_budget_profile == "bootstrap"
-            assert row["expected_run_name"] == f"curriculum_llm_{settings.curriculum_name.removeprefix('curriculum_llm_')}_seed{settings.seed}"
+            assert settings.bootstrap_stage.task_distribution_id == "bootstrap_randomized_hover_target"
+            assert settings.bootstrap_stage.task_distribution_config_path == BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG
+            assert settings.bootstrap_stage.bootstrap_stage_source == "deterministic_config"
+            assert settings.bootstrap_stage.bootstrap_task_shape == "hover_stabilization"
+            assert settings.bootstrap_stage.bootstrap_target_sampling_bounds == BOOTSTRAP_HOVER_TARGET_BOUNDS
+            assert row["expected_run_name"] == f"{settings.curriculum_name}_seed{settings.seed}"
         else:
             raise AssertionError(row["kind"])
 
@@ -175,6 +190,7 @@ def test_task_distribution_configs_and_families_validate() -> None:
         "configs/tasks/task_distribution_line_small.yaml",
         "configs/tasks/task_distribution_tracking_small.yaml",
         "configs/tasks/task_distribution_tracking_medium.yaml",
+        "configs/tasks/task_distribution_hover_bootstrap_medium.yaml",
         "configs/tasks/task_distribution_tracking_broad.yaml",
     ):
         settings = envs.task_distribution.load_task_distribution_settings(config_path)
@@ -200,6 +216,19 @@ def test_task_distribution_configs_and_families_validate() -> None:
     assert envs.task_distribution.unsupported_requested_task_families() == ()
 
 
+def test_bootstrap_hover_distribution_uses_fixed_medium_bounds() -> None:
+    """Verify LLM Stage 1 uses a randomized hover-target bootstrap, not broad tracking."""
+    settings = envs.task_distribution.load_task_distribution_settings(BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG)
+
+    assert settings.name == "bootstrap_randomized_hover_target"
+    assert settings.strength == 1.0
+    assert settings.family_weights == {"hover_stabilization": 1.0}
+    hover_variation = settings.variations["hover_stabilization"]
+    assert hover_variation["x_range_m"] == BOOTSTRAP_HOVER_TARGET_BOUNDS["x"]
+    assert hover_variation["y_range_m"] == BOOTSTRAP_HOVER_TARGET_BOUNDS["y"]
+    assert hover_variation["z_range_m"] == BOOTSTRAP_HOVER_TARGET_BOUNDS["z"]
+
+
 def test_evaluation_suites_validate_and_include_supported_broad_tasks() -> None:
     """Verify fixed deterministic evaluation suites load through the suite parser."""
     variation = evaluation_suites.load_evaluation_suite("configs/evaluation/evaluation_task_suite_variation.yaml")
@@ -217,6 +246,8 @@ def test_runner_and_helper_scripts_have_valid_bash_syntax() -> None:
         "scripts/run_lane_2.sh",
         "scripts/run_lane_3.sh",
         "scripts/run_lane_4.sh",
+        "scripts/run_lane_5.sh",
+        "scripts/run_lane_6.sh",
         "scripts/experiment_runner_common.sh",
         "scripts/experiment_matrix.sh",
         "scripts/evaluate_variation_suite.sh",
@@ -264,9 +295,10 @@ def test_runner_preserves_wandb_and_evaluation_phase_order() -> None:
 
 
 def test_lane_assignment_uses_updated_curriculum_unit_counts() -> None:
-    """Verify documented lane assignment uses 5-stage manual and 10-stage LLM units."""
+    """Verify documented lane assignment uses 5-stage manual and 5-unit LLM curricula."""
     rows = _assignment_rows()
 
     assert {row["unit_count"] for row in rows if row["kind"] == "manual_curriculum"} == {"5"}
-    assert {row["unit_count"] for row in rows if row["kind"] == "llm_curriculum"} == {"10"}
+    assert {row["unit_count"] for row in rows if row["kind"] == "llm_curriculum"} == {"5"}
     assert {row["unit_count"] for row in rows if row["kind"] == "direct_ppo"} == {"1"}
+    assert not any(row["experiment_id"].startswith("curriculum_llm_") for row in rows)

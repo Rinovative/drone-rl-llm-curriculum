@@ -656,6 +656,8 @@ def test_direct_policy_suite_evaluation_uses_manifest_env_flags(
     run_root = tmp_path / "storage" / "runs" / run_name
     run_manifest_path = _write_direct_run_manifest(run_root, run_name)
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    last_model_path = run_root / "training" / "models" / f"{run_name}_last.zip"
+    last_model_path.write_bytes(b"last-model")
     run_manifest.update(
         {
             "action_interface": "direct_rpm",
@@ -663,6 +665,12 @@ def test_direct_policy_suite_evaluation_uses_manifest_env_flags(
             "include_dynamics_observation": True,
             "include_previous_action": True,
             "normalize_actions": True,
+        }
+    )
+    run_manifest["training"].update(
+        {
+            "last_model_path": str(last_model_path),
+            "last_model_path_relative": f"training/models/{run_name}_last.zip",
         }
     )
     run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -694,6 +702,12 @@ def test_direct_policy_suite_evaluation_uses_manifest_env_flags(
     evaluated_model = metrics["evaluated_models"][0]
     assert len(captured_specs) == 1
     assert captured_specs[0].source_manifest_path == run_manifest_path
+    assert captured_specs[0].model_path == last_model_path.resolve(strict=False)
+    assert captured_specs[0].evaluated_model_source == "last"
+    assert metrics["evaluated_model_path"] == str(last_model_path.resolve(strict=False))
+    assert metrics["evaluated_model_source"] == "last"
+    assert evaluated_model["evaluated_model_path"] == str(last_model_path.resolve(strict=False))
+    assert evaluated_model["evaluated_model_source"] == "last"
     assert captured_specs[0].action_interface == "direct_rpm"
     assert captured_specs[0].rpm_delta_scale == EVAL_RPM_DELTA_SCALE
     assert captured_specs[0].include_dynamics_observation is True
@@ -704,6 +718,67 @@ def test_direct_policy_suite_evaluation_uses_manifest_env_flags(
     assert evaluated_model["rpm_delta_scale"] == EVAL_RPM_DELTA_SCALE
     assert evaluated_model["include_dynamics_observation"] is True
     assert evaluated_model["include_previous_action"] is True
+
+
+def test_direct_policy_suite_evaluation_prefers_best_model_from_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify direct PPO suite evaluation chooses manifest best models before last models."""
+    run_name = "direct_ppo_line_seed0"
+    run_root = tmp_path / "storage" / "runs" / run_name
+    run_manifest_path = _write_direct_run_manifest(run_root, run_name)
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    best_model_path = run_root / "training" / "models" / f"{run_name}_best.zip"
+    last_model_path = run_root / "training" / "models" / f"{run_name}_last.zip"
+    best_model_path.write_bytes(b"best-model")
+    last_model_path.write_bytes(b"last-model")
+    run_manifest["training"].update(
+        {
+            "best_model_path": str(best_model_path),
+            "best_model_path_relative": f"training/models/{run_name}_best.zip",
+            "last_model_path": str(last_model_path),
+            "last_model_path_relative": f"training/models/{run_name}_last.zip",
+        }
+    )
+    run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    suite_path = tmp_path / "line_eval_suite.yaml"
+    _write_suite_config(suite_path, "line_eval", "line_basic")
+    captured_specs: list[policy_evaluation.PolicyEvaluationSpec] = []
+
+    def fake_collect(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        task: dict[str, Any],
+        diagnostics_dir: Path,
+    ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
+        del task
+        captured_specs.append(spec)
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        trace_path = diagnostics_dir / "evaluation_trace.jsonl"
+        trace_path.write_text("{}\n", encoding="utf-8")
+        return _FakeDiagnostics(metrics={"episode_count": 1}, trace_records=[]), {"evaluation_trace_path": str(trace_path)}
+
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
+
+    result = policy_evaluation.run_direct_policy_suite_evaluation(
+        run_manifest_path=run_manifest_path,
+        suite_path=suite_path,
+        wandb_mode="disabled",
+    )
+
+    metrics = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+    evaluated_model = metrics["evaluated_models"][0]
+    assert len(captured_specs) == 1
+    assert captured_specs[0].model_path == best_model_path.resolve(strict=False)
+    assert captured_specs[0].evaluated_model_source == "best"
+    assert metrics["evaluated_model_path"] == str(best_model_path.resolve(strict=False))
+    assert metrics["evaluated_model_path_relative"] == f"training/models/{run_name}_best.zip"
+    assert metrics["evaluated_model_source"] == "best"
+    assert manifest["evaluated_model_path"] == metrics["evaluated_model_path"]
+    assert manifest["evaluated_model_source"] == "best"
+    assert evaluated_model["evaluated_model_path"] == str(best_model_path.resolve(strict=False))
+    assert evaluated_model["evaluated_model_source"] == "best"
 
 
 def test_policy_evaluation_env_builder_applies_spec_action_and_observation_flags(

@@ -485,7 +485,12 @@ def _sample_hover_task(settings: TaskDistributionSettings, rng: np.random.Genera
     variation = settings.variations.get(FAMILY_HOVER, {})
     base = settings.base_task
     position = _base_position(base)
-    xy = position[:2] + _sample_xy_offset(rng, _float_value(variation.get("xy_radius_m", 0.0)) * settings.strength)
+    if "x_range_m" in variation or "y_range_m" in variation:
+        x = _sample_range(rng, variation.get("x_range_m"), default=(position[0], position[0]), anchor=position[0], strength=settings.strength)
+        y = _sample_range(rng, variation.get("y_range_m"), default=(position[1], position[1]), anchor=position[1], strength=settings.strength)
+        xy = np.array([x, y], dtype=float)
+    else:
+        xy = position[:2] + _sample_xy_offset(rng, _float_value(variation.get("xy_radius_m", 0.0)) * settings.strength)
     z = _sample_range(rng, variation.get("z_range_m"), default=(position[2], position[2]), anchor=position[2], strength=settings.strength)
     duration = _sample_range(
         rng,

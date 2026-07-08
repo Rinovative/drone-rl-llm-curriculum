@@ -1,7 +1,5 @@
 # Agent Instructions
 
-Before making changes, read `PROJECT_BRIEF.md`.
-
 This repository is a research project on drone reinforcement learning with LLM-guided curriculum generation.
 
 ## Codex Environment Notes

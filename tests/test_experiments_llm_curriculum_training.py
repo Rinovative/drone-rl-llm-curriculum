@@ -24,15 +24,17 @@ EXPECTED_BASE_OBSERVATION_DIM = 10
 EXPECTED_TRAINING_TOTAL_TIMESTEPS = 16
 EXPECTED_LOCAL_LLM_MAX_STAGES = 10
 EXPECTED_REFERENCE_MEDIUM_TIMESTEPS = 500000
-EXPECTED_LLM_BUDGET_CAP = 5500000
+EXPECTED_LLM_BUDGET_CAP = 2500000
 EXPECTED_LLM_BUDGET_PROFILES = {
-    "bootstrap": 750000,
-    "short": 375000,
-    "normal": 500000,
-    "recovery": 625000,
-    "extend": 750000,
+    "bootstrap": 500000,
+    "short": 175000,
+    "normal": 250000,
+    "recovery": 325000,
+    "extend": 400000,
 }
-EXPECTED_LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.5, "short": 0.75, "normal": 1.0, "recovery": 1.25, "extend": 1.5}
+EXPECTED_LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recovery": 0.65, "extend": 0.8}
+EXPECTED_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml")
+EXPECTED_BOOTSTRAP_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 1.4]}
 BUDGET_TEST_STAGE_COUNT = 4
 BUDGET_TEST_CAP = 110
 BUDGET_TEST_STAGE_BUDGETS = [30, 40, 20, 20]
@@ -161,11 +163,17 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
             "curriculum_recommended_next_tasks": [],
             "curriculum_avoid_next_tasks": [],
         }
+        best_model_path = str(tmp_path / f"{run_name}_best.zip") if "stage01" in run_name else None
         return ppo_tracking.PPOTrackingSmokeResult(
             model_path=str(tmp_path / f"{run_name}.zip"),
             metrics_path=str(tmp_path / f"{run_name}_metrics.json"),
             manifest_path=str(tmp_path / f"{run_name}_manifest.json"),
             metrics=metrics,
+            last_model_path=str(tmp_path / f"{run_name}.zip"),
+            best_model_path=best_model_path,
+            best_model_metric="mean_position_error_m" if best_model_path is not None else None,
+            best_model_step=8 if best_model_path is not None else None,
+            best_model_source="unit_test_best" if best_model_path is not None else None,
         )
 
     monkeypatch.setattr(ppo_tracking, "run_ppo_tracking_smoke_from_config", fake_run)
@@ -177,7 +185,7 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert Path(result.summary_path) == expected_root / "run_manifest.json"
     assert len(calls) == TRAINING_STAGE_COUNT
     assert calls[0]["initial_model_path"] is None
-    assert calls[1]["initial_model_path"] == summary["stages"][0]["model_path"]
+    assert calls[1]["initial_model_path"] == summary["stages"][0]["best_model_path"]
     assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
     assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
     assert calls[0]["wandb_group"] == "curriculum/llm/curriculum_llm_unit_seed7"
@@ -214,8 +222,12 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert summary["include_previous_action"] is False
     assert summary["observation_dim"] == EXPECTED_BASE_OBSERVATION_DIM
     assert summary["policy_kwargs"] is None
+    assert summary["stages"][0]["selected_transfer_model_path"] == summary["stages"][0]["best_model_path"]
+    assert summary["stages"][0]["selected_transfer_model_source"] == "best"
+    assert summary["stages"][1]["previous_model_path"] == summary["stages"][0]["best_model_path"]
     assert summary["final_stage_run_name"] == "curriculum_llm_unit_stage02_nearby_target_hover_seed7"
     assert summary["final_model_path"] == summary["stages"][1]["model_path"]
+    assert summary["final_model_source"] == "last"
     assert summary["stages"][1]["task"] == {
         "task_type": "trajectory",
         "shape": "nearby_target_hover",
@@ -267,6 +279,7 @@ def test_llm_taskdist_curriculum_configs_load() -> None:
         base_settings = ppo_tracking.load_ppo_tracking_settings(settings.base_training_config)
 
         assert settings.llm_provider == "openai_compatible"
+        assert settings.curriculum_name.startswith("llm_curriculum_")
         assert settings.max_stages == EXPECTED_LOCAL_LLM_MAX_STAGES
         assert settings.reference_medium_config_path == settings.base_training_config
         assert settings.reference_medium_timesteps == EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
@@ -274,12 +287,22 @@ def test_llm_taskdist_curriculum_configs_load() -> None:
         assert base_settings.total_timesteps == EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
         assert settings.llm_stage_budget.enabled is True
         assert settings.llm_stage_budget.total_budget_cap_timesteps == EXPECTED_LLM_BUDGET_CAP
-        assert settings.llm_stage_budget.total_budget_cap_timesteps is not None
-        assert settings.llm_stage_budget.total_budget_cap_timesteps >= 10 * EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
-        assert settings.llm_stage_budget.total_budget_cap_timesteps <= 12 * EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
         assert settings.llm_stage_budget.profiles == EXPECTED_LLM_BUDGET_PROFILES
+        assert settings.llm_stage_budget.min_stage_timesteps == EXPECTED_LLM_BUDGET_PROFILES["short"]
+        assert settings.llm_stage_budget.max_stage_timesteps == EXPECTED_LLM_BUDGET_PROFILES["bootstrap"]
         assert settings.bootstrap_stage is not None
+        assert settings.bootstrap_stage.stage_name == "hover_stabilization"
+        assert settings.bootstrap_stage.task_shape == "hover_stabilization"
+        assert settings.bootstrap_stage.total_timesteps == EXPECTED_REFERENCE_MEDIUM_TIMESTEPS
         assert settings.bootstrap_stage.requested_stage_budget_profile == "bootstrap"
+        assert settings.bootstrap_stage.task_distribution_id == "bootstrap_randomized_hover_target"
+        assert settings.bootstrap_stage.task_distribution_config_path == EXPECTED_BOOTSTRAP_DISTRIBUTION_CONFIG
+        assert settings.bootstrap_stage.bootstrap_stage_source == "deterministic_config"
+        assert settings.bootstrap_stage.bootstrap_task_shape == "hover_stabilization"
+        assert settings.bootstrap_stage.bootstrap_target_sampling_bounds == EXPECTED_BOOTSTRAP_BOUNDS
+        run_name = llm_curriculum_training._curriculum_artifact_run_name(settings.curriculum_name, settings.seed)  # noqa: SLF001
+        assert run_name == f"{settings.curriculum_name}_seed{settings.seed}"
+        assert llm_curriculum_training._curriculum_wandb_group(run_name) == run_name  # noqa: SLF001
         assert settings.proposal_fallback.enabled is True
         assert settings.proposal_fallback.task_distribution_id == "tracking_medium"
         assert settings.proposal_fallback.default_stage_budget_profile == "short"

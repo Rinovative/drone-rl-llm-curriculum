@@ -210,11 +210,17 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
             "model_transfer_enabled": initial_model_path is not None,
             "model_transfer_source": initial_model_path,
         }
+        best_model_path = str(tmp_path / f"{run_name}_best.zip") if "stage01" in run_name else None
         return ppo_tracking.PPOTrackingSmokeResult(
             model_path=str(tmp_path / f"{run_name}.zip"),
             metrics_path=str(tmp_path / f"{run_name}_metrics.json"),
             manifest_path=str(tmp_path / f"{run_name}_manifest.json"),
             metrics=metrics,
+            last_model_path=str(tmp_path / f"{run_name}.zip"),
+            best_model_path=best_model_path,
+            best_model_metric="mean_position_error_m" if best_model_path is not None else None,
+            best_model_step=8 if best_model_path is not None else None,
+            best_model_source="unit_test_best" if best_model_path is not None else None,
         )
 
     monkeypatch.setattr(ppo_tracking, "run_ppo_tracking_smoke_from_config", fake_run)
@@ -263,6 +269,8 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert summary["final_stage"]["run_name"] == "curriculum_manual_line_smoke_stage02_nearby_target_hover_seed0"
     assert summary["final_stage"]["model_path"] == summary["final_model_path"]
     assert summary["final_stage"]["model_path_relative"] == summary["stages"][1]["model_path_relative"]
+    assert summary["final_stage"]["selected_model_source"] == "last"
+    assert summary["final_model_source"] == "last"
     assert summary["final_stage"]["manifest_path_relative"] == summary["stages"][1]["manifest_path_relative"]
     assert summary["stages"][0]["stage_dir"] == str(expected_root / "stages" / "stage01_hover_stabilization")
     assert summary["stages"][0]["stage_dir_relative"] == "stages/stage01_hover_stabilization"
@@ -281,10 +289,12 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert summary["stages"][0]["vec_env_type"] == "DummyVecEnv"
     assert summary["stages"][0]["effective_rollout_steps"] == EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS
     assert summary["stages"][0]["model_transfer_enabled"] is False
+    assert summary["stages"][0]["selected_transfer_model_path"] == summary["stages"][0]["best_model_path"]
+    assert summary["stages"][0]["selected_transfer_model_source"] == "best"
     assert summary["stages"][1]["model_transfer_enabled"] is True
-    assert summary["stages"][1]["previous_model_path"] == summary["stages"][0]["model_path"]
+    assert summary["stages"][1]["previous_model_path"] == summary["stages"][0]["best_model_path"]
     assert calls[0]["initial_model_path"] is None
-    assert calls[1]["initial_model_path"] == summary["stages"][0]["model_path"]
+    assert calls[1]["initial_model_path"] == summary["stages"][0]["best_model_path"]
     assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
     assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
     assert calls[0]["normalize_actions"] is True

@@ -445,7 +445,7 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
             normalize_actions=settings.normalize_actions,
         )
         stage_entries.append(entry)
-        previous_model_path = result.model_path
+        previous_model_path = _preferred_result_model_path(result)
 
     summary = _build_curriculum_summary(settings=settings, stage_entries=stage_entries, model_transfer_enabled=transfer_used)
     summary_path, manifest_path = _write_curriculum_artifacts(settings=settings, summary=summary)
@@ -577,6 +577,15 @@ def _stage_summary_entry(
         "training_dir_relative": utils.artifacts.path_relative_to(training_dir, run_root),
         "model_path": result.model_path,
         "model_path_relative": utils.artifacts.path_relative_to(result.model_path, run_root),
+        "last_model_path": _result_last_model_path(result),
+        "last_model_path_relative": utils.artifacts.path_relative_to(_result_last_model_path(result), run_root),
+        "best_model_path": result.best_model_path,
+        "best_model_path_relative": utils.artifacts.path_relative_to(result.best_model_path, run_root),
+        "best_model_metric": result.best_model_metric,
+        "best_model_step": result.best_model_step,
+        "best_model_source": result.best_model_source,
+        "selected_transfer_model_path": _preferred_result_model_path(result),
+        "selected_transfer_model_source": _preferred_result_model_source(result),
         "metrics_path": result.metrics_path,
         "metrics_path_relative": utils.artifacts.path_relative_to(result.metrics_path, run_root),
         "manifest_path": result.manifest_path,
@@ -600,6 +609,36 @@ def _stage_summary_entry(
     return entry
 
 
+def _result_last_model_path(result: ppo_tracking.PPOTrackingSmokeResult) -> str:
+    """Return the last saved model path from a PPO result."""
+    return result.last_model_path or result.model_path
+
+
+def _preferred_result_model_path(result: ppo_tracking.PPOTrackingSmokeResult) -> str:
+    """Return the preferred model path for curriculum transfer."""
+    return result.best_model_path or result.last_model_path or result.model_path
+
+
+def _preferred_result_model_source(result: ppo_tracking.PPOTrackingSmokeResult) -> str:
+    """Return whether a PPO result selected best or last for transfer."""
+    return "best" if result.best_model_path else "last"
+
+
+def _stage_selected_model_path(stage: Mapping[str, Any]) -> Any:
+    """Return the preferred model path from a stage summary."""
+    return stage.get("best_model_path") or stage.get("last_model_path") or stage.get("model_path")
+
+
+def _stage_selected_model_path_relative(stage: Mapping[str, Any]) -> Any:
+    """Return the preferred relative model path from a stage summary."""
+    return stage.get("best_model_path_relative") or stage.get("last_model_path_relative") or stage.get("model_path_relative")
+
+
+def _stage_selected_model_source(stage: Mapping[str, Any]) -> str:
+    """Return whether a stage exposes a best model or falls back to last."""
+    return "best" if stage.get("best_model_path") else "last"
+
+
 def _build_curriculum_summary(
     settings: ManualCurriculumSettings,
     stage_entries: Sequence[dict[str, Any]],
@@ -607,6 +646,7 @@ def _build_curriculum_summary(
 ) -> dict[str, Any]:
     """Build the curriculum-level JSON summary payload."""
     final_stage = stage_entries[-1]
+    final_model_path = _stage_selected_model_path(final_stage)
     run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
     run_manifest_path = utils.artifacts.get_run_manifest_path(run_name)
     return {
@@ -652,13 +692,29 @@ def _build_curriculum_summary(
         "task_distribution_family_weights": final_stage.get("task_distribution_family_weights"),
         "task_distribution_name": final_stage.get("task_distribution_name"),
         "final_stage_run_name": final_stage["run_name"],
-        "final_model_path": final_stage["model_path"],
+        "final_model_path": final_model_path,
+        "final_model_source": _stage_selected_model_source(final_stage),
+        "final_last_model_path": final_stage.get("last_model_path") or final_stage.get("model_path"),
+        "final_last_model_path_relative": final_stage.get("last_model_path_relative") or final_stage.get("model_path_relative"),
+        "final_best_model_path": final_stage.get("best_model_path"),
+        "final_best_model_path_relative": final_stage.get("best_model_path_relative"),
+        "final_best_model_metric": final_stage.get("best_model_metric"),
+        "final_best_model_step": final_stage.get("best_model_step"),
+        "final_best_model_source": final_stage.get("best_model_source"),
         "final_stage": {
             "stage_index": final_stage["stage_index"],
             "stage_name": final_stage["stage_name"],
             "run_name": final_stage["run_name"],
-            "model_path": final_stage["model_path"],
-            "model_path_relative": final_stage.get("model_path_relative"),
+            "model_path": final_model_path,
+            "model_path_relative": _stage_selected_model_path_relative(final_stage),
+            "last_model_path": final_stage.get("last_model_path") or final_stage.get("model_path"),
+            "last_model_path_relative": final_stage.get("last_model_path_relative") or final_stage.get("model_path_relative"),
+            "best_model_path": final_stage.get("best_model_path"),
+            "best_model_path_relative": final_stage.get("best_model_path_relative"),
+            "best_model_metric": final_stage.get("best_model_metric"),
+            "best_model_step": final_stage.get("best_model_step"),
+            "best_model_source": final_stage.get("best_model_source"),
+            "selected_model_source": _stage_selected_model_source(final_stage),
             "manifest_path": final_stage["manifest_path"],
             "manifest_path_relative": final_stage.get("manifest_path_relative"),
         },

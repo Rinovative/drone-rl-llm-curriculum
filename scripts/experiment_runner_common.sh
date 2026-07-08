@@ -146,7 +146,7 @@ experiment_wandb_group() {
   local variant seed action_interface task_distribution
   case "$kind" in
     manual_curriculum) echo "curriculum/manual/${run_name}" ;;
-    llm_curriculum) echo "curriculum/llm/${run_name}" ;;
+    llm_curriculum) echo "${run_name}" ;;
     direct_ppo)
       variant="${run_name#direct_ppo_}"
       seed="${variant##*_seed}"

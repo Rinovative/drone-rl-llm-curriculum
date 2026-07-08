@@ -263,13 +263,23 @@ class PPOTrackingSmokeResult:
     Parameters
     ----------
     model_path
-        Path to the saved Stable-Baselines3 PPO model zip.
+        Backward-compatible selected model path. This is the last saved model when no best checkpoint was selected.
     metrics_path
         Path to the written metrics JSON artifact.
     manifest_path
         Path to the written training manifest JSON artifact.
     metrics
         JSON-serializable metrics proving PPO trained and evaluated.
+    last_model_path
+        Path to the last saved Stable-Baselines3 PPO model zip.
+    best_model_path
+        Path to a selected best model when a best-model selection mechanism produced one.
+    best_model_metric
+        Metric used for best-model selection, when available.
+    best_model_step
+        Training step associated with the best model, when available.
+    best_model_source
+        Human-readable source of best-model metadata.
     warnings
         Nonfatal compatibility or checker warnings captured during the run.
 
@@ -279,6 +289,11 @@ class PPOTrackingSmokeResult:
     metrics_path: str
     manifest_path: str
     metrics: dict[str, Any]
+    last_model_path: str | None = None
+    best_model_path: str | None = None
+    best_model_metric: str | None = None
+    best_model_step: int | None = None
+    best_model_source: str | None = None
     warnings: tuple[str, ...] = ()
 
 
@@ -850,6 +865,11 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "eval_steps": active_settings.eval_steps,
             "seed": active_settings.seed,
             "model_path": str(model_path),
+            "last_model_path": str(model_path),
+            "best_model_path": None,
+            "best_model_metric": None,
+            "best_model_step": None,
+            "best_model_source": "not_selected_no_eval_callback",
             "metrics_path": str(metrics_path),
             "manifest_path": str(manifest_path),
             "run_manifest_path": str(run_manifest_path) if run_manifest_path is not None else None,
@@ -889,10 +909,12 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         utils.wandb.log_wandb_summary(wandb_run, metrics)
         artifact_paths = {
-            f"{training_run_name}_model": model_path,
+            f"{training_run_name}_last_model": model_path,
             f"{training_run_name}_metrics": metrics_path,
             f"{training_run_name}_manifest": manifest_path,
         }
+        if metrics.get("best_model_path"):
+            artifact_paths[f"{training_run_name}_best_model"] = Path(str(metrics["best_model_path"]))
         if run_manifest_path is not None:
             artifact_paths[f"{training_run_name}_run_manifest"] = run_manifest_path
         artifact_paths.update(_diagnostic_artifact_paths(training_run_name, metrics))
@@ -902,6 +924,11 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             metrics_path=str(metrics_path),
             manifest_path=str(manifest_path),
             metrics=metrics,
+            last_model_path=str(model_path),
+            best_model_path=None,
+            best_model_metric=None,
+            best_model_step=None,
+            best_model_source="not_selected_no_eval_callback",
             warnings=tuple(warnings),
         )
     finally:
@@ -1567,6 +1594,15 @@ def _build_manifest(
         "model_transfer_source": metrics.get("model_transfer_source"),
         "model_path": metrics["model_path"],
         "model_path_relative": utils.artifacts.path_relative_to(metrics["model_path"], _manifest_relative_base(settings, run_name)),
+        "last_model_path": metrics.get("last_model_path", metrics["model_path"]),
+        "last_model_path_relative": utils.artifacts.path_relative_to(
+            metrics.get("last_model_path", metrics["model_path"]), _manifest_relative_base(settings, run_name)
+        ),
+        "best_model_path": metrics.get("best_model_path"),
+        "best_model_path_relative": utils.artifacts.path_relative_to(metrics.get("best_model_path"), _manifest_relative_base(settings, run_name)),
+        "best_model_metric": metrics.get("best_model_metric"),
+        "best_model_step": metrics.get("best_model_step"),
+        "best_model_source": metrics.get("best_model_source"),
         "metrics_path": metrics["metrics_path"],
         "metrics_path_relative": utils.artifacts.path_relative_to(metrics["metrics_path"], _manifest_relative_base(settings, run_name)),
         "manifest_path": metrics["manifest_path"],
@@ -1607,6 +1643,13 @@ def _build_run_manifest(
             "manifest_path_relative": utils.artifacts.path_relative_to_run(metrics["manifest_path"], run_name),
             "model_path": metrics["model_path"],
             "model_path_relative": utils.artifacts.path_relative_to_run(metrics["model_path"], run_name),
+            "last_model_path": metrics.get("last_model_path", metrics["model_path"]),
+            "last_model_path_relative": utils.artifacts.path_relative_to_run(metrics.get("last_model_path", metrics["model_path"]), run_name),
+            "best_model_path": metrics.get("best_model_path"),
+            "best_model_path_relative": utils.artifacts.path_relative_to_run(metrics.get("best_model_path"), run_name),
+            "best_model_metric": metrics.get("best_model_metric"),
+            "best_model_step": metrics.get("best_model_step"),
+            "best_model_source": metrics.get("best_model_source"),
             "metrics_path": metrics["metrics_path"],
             "metrics_path_relative": utils.artifacts.path_relative_to_run(metrics["metrics_path"], run_name),
             "logs_dir": metrics["logs_dir"],
@@ -1691,6 +1734,15 @@ def _build_run_manifest(
         "initial_model_path": metrics.get("initial_model_path"),
         "model_transfer_enabled": metrics.get("model_transfer_enabled", False),
         "model_transfer_source": metrics.get("model_transfer_source"),
+        "model_path": metrics["model_path"],
+        "model_path_relative": utils.artifacts.path_relative_to_run(metrics["model_path"], run_name),
+        "last_model_path": metrics.get("last_model_path", metrics["model_path"]),
+        "last_model_path_relative": utils.artifacts.path_relative_to_run(metrics.get("last_model_path", metrics["model_path"]), run_name),
+        "best_model_path": metrics.get("best_model_path"),
+        "best_model_path_relative": utils.artifacts.path_relative_to_run(metrics.get("best_model_path"), run_name),
+        "best_model_metric": metrics.get("best_model_metric"),
+        "best_model_step": metrics.get("best_model_step"),
+        "best_model_source": metrics.get("best_model_source"),
         "wandb": metrics.get("wandb", {}),
         "run_metadata": dict(metrics.get("run_metadata", {})),
         **_run_metadata_manifest_fields(metrics),

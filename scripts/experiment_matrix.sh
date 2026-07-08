@@ -19,8 +19,8 @@ experiment_kind() {
     direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0) echo "direct_ppo" ;;
     curriculum_manual_pid_dynprev_m-taskdist_medium_seed0) echo "manual_curriculum" ;;
     curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0) echo "manual_curriculum" ;;
-    curriculum_llm_pid_dynprev_m-taskdist_medium_seed0) echo "llm_curriculum" ;;
-    curriculum_llm_directrpm_dynprev_m-taskdist_medium_seed0) echo "llm_curriculum" ;;
+    llm_curriculum_pid_dynprev_m-taskdist_medium_seed0) echo "llm_curriculum" ;;
+    llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0) echo "llm_curriculum" ;;
     *) return 1 ;;
   esac
 }
@@ -43,8 +43,8 @@ experiment_config() {
     direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0) echo "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium_ent005.yaml" ;;
     curriculum_manual_pid_dynprev_m-taskdist_medium_seed0) echo "configs/curricula/curriculum_pid_dynprev_m-taskdist_medium.yaml" ;;
     curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0) echo "configs/curricula/curriculum_directrpm_dynprev_m-taskdist_medium.yaml" ;;
-    curriculum_llm_pid_dynprev_m-taskdist_medium_seed0) echo "configs/curricula/llm_curriculum_pid_dynprev_m-taskdist_medium.yaml" ;;
-    curriculum_llm_directrpm_dynprev_m-taskdist_medium_seed0) echo "configs/curricula/llm_curriculum_directrpm_dynprev_m-taskdist_medium.yaml" ;;
+    llm_curriculum_pid_dynprev_m-taskdist_medium_seed0) echo "configs/curricula/llm_curriculum_pid_dynprev_m-taskdist_medium.yaml" ;;
+    llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0) echo "configs/curricula/llm_curriculum_directrpm_dynprev_m-taskdist_medium.yaml" ;;
     *) return 1 ;;
   esac
 }
@@ -54,7 +54,7 @@ experiment_run_name() { echo "$1"; }
 experiment_units() {
   case "$1" in
     curriculum_manual_*) echo "5" ;;
-    curriculum_llm_*) echo "10" ;;
+    llm_curriculum_*) echo "5" ;;
     direct_ppo_*) echo "1" ;;
     *) return 1 ;;
   esac
@@ -63,7 +63,7 @@ experiment_units() {
 experiment_priority() {
   case "$1" in
     direct_ppo_directrpm_dynprev_net128_m-taskdist_medium_seed0|direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0|direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0|curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0) echo "should-have" ;;
-    curriculum_llm_directrpm_dynprev_m-taskdist_medium_seed0) echo "optional" ;;
+    llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0) echo "optional" ;;
     *) echo "must-have" ;;
   esac
 }
@@ -86,18 +86,20 @@ experiment_notes() {
     direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0) echo "Experimental direct-RPM taskdist entropy 0.005 micro-HPO." ;;
     curriculum_manual_pid_dynprev_m-taskdist_medium_seed0) echo "Manual PID curriculum, 5 fixed-budget stages, medium task distribution base." ;;
     curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0) echo "Experimental manual direct-RPM curriculum, 5 fixed-budget stages." ;;
-    curriculum_llm_pid_dynprev_m-taskdist_medium_seed0) echo "Local LLM PID curriculum, 10 adaptive budget stages, medium task distribution references allowed." ;;
-    curriculum_llm_directrpm_dynprev_m-taskdist_medium_seed0) echo "Optional experimental local LLM direct-RPM curriculum, 10 conservative adaptive budget stages." ;;
+    llm_curriculum_pid_dynprev_m-taskdist_medium_seed0) echo "Local LLM PID curriculum, 10 adaptive stages capped at 5 units, medium task distribution references allowed." ;;
+    llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0) echo "Optional experimental local LLM direct-RPM curriculum, 10 conservative adaptive stages capped at 5 units." ;;
     *) return 1 ;;
   esac
 }
 
 lane_experiments() {
   case "$1" in
-    1) echo "curriculum_llm_pid_dynprev_m-taskdist_medium_seed0 direct_ppo_pid_baseline_medium_seed0" ;;
-    2) echo "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0 direct_ppo_pid_dynprev_medium_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0 direct_ppo_pid_dynprev_net128_medium_seed0 direct_ppo_pid_dynprev_net128_m-taskdist_medium_seed0" ;;
-    3) echo "curriculum_llm_directrpm_dynprev_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_medium_seed0" ;;
-    4) echo "direct_ppo_pid_dynprev_net128_m-taskdist_medium_low_lr_seed0 direct_ppo_pid_dynprev_net128_m-taskdist_medium_ent005_seed0 curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_net128_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0" ;;
+    1) echo "llm_curriculum_pid_dynprev_m-taskdist_medium_seed0 direct_ppo_pid_baseline_medium_seed0" ;;
+    2) echo "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0 direct_ppo_pid_dynprev_medium_seed0" ;;
+    3) echo "llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_medium_seed0" ;;
+    4) echo "curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_seed0" ;;
+    5) echo "direct_ppo_pid_dynprev_m-taskdist_medium_seed0 direct_ppo_pid_dynprev_net128_medium_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0 direct_ppo_pid_dynprev_net128_m-taskdist_medium_low_lr_seed0 direct_ppo_directrpm_dynprev_net128_m-taskdist_medium_seed0" ;;
+    6) echo "direct_ppo_pid_dynprev_net128_m-taskdist_medium_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0 direct_ppo_pid_dynprev_net128_m-taskdist_medium_ent005_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0" ;;
     *) return 1 ;;
   esac
 }

@@ -1,0 +1,21 @@
+name: bootstrap_randomized_hover_target
+task_distribution:
+  name: bootstrap_randomized_hover_target
+  enabled: true
+  mode: randomized
+  seed: 0
+  strength: 1.0
+  sample_on_reset: true
+  base_task:
+    task_type: trajectory
+    shape: hover_stabilization
+    duration_sec: 3.0
+    sample_rate_hz: 10.0
+    position: [0.0, 0.0, 1.0]
+  family_weights:
+    hover_stabilization: 1.0
+  variations:
+    hover_stabilization:
+      x_range_m: [-0.5, 0.5]
+      y_range_m: [-0.5, 0.5]
+      z_range_m: [0.7, 1.4]

@@ -534,6 +534,7 @@ def _suite_payloads(
 
     for stage in selected_stages:
         stage_manifest = _read_json(Path(str(stage["manifest_path"]))) if stage.get("manifest_path") else {}
+        model_path, evaluated_model_source = _stage_model_path_and_source(stage)
         stage_index = int(stage["stage_index"])
         stage_name = str(stage["stage_name"])
         stage_dir_name = f"stage{stage_index:02d}_{stage_name}"
@@ -550,7 +551,7 @@ def _suite_payloads(
                 "spec": policy_evaluation.PolicyEvaluationSpec(
                     label=f"{label_prefix}_{suite_task.task_name}",
                     model_role="stage",
-                    model_path=Path(str(stage["model_path"])),
+                    model_path=model_path,
                     task_config_path=task_config_paths[suite_task.task_name],
                     task_index=0,
                     task_shape=suite_task.task_shape,
@@ -572,6 +573,7 @@ def _suite_payloads(
                     source_curriculum_kind=curriculum_kind,
                     source_stage={"stage_index": stage_index, "stage_name": stage_name},
                     model_scope=model_scope,
+                    evaluated_model_source=evaluated_model_source,
                 ),
                 "stage_index": stage_index,
                 "stage_name": stage_name,
@@ -649,6 +651,7 @@ def _own_stage_payloads(
     final_stage_index = int(all_stages[-1]["stage_index"])
     for stage in stages:
         stage_manifest = _read_json(Path(str(stage["manifest_path"])))
+        model_path, evaluated_model_source = _stage_model_path_and_source(stage)
         stage_index = int(stage["stage_index"])
         stage_name = str(stage["stage_name"])
         stage_dir_name = f"stage{stage_index:02d}_{stage_name}"
@@ -664,7 +667,7 @@ def _own_stage_payloads(
                 "spec": policy_evaluation.PolicyEvaluationSpec(
                     label=stage_dir_name,
                     model_role="stage",
-                    model_path=Path(str(stage["model_path"])),
+                    model_path=model_path,
                     task_config_path=Path(str(stage_manifest["task_config_path"])),
                     task_index=int(stage_manifest.get("task_index", 0)),
                     task_shape=str(stage["task_shape"]),
@@ -683,6 +686,7 @@ def _own_stage_payloads(
                     source_curriculum_kind=curriculum_kind,
                     source_stage={"stage_index": stage_index, "stage_name": stage_name},
                     model_scope=model_scope,
+                    evaluated_model_source=evaluated_model_source,
                 ),
                 "stage_index": stage_index,
                 "stage_name": stage_name,
@@ -692,6 +696,25 @@ def _own_stage_payloads(
             }
         )
     return payloads
+
+
+def _stage_model_path_and_source(stage: Mapping[str, Any]) -> tuple[Path, str]:
+    """Return the best available stage model path and its source label."""
+    for source, key in (("best", "best_model_path"), ("last", "last_model_path"), ("last", "model_path")):
+        value = stage.get(key)
+        if isinstance(value, str) and value:
+            return Path(value), source
+    message = "curriculum stage must include best_model_path, last_model_path, or model_path"
+    raise ValueError(message)
+
+
+def _stage_model_path_relative(stage: Mapping[str, Any]) -> str | None:
+    """Return the relative path matching the selected stage model when available."""
+    for key in ("best_model_path_relative", "last_model_path_relative", "model_path_relative"):
+        value = stage.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _stage_evaluation_env_kwargs(stage: Mapping[str, Any], stage_manifest: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -760,6 +783,9 @@ def _evaluated_model_entry(
         "model_role": result.model_role,
         "model_path": result.model_path,
         "model_path_relative": utils.artifacts.path_relative_to(result.model_path, run_root),
+        "evaluated_model_path": metrics.get("evaluated_model_path"),
+        "evaluated_model_path_relative": utils.artifacts.path_relative_to(metrics.get("evaluated_model_path"), run_root),
+        "evaluated_model_source": metrics.get("evaluated_model_source"),
         "task_config_path_used_for_evaluation": result.task_config_path,
         "task_config_path_relative": utils.artifacts.path_relative_to(result.task_config_path, run_root),
         "task_shape_used_for_evaluation": result.task_shape,
@@ -835,8 +861,9 @@ def _update_curriculum_evaluation_index(
     task_names: list[str],
 ) -> None:
     """Update the owning curriculum run manifest with evaluation links."""
-    final_model_path = summary.get("final_model_path")
     final_stage = _stages(summary)[-1]
+    final_model_path, final_model_source = _stage_model_path_and_source(final_stage)
+    final_model_path_relative = _stage_model_path_relative(final_stage) or utils.artifacts.path_relative_to(final_model_path, run_root)
     index_entry = {
         "index_key": f"curriculum_evaluation:{evaluation_name}:{model_scope}",
         "run_name": _curriculum_run_name(summary),
@@ -862,8 +889,9 @@ def _update_curriculum_evaluation_index(
         "evaluation_manifest_relative": utils.artifacts.path_relative_to(aggregate_manifest_path, run_root),
         "model_label": f"curriculum_{model_scope}",
         "model_role": "stage",
-        "model_path": final_model_path if model_scope == "final-stage" else None,
-        "model_path_relative": utils.artifacts.path_relative_to(final_model_path, run_root) if model_scope == "final-stage" else None,
+        "model_path": str(final_model_path) if model_scope == "final-stage" else None,
+        "model_path_relative": final_model_path_relative if model_scope == "final-stage" else None,
+        "evaluated_model_source": final_model_source if model_scope == "final-stage" else None,
         "task_names": list(task_names),
         "summary_role": "derived_aggregate_link_summary",
         "canonical_evaluation_owner": "curriculum_stage",
@@ -909,15 +937,21 @@ def _update_curriculum_manifest_evaluation_links(
     """Add notebook-friendly curriculum evaluation links to the run manifest."""
     manifest = _read_json(run_manifest_path)
     final_stage = _stages(summary)[-1]
-    final_model_path = summary.get("final_model_path")
+    final_model_path, final_model_source = _stage_model_path_and_source(final_stage)
+    final_model_path_relative = _stage_model_path_relative(final_stage) or utils.artifacts.path_relative_to(final_model_path, run_root)
     existing_final_stage = manifest.get("final_stage")
     final_stage_link = dict(existing_final_stage) if isinstance(existing_final_stage, Mapping) else {}
     final_stage_link.update(
         {
             "stage_index": int(final_stage["stage_index"]),
             "stage_name": str(final_stage["stage_name"]),
-            "model_path": final_model_path,
-            "model_path_relative": utils.artifacts.path_relative_to(final_model_path, run_root),
+            "model_path": str(final_model_path),
+            "model_path_relative": final_model_path_relative,
+            "selected_model_source": final_model_source,
+            "last_model_path": final_stage.get("last_model_path") or final_stage.get("model_path"),
+            "last_model_path_relative": final_stage.get("last_model_path_relative") or final_stage.get("model_path_relative"),
+            "best_model_path": final_stage.get("best_model_path"),
+            "best_model_path_relative": final_stage.get("best_model_path_relative"),
         }
     )
     manifest["final_stage"] = final_stage_link
@@ -942,8 +976,9 @@ def _update_curriculum_manifest_evaluation_links(
             **link,
             "final_stage_index": int(final_stage["stage_index"]),
             "final_stage_name": str(final_stage["stage_name"]),
-            "final_model_path": final_model_path,
-            "final_model_path_relative": utils.artifacts.path_relative_to(final_model_path, run_root),
+            "final_model_path": str(final_model_path),
+            "final_model_path_relative": final_model_path_relative,
+            "final_model_source": final_model_source,
         }
     elif index_entry.get("model_scope") == "all-stages":
         existing = manifest.get("all_stage_evaluations")

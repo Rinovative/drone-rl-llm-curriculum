@@ -84,7 +84,8 @@ tasks:
             "run_kind": "curriculum",
             "curriculum_kind": "manual",
             "seed": 0,
-            "final_model_path": str(stage_root / "stage02_model.zip"),
+            "final_model_path": str(stage_root / "stage02_model_best.zip"),
+            "final_model_source": "best",
             "stages": [
                 {
                     "stage_index": 1,
@@ -92,6 +93,9 @@ tasks:
                     "task_shape": "hover_stabilization",
                     "run_name": "curriculum_manual_line_smoke_stage01_hover_stabilization_seed0",
                     "model_path": str(stage_root / "stage01_model.zip"),
+                    "last_model_path": str(stage_root / "stage01_model.zip"),
+                    "last_model_path_relative": "training/stage01_model.zip",
+                    "best_model_path": None,
                     "manifest_path": str(stage_one_manifest),
                     "eval_steps": 120,
                     "seed": 0,
@@ -104,6 +108,13 @@ tasks:
                     "task_shape": "line",
                     "run_name": "curriculum_manual_line_smoke_stage02_line_seed0",
                     "model_path": str(stage_root / "stage02_model.zip"),
+                    "last_model_path": str(stage_root / "stage02_model.zip"),
+                    "last_model_path_relative": "training/stage02_model.zip",
+                    "best_model_path": str(stage_root / "stage02_model_best.zip"),
+                    "best_model_path_relative": "training/stage02_model_best.zip",
+                    "best_model_metric": "mean_position_error_m",
+                    "best_model_step": 4096,
+                    "best_model_source": "unit_test_best",
                     "manifest_path": str(stage_two_manifest),
                     "eval_steps": 120,
                     "seed": 0,
@@ -222,6 +233,8 @@ def _fake_policy_evaluation(spec: object, artifacts: object) -> policy_evaluatio
         "suite_config_snapshot_path_relative": spec.suite_config_snapshot_path_relative,
         "suite_config_sha256": spec.suite_config_sha256,
         "model_path": str(spec.model_path),
+        "evaluated_model_path": str(spec.model_path),
+        "evaluated_model_source": spec.evaluated_model_source or "specified",
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
         "source_manifest_path": None if spec.source_manifest_path is None else str(spec.source_manifest_path),
@@ -461,6 +474,8 @@ def test_curriculum_evaluation_suite_final_stage_writes_stage_owned_artifacts_an
     assert all(entry["render_enabled"] is False for entry in payload["evaluated_models"])
     assert all(entry["plots_enabled"] is False for entry in payload["evaluated_models"])
     assert all(entry["trace_enabled"] is False for entry in payload["evaluated_models"])
+    assert all(entry["evaluated_model_path"].endswith("stage02_model_best.zip") for entry in payload["evaluated_models"])
+    assert all(entry["evaluated_model_source"] == "best" for entry in payload["evaluated_models"])
     copied_task_config = Path(payload["evaluated_models"][0]["task_config_path_used_for_evaluation"])
     assert copied_task_config.exists()
     assert copied_task_config.as_posix().endswith("config/evaluation_suites/final_suite/line_basic_task.yaml")
@@ -491,6 +506,13 @@ def test_curriculum_evaluation_suite_final_stage_writes_stage_owned_artifacts_an
     assert index_entry["suite_config_snapshot_path_relative"] == "config/evaluation_suites/final_suite_eval_suite.yaml"
     assert index_entry["suite_config_snapshot_relative"] == "config/evaluation_suites/final_suite_eval_suite.yaml"
     assert index_entry["task_names"] == ["line_basic", "hover_basic"]
+    assert index_entry["model_path"].endswith("stage02_model_best.zip")
+    assert index_entry["model_path_relative"] == "training/stage02_model_best.zip"
+    assert index_entry["evaluated_model_source"] == "best"
+    assert updated_manifest["final_stage"]["model_path"].endswith("stage02_model_best.zip")
+    assert updated_manifest["final_stage"]["selected_model_source"] == "best"
+    assert updated_manifest["final_stage"]["last_model_path"].endswith("stage02_model.zip")
+    assert updated_manifest["final_stage"]["best_model_path"].endswith("stage02_model_best.zip")
     assert index_entry["canonical_stage_evaluation_manifest_paths_relative"] == [
         "stages/stage02_line/evaluations/final_suite/line_basic/manifests/stage02_line_line_basic_manifest.json",
         "stages/stage02_line/evaluations/final_suite/hover_basic/manifests/stage02_line_hover_basic_manifest.json",
@@ -498,6 +520,9 @@ def test_curriculum_evaluation_suite_final_stage_writes_stage_owned_artifacts_an
     final_stage_evaluation = updated_manifest["final_stage_evaluation"]
     assert final_stage_evaluation["final_stage_index"] == 2
     assert final_stage_evaluation["final_stage_name"] == "line"
+    assert final_stage_evaluation["final_model_path"].endswith("stage02_model_best.zip")
+    assert final_stage_evaluation["final_model_path_relative"] == "training/stage02_model_best.zip"
+    assert final_stage_evaluation["final_model_source"] == "best"
     assert final_stage_evaluation["evaluation_manifest_path_relative"] == "evaluation_summary.json"
     assert final_stage_evaluation["canonical_stage_evaluation_manifest_paths_relative"] == [
         "stages/stage02_line/evaluations/final_suite/line_basic/manifests/stage02_line_line_basic_manifest.json",
@@ -581,6 +606,8 @@ def test_curriculum_evaluation_final_stage_scope_only_evaluates_final_stage(
     assert [entry["stage_index"] for entry in payload["evaluated_models"]] == [2]
     assert payload["evaluated_models"][0]["is_final_stage"] is True
     assert payload["evaluated_models"][0]["suite_task_name"] == "line_basic"
+    assert payload["evaluated_models"][0]["evaluated_model_path"].endswith("stage02_model_best.zip")
+    assert payload["evaluated_models"][0]["evaluated_model_source"] == "best"
     assert (
         payload["evaluated_models"][0]["evaluation_dir"]
         .replace("\\", "/")
@@ -617,12 +644,16 @@ def test_curriculum_final_stage_suite_uses_final_stage_manifest_env_flags(
     evaluated_model = result.metrics["evaluated_models"][0]
     assert len(captured_specs) == 1
     assert captured_specs[0].source_manifest_path == final_manifest_path
+    assert captured_specs[0].model_path == tmp_path / "training" / "stage02_model_best.zip"
+    assert captured_specs[0].evaluated_model_source == "best"
     assert captured_specs[0].action_interface == "direct_rpm"
     assert captured_specs[0].rpm_delta_scale == 0.07
     assert captured_specs[0].include_dynamics_observation is True
     assert captured_specs[0].include_previous_action is True
     assert captured_specs[0].normalize_actions is True
     assert evaluated_model["source_manifest_path"] == str(final_manifest_path)
+    assert evaluated_model["evaluated_model_path"].endswith("stage02_model_best.zip")
+    assert evaluated_model["evaluated_model_source"] == "best"
     assert evaluated_model["action_interface"] == "direct_rpm"
     assert evaluated_model["rpm_delta_scale"] == 0.07
     assert evaluated_model["include_dynamics_observation"] is True

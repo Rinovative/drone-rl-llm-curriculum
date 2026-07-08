@@ -224,6 +224,12 @@ class LLMCurriculumStage:
         Cumulative LLM curriculum budget through this stage.
     llm_budget_cap_timesteps
         Total budget cap used for this stage, when enabled.
+    bootstrap_stage_source
+        Source of a deterministic bootstrap stage, when this stage is config-owned.
+    bootstrap_task_shape
+        Expected bootstrap task shape copied into manifests for auditability.
+    bootstrap_target_sampling_bounds
+        Optional per-axis hover target sampling bounds used by the bootstrap task distribution.
 
     """
 
@@ -251,6 +257,9 @@ class LLMCurriculumStage:
     budget_fallback_reason: str | None = None
     cumulative_llm_budget_timesteps: int = 0
     llm_budget_cap_timesteps: int | None = None
+    bootstrap_stage_source: str | None = None
+    bootstrap_task_shape: str | None = None
+    bootstrap_target_sampling_bounds: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Validate stage metadata that does not require PPO training."""
@@ -824,7 +833,7 @@ def _run_or_dry_stage(
         initial_model_path=previous_model_path,
         task_config_path=task_config_path,
     )
-    return entry, result.model_path, _metrics_summary_from_entry(entry)
+    return entry, _preferred_result_model_path(result), _metrics_summary_from_entry(entry)
 
 
 def _stage_summary_entry(
@@ -862,6 +871,15 @@ def _stage_summary_entry(
         "task_config_path_relative": utils.artifacts.path_relative_to(task_config_path, run_root),
         "model_path": result.model_path,
         "model_path_relative": utils.artifacts.path_relative_to(result.model_path, run_root),
+        "last_model_path": _result_last_model_path(result),
+        "last_model_path_relative": utils.artifacts.path_relative_to(_result_last_model_path(result), run_root),
+        "best_model_path": result.best_model_path,
+        "best_model_path_relative": utils.artifacts.path_relative_to(result.best_model_path, run_root),
+        "best_model_metric": result.best_model_metric,
+        "best_model_step": result.best_model_step,
+        "best_model_source": result.best_model_source,
+        "selected_transfer_model_path": _preferred_result_model_path(result),
+        "selected_transfer_model_source": _preferred_result_model_source(result),
         "metrics_path": result.metrics_path,
         "metrics_path_relative": utils.artifacts.path_relative_to(result.metrics_path, run_root),
         "manifest_path": result.manifest_path,
@@ -920,6 +938,15 @@ def _dry_stage_summary_entry(
         "task_config_path_relative": utils.artifacts.path_relative_to(task_config_path, run_root),
         "model_path": None,
         "model_path_relative": None,
+        "last_model_path": None,
+        "last_model_path_relative": None,
+        "best_model_path": None,
+        "best_model_path_relative": None,
+        "best_model_metric": None,
+        "best_model_step": None,
+        "best_model_source": None,
+        "selected_transfer_model_path": None,
+        "selected_transfer_model_source": None,
         "metrics_path": None,
         "metrics_path_relative": None,
         "manifest_path": None,
@@ -968,6 +995,7 @@ def _build_curriculum_summary(
     run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
     run_manifest_path = utils.artifacts.get_run_manifest_path(run_name)
     final_stage = stage_entries[-1] if stage_entries else None
+    final_model_path = _stage_selected_model_path(final_stage) if final_stage is not None else None
     return {
         "run_type": "training",
         "run_kind": "curriculum",
@@ -1023,7 +1051,17 @@ def _build_curriculum_summary(
         "task_distribution_family_weights": final_stage.get("task_distribution_family_weights") if final_stage is not None else None,
         "task_distribution_name": final_stage.get("task_distribution_name") if final_stage is not None else None,
         "final_stage_run_name": final_stage.get("run_name") if final_stage is not None else None,
-        "final_model_path": final_stage.get("model_path") if final_stage is not None else None,
+        "final_model_path": final_model_path,
+        "final_model_source": _stage_selected_model_source(final_stage) if final_stage is not None else None,
+        "final_last_model_path": (final_stage.get("last_model_path") or final_stage.get("model_path")) if final_stage is not None else None,
+        "final_last_model_path_relative": (final_stage.get("last_model_path_relative") or final_stage.get("model_path_relative"))
+        if final_stage is not None
+        else None,
+        "final_best_model_path": final_stage.get("best_model_path") if final_stage is not None else None,
+        "final_best_model_path_relative": final_stage.get("best_model_path_relative") if final_stage is not None else None,
+        "final_best_model_metric": final_stage.get("best_model_metric") if final_stage is not None else None,
+        "final_best_model_step": final_stage.get("best_model_step") if final_stage is not None else None,
+        "final_best_model_source": final_stage.get("best_model_source") if final_stage is not None else None,
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,
         "proposal_log_path": str(proposal_log_path),
@@ -1285,6 +1323,9 @@ def _stage_from_mapping(raw_stage: Mapping[str, Any], default_total_timesteps: i
         budget_rationale=str(raw_stage[llm.task_schema.BUDGET_RATIONALE_FIELD])
         if raw_stage.get(llm.task_schema.BUDGET_RATIONALE_FIELD) is not None
         else None,
+        bootstrap_stage_source=str(raw_stage["bootstrap_stage_source"]) if raw_stage.get("bootstrap_stage_source") is not None else None,
+        bootstrap_task_shape=str(raw_stage["bootstrap_task_shape"]) if raw_stage.get("bootstrap_task_shape") is not None else None,
+        bootstrap_target_sampling_bounds=_optional_json_mapping(raw_stage.get("bootstrap_target_sampling_bounds")),
     )
 
 
@@ -1398,6 +1439,16 @@ def _json_mapping_copy(value: Mapping[str, Any] | None) -> dict[str, Any] | None
     """Return a plain dictionary copy for JSON-ready metadata fields."""
     if value is None:
         return None
+    return dict(value)
+
+
+def _optional_json_mapping(value: Any) -> dict[str, Any] | None:
+    """Return an optional plain mapping for JSON-ready metadata fields."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        message = "bootstrap_target_sampling_bounds must be a mapping"
+        raise TypeError(message)
     return dict(value)
 
 
@@ -1714,6 +1765,9 @@ def _stage_budget_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
         "budget_was_clipped": stage.budget_was_clipped,
         "budget_fallback_reason": stage.budget_fallback_reason,
         "budget_rationale": stage.budget_rationale,
+        "bootstrap_stage_source": stage.bootstrap_stage_source,
+        "bootstrap_task_shape": stage.bootstrap_task_shape,
+        "bootstrap_target_sampling_bounds": stage.bootstrap_target_sampling_bounds,
     }
 
 
@@ -1828,8 +1882,47 @@ def _accepted_task_context(entry: Mapping[str, Any]) -> dict[str, Any]:
         "stage_total_timesteps": entry.get("stage_total_timesteps"),
         "cumulative_llm_budget_timesteps": entry.get("cumulative_llm_budget_timesteps"),
         "budget_was_clipped": entry.get("budget_was_clipped"),
+        "bootstrap_stage_source": entry.get("bootstrap_stage_source"),
+        "bootstrap_task_shape": entry.get("bootstrap_task_shape"),
+        "bootstrap_target_sampling_bounds": entry.get("bootstrap_target_sampling_bounds"),
         "metrics": _metrics_summary_from_entry(entry),
     }
+
+
+def _result_last_model_path(result: ppo_tracking.PPOTrackingSmokeResult) -> str:
+    """Return the last saved model path from a PPO result."""
+    return result.last_model_path or result.model_path
+
+
+def _preferred_result_model_path(result: ppo_tracking.PPOTrackingSmokeResult) -> str:
+    """Return the preferred model path for LLM curriculum transfer."""
+    return result.best_model_path or result.last_model_path or result.model_path
+
+
+def _preferred_result_model_source(result: ppo_tracking.PPOTrackingSmokeResult) -> str:
+    """Return whether a PPO result selected best or last for transfer."""
+    return "best" if result.best_model_path else "last"
+
+
+def _stage_selected_model_path(stage: Mapping[str, Any] | None) -> Any:
+    """Return the preferred model path from a stage summary."""
+    if stage is None:
+        return None
+    return stage.get("best_model_path") or stage.get("last_model_path") or stage.get("model_path")
+
+
+def _stage_selected_model_path_relative(stage: Mapping[str, Any] | None) -> Any:
+    """Return the preferred relative model path from a stage summary."""
+    if stage is None:
+        return None
+    return stage.get("best_model_path_relative") or stage.get("last_model_path_relative") or stage.get("model_path_relative")
+
+
+def _stage_selected_model_source(stage: Mapping[str, Any] | None) -> str | None:
+    """Return whether a stage exposes a best model or falls back to last."""
+    if stage is None or not _stage_selected_model_path(stage):
+        return None
+    return "best" if stage.get("best_model_path") else "last"
 
 
 def _metrics_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -1853,6 +1946,9 @@ def _metrics_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "llm_budget_cap_timesteps",
         "budget_was_clipped",
         "budget_fallback_reason",
+        "bootstrap_stage_source",
+        "bootstrap_task_shape",
+        "bootstrap_target_sampling_bounds",
         "dry_run_proposals",
         "validation_status",
         "mean_position_error_m",
@@ -1877,8 +1973,16 @@ def _final_stage_summary(final_stage: Mapping[str, Any] | None) -> dict[str, Any
         "stage_index": final_stage.get("stage_index"),
         "stage_name": final_stage.get("stage_name"),
         "run_name": final_stage.get("run_name"),
-        "model_path": final_stage.get("model_path"),
-        "model_path_relative": final_stage.get("model_path_relative"),
+        "model_path": _stage_selected_model_path(final_stage),
+        "model_path_relative": _stage_selected_model_path_relative(final_stage),
+        "last_model_path": final_stage.get("last_model_path") or final_stage.get("model_path"),
+        "last_model_path_relative": final_stage.get("last_model_path_relative") or final_stage.get("model_path_relative"),
+        "best_model_path": final_stage.get("best_model_path"),
+        "best_model_path_relative": final_stage.get("best_model_path_relative"),
+        "best_model_metric": final_stage.get("best_model_metric"),
+        "best_model_step": final_stage.get("best_model_step"),
+        "best_model_source": final_stage.get("best_model_source"),
+        "selected_model_source": _stage_selected_model_source(final_stage),
         "manifest_path": final_stage.get("manifest_path"),
         "manifest_path_relative": final_stage.get("manifest_path_relative"),
         "task_distribution_config_path": final_stage.get("task_distribution_config_path"),
@@ -1907,6 +2011,9 @@ def _stage_budget_metadata_keys() -> tuple[str, ...]:
         "budget_was_clipped",
         "budget_fallback_reason",
         "budget_rationale",
+        "bootstrap_stage_source",
+        "bootstrap_task_shape",
+        "bootstrap_target_sampling_bounds",
     )
 
 
@@ -1984,6 +2091,8 @@ def _mapping_or_empty(value: Any, label: str) -> Mapping[str, Any]:
 
 def _curriculum_artifact_run_name(curriculum_name: str, seed: int, curriculum_kind: str = LLM_CURRICULUM_KIND) -> str:
     """Return the self-describing storage run name used for curriculum-level artifacts."""
+    if curriculum_kind == LLM_CURRICULUM_KIND and curriculum_name.startswith("llm_curriculum_"):
+        return f"{curriculum_name}_seed{seed}"
     topic = _curriculum_run_topic(curriculum_name, curriculum_kind)
     return f"curriculum_{curriculum_kind}_{topic}_seed{seed}"
 
@@ -2001,6 +2110,8 @@ def _curriculum_run_topic(curriculum_name: str, curriculum_kind: str) -> str:
 
 def _curriculum_wandb_group(curriculum_run_name: str) -> str:
     """Return the W&B group used for all stages in one LLM curriculum."""
+    if curriculum_run_name.startswith("llm_curriculum_"):
+        return curriculum_run_name
     return f"curriculum/llm/{curriculum_run_name}"
 
 

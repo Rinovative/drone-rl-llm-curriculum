@@ -151,6 +151,7 @@ class PolicyEvaluationSpec:
     source_curriculum_kind: str | None = None
     source_stage: dict[str, Any] | None = None
     model_scope: str | None = None
+    evaluated_model_source: str | None = None
 
     def __post_init__(self) -> None:
         """Validate required spec fields."""
@@ -313,6 +314,8 @@ def run_policy_evaluation(
         "source_stage": spec.source_stage,
         "model_scope": spec.model_scope,
         "model_path": str(spec.model_path),
+        "evaluated_model_path": str(spec.model_path),
+        "evaluated_model_source": spec.evaluated_model_source or "specified",
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
         "source_manifest_path": None if spec.source_manifest_path is None else str(spec.source_manifest_path),
@@ -402,12 +405,7 @@ def run_direct_policy_own_task_evaluation(
     run_root = manifest_path.expanduser().resolve(strict=False).parent
     storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
     training = _mapping(run_manifest.get("training"), "training")
-    model_path = _resolve_manifest_path_value(
-        run_root=run_root,
-        absolute_value=training.get("model_path"),
-        relative_value=training.get("model_path_relative"),
-        field_name="training.model_path",
-    )
+    model_path, evaluated_model_source = _select_manifest_model_path(run_root=run_root, payload=training, field_prefix="training")
     task_config_path = _direct_training_task_config_path(run_manifest=run_manifest, run_root=run_root)
     if task_config_path is None:
         message = "direct PPO run manifest must include a training task config snapshot for own_task evaluation"
@@ -441,6 +439,7 @@ def run_direct_policy_own_task_evaluation(
             source_run_name=run_name,
             source_run_kind="direct_ppo",
             model_scope="direct",
+            evaluated_model_source=evaluated_model_source,
         ),
         PolicyEvaluationArtifactOptions(),
     )
@@ -550,12 +549,7 @@ def run_direct_policy_suite_evaluation(
     output_root.mkdir(parents=True, exist_ok=True)
 
     training = _mapping(run_manifest.get("training"), "training")
-    model_path = _resolve_manifest_path_value(
-        run_root=run_root,
-        absolute_value=training.get("model_path"),
-        relative_value=training.get("model_path_relative"),
-        field_name="training.model_path",
-    )
+    model_path, evaluated_model_source = _select_manifest_model_path(run_root=run_root, payload=training, field_prefix="training")
     total_timesteps = int(run_manifest.get("total_timesteps", 0))
     normalize_actions = bool(run_manifest.get("normalize_actions", True))
     artifact_options = PolicyEvaluationArtifactOptions(
@@ -593,6 +587,7 @@ def run_direct_policy_suite_evaluation(
                 source_run_name=run_name,
                 source_run_kind="direct_ppo",
                 model_scope="direct",
+                evaluated_model_source=evaluated_model_source,
             ),
             artifact_options,
         )
@@ -623,6 +618,9 @@ def run_direct_policy_suite_evaluation(
         "model_role": "direct_ppo",
         "model_path": str(model_path),
         "model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
+        "evaluated_model_path": str(model_path),
+        "evaluated_model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
+        "evaluated_model_source": evaluated_model_source,
         "source_run_name": run_name,
         "source_run_kind": "direct_ppo",
         "source_curriculum_kind": None,
@@ -654,6 +652,9 @@ def run_direct_policy_suite_evaluation(
             "model_role",
             "model_path",
             "model_path_relative",
+            "evaluated_model_path",
+            "evaluated_model_path_relative",
+            "evaluated_model_source",
             "summary_metrics_path",
             "summary_metrics_path_relative",
             "summary_manifest_path",
@@ -731,6 +732,9 @@ def _evaluated_model_entry(result: PolicyEvaluationResult, run_root: Path, suite
         "model_role": result.model_role,
         "model_path": result.model_path,
         "model_path_relative": utils.artifacts.path_relative_to(result.model_path, run_root),
+        "evaluated_model_path": metrics.get("evaluated_model_path"),
+        "evaluated_model_path_relative": utils.artifacts.path_relative_to(metrics.get("evaluated_model_path"), run_root),
+        "evaluated_model_source": metrics.get("evaluated_model_source"),
         "suite_task_name": suite_task_name,
         "task_config_path": result.task_config_path,
         "task_config_path_relative": utils.artifacts.path_relative_to(result.task_config_path, run_root),
@@ -889,6 +893,29 @@ def _resolve_manifest_path_value(
         raise ValueError(message)
     path = Path(absolute_value)
     return path.resolve(strict=False) if path.is_absolute() else (run_root / path).resolve(strict=False)
+
+
+def _select_manifest_model_path(*, run_root: Path, payload: Mapping[str, Any], field_prefix: str) -> tuple[Path, str]:
+    """Select the best available model path from a manifest payload."""
+    for source, absolute_key, relative_key in (
+        ("best", "best_model_path", "best_model_path_relative"),
+        ("last", "last_model_path", "last_model_path_relative"),
+        ("last", "model_path", "model_path_relative"),
+    ):
+        absolute_value = payload.get(absolute_key)
+        relative_value = payload.get(relative_key)
+        if (isinstance(relative_value, str) and relative_value) or (isinstance(absolute_value, str) and absolute_value):
+            return (
+                _resolve_manifest_path_value(
+                    run_root=run_root,
+                    absolute_value=absolute_value,
+                    relative_value=relative_value,
+                    field_name=f"{field_prefix}.{absolute_key}",
+                ),
+                source,
+            )
+    message = f"run manifest must contain {field_prefix}.best_model_path, {field_prefix}.last_model_path, or {field_prefix}.model_path"
+    raise ValueError(message)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -1110,6 +1137,8 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "source_stage",
         "model_scope",
         "model_path",
+        "evaluated_model_path",
+        "evaluated_model_source",
         "task_config_path_used_for_evaluation",
         "task_shape_used_for_evaluation",
         "source_manifest_path",

@@ -1,3 +1,6 @@
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Rinovative/drone-rl-llm-curriculum/blob/main/Drone_RL_LLM_Curriculum.ipynb)  
+_Open Interactive Jupyter Notebook directly in your browser (via Colab)_
+
 # Drone RL with LLM-Guided Curriculum Learning  
 ### *Deep Reinforcement Learning Project – MSE Data Science, Autumn 2026*
 

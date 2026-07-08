@@ -1,4 +1,4 @@
-curriculum_name: curriculum_llm_pid_dynprev_m-taskdist_medium
+curriculum_name: llm_curriculum_pid_dynprev_m-taskdist_medium
 base_training_config: configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml
 seed: 0
 wandb_mode: auto
@@ -7,31 +7,31 @@ max_stages: 10
 reference_medium_config_path: configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml
 reference_medium_timesteps: 500000
 stage_budget_multipliers:
-  bootstrap: 1.5
-  short: 0.75
-  normal: 1.0
-  recovery: 1.25
-  extend: 1.5
+  bootstrap: 1.0
+  short: 0.35
+  normal: 0.5
+  recovery: 0.65
+  extend: 0.8
 stage_defaults:
   total_timesteps: 500000
   eval_steps: 240
 llm_stage_budget:
   enabled: true
-  total_budget_cap_timesteps: 5500000
+  total_budget_cap_timesteps: 2500000
   default_profile: normal
-  min_stage_timesteps: 375000
-  max_stage_timesteps: 750000
+  min_stage_timesteps: 175000
+  max_stage_timesteps: 500000
   profiles:
     bootstrap:
-      total_timesteps: 750000
-    short:
-      total_timesteps: 375000
-    normal:
       total_timesteps: 500000
+    short:
+      total_timesteps: 175000
+    normal:
+      total_timesteps: 250000
     recovery:
-      total_timesteps: 625000
+      total_timesteps: 325000
     extend:
-      total_timesteps: 750000
+      total_timesteps: 400000
 proposal_fallback:
   enabled: true
   task_distribution_id: tracking_medium
@@ -40,23 +40,27 @@ proposal_fallback:
 
 bootstrap:
   enabled: true
-  stage_name: line
-  task_shape: line
+  stage_name: hover_stabilization
+  task_shape: hover_stabilization
   stage_budget_profile: bootstrap
-  budget_rationale: Deterministic bootstrap uses 1.5x the reference medium budget before LLM adaptation.
-  total_timesteps: 750000
+  budget_rationale: Deterministic randomized hover-target bootstrap uses 1.0x the reference medium budget before LLM adaptation.
+  total_timesteps: 500000
   eval_steps: 240
-  notes: Bootstrap with a deterministic line while the base training config enables medium task-distribution sampling.
+  notes: Fixed Stage 1 bootstrap samples a constant hover target per episode from bounded x/y/z ranges; LLM proposals begin at Stage 2.
+  bootstrap_stage_source: deterministic_config
+  bootstrap_task_shape: hover_stabilization
+  bootstrap_target_sampling_bounds:
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [0.7, 1.4]
+  task_distribution_id: bootstrap_randomized_hover_target
+  task_distribution_config_path: configs/tasks/task_distribution_hover_bootstrap_medium.yaml
   task:
     task_type: trajectory
-    shape: line
-    duration_sec: 4.0
+    shape: hover_stabilization
+    duration_sec: 3.0
     sample_rate_hz: 10.0
-    start_hold_enabled: true
-    start_hold_sec: 1.0
-    exclude_start_hold_from_tracking_metrics: true
-    start: [0.0, 0.0, 1.0]
-    end: [0.6, 0.0, 1.0]
+    position: [0.0, 0.0, 1.0]
 llm:
   provider: openai_compatible
   api_base: http://127.0.0.1:18080/v1
