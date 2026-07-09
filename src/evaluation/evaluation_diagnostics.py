@@ -59,6 +59,17 @@ Z_INSTABILITY_SPAN_M = 0.75
 Z_INSTABILITY_MEAN_ABS_ERROR_M = 0.4
 ATTITUDE_INSTABILITY_MAX_ABS_ROLL_PITCH_RAD = 0.35
 STRICT_LIMIT_VIOLATION_COUNT_MIN = 1
+CURRICULUM_FEEDBACK_VERSION = 2
+READINESS_BLOCKED = "blocked"
+READINESS_UNSTABLE = "unstable"
+READINESS_IMPROVING = "improving"
+READINESS_PARTIALLY_READY = "partially_ready"
+READINESS_READY = "ready"
+READINESS_STRONG = "strong"
+TREND_IMPROVING = "improving"
+TREND_WORSENING = "worsening"
+TREND_FLAT = "flat"
+TREND_UNKNOWN = "unknown"
 
 FAILURE_HOVER_LOCK = "hover_lock"
 FAILURE_INSUFFICIENT_XY_MOTION = "insufficient_xy_motion"
@@ -73,6 +84,25 @@ FAILURE_REFERENCE_TOO_HARD = "reference_too_fast_or_too_hard"
 FAILURE_NONE = "no_failure_detected"
 DIAGNOSTIC_EXPECTED_TARGET_BOUNDARY_ACTION = "expected_target_boundary_action"
 ACTION_AXIS_NAMES = ("x", "y", "z")
+SKILL_ALTITUDE_CONTROL = "altitude_control"
+SKILL_XY_TRACKING = "xy_tracking"
+SKILL_SPEED_CONTROL = "speed_control"
+SKILL_TURN_FOLLOWING = "turn_following"
+SKILL_CURVATURE_FOLLOWING = "curvature_following"
+SKILL_MULTI_SEGMENT_TRACKING = "multi_segment_tracking"
+SKILL_STABILITY_RECOVERY = "stability_recovery"
+
+FAMILY_HOVER = "hover_stabilization"
+FAMILY_TAKEOFF = "takeoff_stabilization"
+FAMILY_LINE = "line"
+FAMILY_START_HOLD_LINE = "start_hold_then_line"
+FAMILY_POLYLINE = "polyline"
+FAMILY_L_SHAPE = "l_shape"
+FAMILY_ZIGZAG = "zigzag"
+FAMILY_MULTI_HEIGHT_POLYLINE = "multi_height_polyline"
+FAMILY_CIRCLE = "circle"
+FAMILY_ELLIPSE = "ellipse"
+FAMILY_FIGURE_EIGHT = "figure_eight"
 
 
 @dataclass(frozen=True)
@@ -285,6 +315,8 @@ def write_policy_evaluation_diagnostics(
     _write_json(curriculum_feedback_path, diagnostics.curriculum_feedback)
 
     failure_modes = list(diagnostics.failure_report["failure_modes"])
+    feedback = diagnostics.curriculum_feedback
+    diagnosis = feedback.get("diagnosis", {}) if isinstance(feedback.get("diagnosis"), dict) else {}
     return {
         "diagnostics_dir": str(resolved_dir),
         "evaluation_trace_path": str(trace_path),
@@ -294,9 +326,19 @@ def write_policy_evaluation_diagnostics(
         "failure_primary_mode": diagnostics.failure_report["primary_failure_mode"],
         "failure_modes": failure_modes,
         "failure_overall_status": diagnostics.failure_report["overall_status"],
-        "curriculum_readiness_level": diagnostics.curriculum_feedback["readiness_level"],
-        "curriculum_recommended_next_tasks": list(diagnostics.curriculum_feedback["recommended_next_tasks"]),
-        "curriculum_avoid_next_tasks": list(diagnostics.curriculum_feedback["avoid_next_tasks"]),
+        "curriculum_feedback_version": feedback.get("feedback_version"),
+        "curriculum_feedback_summary": feedback.get("llm_instruction_summary"),
+        "curriculum_current_task_family": feedback.get("current_task_family"),
+        "curriculum_current_difficulty_level": feedback.get("current_difficulty_level"),
+        "curriculum_primary_skill_gaps": list(diagnosis.get("primary_skill_gaps", [])),
+        "curriculum_diagnostic_signals": dict(diagnosis.get("diagnostic_signals", {})),
+        "curriculum_strategy": dict(feedback.get("curriculum_strategy", {})),
+        "curriculum_recommended_next_task_families": list(feedback.get("recommended_next_task_families", [])),
+        "curriculum_avoid_next_task_families": list(feedback.get("avoid_next_task_families", [])),
+        "curriculum_constraints_for_next": list(feedback.get("constraints_for_next_curriculum", [])),
+        "curriculum_readiness_level": feedback["readiness_level"],
+        "curriculum_recommended_next_tasks": list(feedback["recommended_next_tasks"]),
+        "curriculum_avoid_next_tasks": list(feedback["avoid_next_tasks"]),
     }
 
 
@@ -416,55 +458,110 @@ def build_curriculum_feedback(
         JSON-serializable curriculum feedback payload.
 
     """
-    failure_modes = {str(mode) for mode in failure_report.get("failure_modes", [])}
-    recommended_next_tasks: list[str]
-    avoid_next_tasks: list[str]
-    constraints: list[str] = []
-
-    if failure_modes & {
-        FAILURE_Z_INSTABILITY,
-        FAILURE_ATTITUDE_INSTABILITY,
-        FAILURE_EARLY_TERMINATION,
-        FAILURE_REPEATED_TRUNCATION,
-        FAILURE_SAFETY_LIMIT_VIOLATION,
-    }:
-        readiness_level = "unstable"
-        recommended_next_tasks = ["hover_stabilization", "takeoff_stabilization", "start_hold_then_line"]
-        avoid_next_tasks = ["long_line", "fast_polyline", "circle", "figure_eight"]
-        constraints.extend(["keep altitude target simple", "add a start hold before XY motion"])
-    elif failure_modes & {FAILURE_HOVER_LOCK, FAILURE_INSUFFICIENT_XY_MOTION, FAILURE_ACTION_SATURATION}:
-        readiness_level = "line_not_ready"
-        recommended_next_tasks = ["nearby_target_hover", "short_slow_line", "start_hold_then_line"]
-        avoid_next_tasks = ["long_line", "fast_polyline", "circle"]
-        constraints.extend(["shorter displacement", "slower reference velocity"])
-    elif FAILURE_NONE in failure_modes and str(current_task_shape).lower() == "hover":
-        readiness_level = "near_target_ready"
-        recommended_next_tasks = ["nearby_target_hover", "short_slow_line"]
-        avoid_next_tasks = ["fast_polyline", "circle"]
-        constraints.append("increase XY demand gradually")
-    elif FAILURE_NONE in failure_modes:
-        readiness_level = "slow_line_ready"
-        recommended_next_tasks = ["longer_slow_line", "gentle_polyline", "slow_circle"]
-        avoid_next_tasks = ["fast_polyline"]
-        constraints.append("preserve current altitude and speed limits")
-    else:
-        readiness_level = "hover_ready"
-        recommended_next_tasks = ["nearby_target_hover"]
-        avoid_next_tasks = ["long_line", "fast_polyline", "circle"]
-        constraints.append("require acceptable tracking before increasing path complexity")
-
-    if FAILURE_ACTION_SATURATION in failure_modes:
-        constraints.extend(["possible action smoothness penalty candidate", "avoid actions near bounds for more than half the rollout"])
-    if _float(metrics.get("mean_abs_z_error")) >= Z_INSTABILITY_MEAN_ABS_ERROR_M:
-        constraints.append("defer XY tracking until altitude error is lower")
+    failure_modes = {str(mode) for mode in failure_report.get("failure_modes", []) if str(mode)}
+    if not failure_modes:
+        failure_modes = {FAILURE_NONE} if _tracking_acceptable(metrics) else set()
+    current_task_family = _task_family_from_shape(current_task_shape)
+    trend_status = _trend_status(metrics)
+    difficulty_level = _task_difficulty_level(failure_modes, metrics)
+    diagnostic_signals = _diagnostic_signal_counts(failure_modes, metrics)
+    primary_skill_gaps = _primary_skill_gaps(
+        current_task_family=current_task_family,
+        failure_modes=failure_modes,
+        metrics=metrics,
+        diagnostic_signals=diagnostic_signals,
+    )
+    policy_instability = _has_policy_instability(failure_modes=failure_modes, metrics=metrics, trend_status=trend_status)
+    interpreted_failure_modes = _interpreted_failure_modes(
+        current_task_family=current_task_family,
+        failure_modes=failure_modes,
+        metrics=metrics,
+        policy_instability=policy_instability,
+        trend_status=trend_status,
+    )
+    readiness_level = _readiness_level(
+        failure_modes=failure_modes,
+        metrics=metrics,
+        policy_instability=policy_instability,
+        trend_status=trend_status,
+        primary_skill_gaps=primary_skill_gaps,
+    )
+    recommended_next_task_families = _recommended_next_task_families(
+        current_task_family=current_task_family,
+        failure_modes=failure_modes,
+        metrics=metrics,
+        primary_skill_gaps=primary_skill_gaps,
+        policy_instability=policy_instability,
+    )
+    avoid_next_task_families = _avoid_next_task_families(
+        current_task_family=current_task_family,
+        failure_modes=failure_modes,
+        primary_skill_gaps=primary_skill_gaps,
+        policy_instability=policy_instability,
+        trend_status=trend_status,
+        metrics=metrics,
+    )
+    constraints = _constraints_for_next_curriculum(
+        failure_modes=failure_modes,
+        primary_skill_gaps=primary_skill_gaps,
+        policy_instability=policy_instability,
+        metrics=metrics,
+    )
+    strategy = _curriculum_strategy(
+        readiness_level=readiness_level,
+        current_task_family=current_task_family,
+        failure_modes=failure_modes,
+        primary_skill_gaps=primary_skill_gaps,
+        policy_instability=policy_instability,
+        trend_status=trend_status,
+        difficulty_level=difficulty_level,
+    )
+    instruction_summary = _llm_instruction_summary(
+        readiness_level=readiness_level,
+        current_task_family=current_task_family,
+        primary_skill_gaps=primary_skill_gaps,
+        recommended_next_task_families=recommended_next_task_families,
+        strategy=strategy,
+    )
+    recommendation_tasks = [str(item["task_family"]) for item in recommended_next_task_families]
+    avoid_tasks = [str(item["task_family"]) for item in avoid_next_task_families]
+    constraint_texts = [str(item["constraint"]) for item in constraints]
 
     return {
+        "feedback_version": CURRICULUM_FEEDBACK_VERSION,
+        "stage_index": _optional_int(metrics.get("stage_index", metrics.get("curriculum_stage_index"))),
+        "current_task_family": current_task_family,
         "current_task_shape": current_task_shape,
+        "current_task_source": metrics.get("task_source", "unknown"),
+        "current_difficulty_level": difficulty_level,
+        "stage_budget_profile": metrics.get("stage_budget_profile", metrics.get("selected_stage_budget_profile")),
+        "performance_summary": {
+            "own_task_status": _own_task_status(readiness_level),
+            "generalization_status": str(metrics.get("generalization_status", "unknown")),
+            "scenario_status": str(metrics.get("scenario_status", "not_evaluated_stress_test")),
+            "trend_status": trend_status,
+            "mean_position_error_tracking_m": _float(metrics.get("mean_position_error_tracking_m", metrics.get("mean_position_error_m"))),
+            "reward_trend": str(metrics.get("reward_trend", TREND_UNKNOWN)),
+            "error_trend": str(metrics.get("error_trend", trend_status)),
+            "stability_trend": str(metrics.get("stability_trend", TREND_WORSENING if policy_instability else TREND_UNKNOWN)),
+        },
+        "diagnosis": {
+            "primary_skill_gaps": primary_skill_gaps,
+            "diagnostic_signals": diagnostic_signals,
+            "interpreted_failure_modes": interpreted_failure_modes,
+        },
+        "curriculum_strategy": strategy,
+        "recommended_next_task_families": recommended_next_task_families,
+        "avoid_next_task_families": avoid_next_task_families,
+        "constraints_for_next_curriculum": constraints,
+        "constraint_texts": _dedupe(constraint_texts),
+        "llm_instruction_summary": instruction_summary,
+        "current_task_shape_legacy": current_task_shape,
         "readiness_level": readiness_level,
-        "recommended_next_tasks": _dedupe(recommended_next_tasks),
-        "avoid_next_tasks": _dedupe(avoid_next_tasks),
-        "constraints_for_next_curriculum": _dedupe(constraints),
-        "rationale": _curriculum_rationale(readiness_level, failure_modes, metrics),
+        "recommended_next_tasks": _dedupe(recommendation_tasks),
+        "avoid_next_tasks": _dedupe(avoid_tasks),
+        "legacy_constraints_for_next_curriculum": _dedupe(constraint_texts),
+        "rationale": strategy["rationale"],
     }
 
 
@@ -1141,8 +1238,717 @@ def _curriculum_rationale(readiness_level: str, failure_modes: set[str], metrics
     """Return a concise curriculum-feedback rationale."""
     modes = ", ".join(sorted(failure_modes)) if failure_modes else "tracking_error_without_specific_failure"
     return (
-        f"Readiness is {readiness_level} because evaluation modes were {modes}; mean error was {_float(metrics.get('mean_position_error_m')):.3f} m."
+        f"Readiness is {readiness_level} because evaluation modes were {modes}; "
+        f"mean tracking error was {_float(metrics.get('mean_position_error_tracking_m', metrics.get('mean_position_error_m'))):.3f} m."
     )
+
+
+def _task_family_from_shape(task_shape: str) -> str:
+    """Return the closest supported task-family name for a task shape."""
+    normalized = str(task_shape).strip().lower()
+    mapping = {
+        "": "unknown",
+        "hover": FAMILY_HOVER,
+        "hover_stabilization": FAMILY_HOVER,
+        "takeoff": FAMILY_TAKEOFF,
+        "vertical": FAMILY_TAKEOFF,
+        "takeoff_stabilization": FAMILY_TAKEOFF,
+        "line": FAMILY_LINE,
+        "short_slow_line": FAMILY_LINE,
+        "long_line": FAMILY_LINE,
+        "start_hold_then_line": FAMILY_START_HOLD_LINE,
+        "start_hold_then_short_line": FAMILY_START_HOLD_LINE,
+        "polyline": FAMILY_POLYLINE,
+        "fast_polyline": FAMILY_POLYLINE,
+        "l_shape": FAMILY_L_SHAPE,
+        "zigzag": FAMILY_ZIGZAG,
+        "multi_height_polyline": FAMILY_MULTI_HEIGHT_POLYLINE,
+        "circle": FAMILY_CIRCLE,
+        "slow_circle": FAMILY_CIRCLE,
+        "ellipse": FAMILY_ELLIPSE,
+        "figure_eight": FAMILY_FIGURE_EIGHT,
+    }
+    return mapping.get(normalized, normalized or "unknown")
+
+
+def _trend_status(metrics: Mapping[str, Any]) -> str:
+    """Return the compact trend status available to curriculum feedback."""
+    trend = str(metrics.get("trend_status") or metrics.get("position_error_trend") or metrics.get("error_trend") or TREND_UNKNOWN)
+    return trend if trend in {TREND_IMPROVING, TREND_WORSENING, TREND_FLAT, TREND_UNKNOWN} else TREND_UNKNOWN
+
+
+def _task_difficulty_level(failure_modes: set[str], metrics: Mapping[str, Any]) -> str:
+    """Return a coarse stage-relative difficulty label from diagnostics."""
+    mean_error = _float(metrics.get("mean_position_error_tracking_m", metrics.get("mean_position_error_m")))
+    if FAILURE_REFERENCE_TOO_HARD in failure_modes or mean_error >= HIGH_MEAN_POSITION_ERROR_M:
+        return "high"
+    if failure_modes and FAILURE_NONE not in failure_modes:
+        return "medium"
+    if mean_error <= ACCEPTABLE_MEAN_POSITION_ERROR_M:
+        return "low"
+    return "medium"
+
+
+def _diagnostic_signal_counts(failure_modes: set[str], metrics: Mapping[str, Any]) -> dict[str, int]:
+    """Return compact counts for core diagnostic signal families."""
+    action_saturations = _float_list(metrics.get("action_saturation_fraction")) + _float_list(metrics.get("real_action_saturation_fraction"))
+    max_action_saturation = max(action_saturations, default=0.0)
+    attitude_value = _float(metrics.get("max_abs_roll_pitch_rad"))
+    return {
+        "z_instability_count": int(
+            FAILURE_Z_INSTABILITY in failure_modes
+            or _float(metrics.get("actual_z_span_m")) >= Z_INSTABILITY_SPAN_M
+            or _float(metrics.get("mean_abs_z_error")) >= Z_INSTABILITY_MEAN_ABS_ERROR_M
+        ),
+        "action_saturation_count": int(FAILURE_ACTION_SATURATION in failure_modes or max_action_saturation >= ACTION_SATURATION_FRACTION_MIN),
+        "attitude_instability_count": int(
+            FAILURE_ATTITUDE_INSTABILITY in failure_modes
+            or attitude_value >= ATTITUDE_INSTABILITY_MAX_ABS_ROLL_PITCH_RAD
+            or _int(metrics.get("strict_limit_violation_count")) >= STRICT_LIMIT_VIOLATION_COUNT_MIN
+        ),
+        "reference_too_fast_or_too_hard_count": int(FAILURE_REFERENCE_TOO_HARD in failure_modes),
+    }
+
+
+def _primary_skill_gaps(
+    *,
+    current_task_family: str,
+    failure_modes: set[str],
+    metrics: Mapping[str, Any],
+    diagnostic_signals: Mapping[str, int],
+) -> list[str]:
+    """Map diagnostic signals to constructive curriculum skill gaps."""
+    gaps: list[str] = []
+    if diagnostic_signals.get("z_instability_count", 0) > 0:
+        gaps.append(SKILL_ALTITUDE_CONTROL)
+    if failure_modes & {FAILURE_HOVER_LOCK, FAILURE_INSUFFICIENT_XY_MOTION, FAILURE_OVERSHOOT} or _xy_tracking_weak(metrics):
+        gaps.append(SKILL_XY_TRACKING)
+    if FAILURE_REFERENCE_TOO_HARD in failure_modes or (
+        diagnostic_signals.get("action_saturation_count", 0) > 0 and not _tracking_acceptable(metrics)
+    ):
+        gaps.append(SKILL_SPEED_CONTROL)
+    if current_task_family in {FAMILY_POLYLINE, FAMILY_L_SHAPE, FAMILY_ZIGZAG} and _tracking_error_high(metrics):
+        gaps.extend([SKILL_TURN_FOLLOWING, SKILL_MULTI_SEGMENT_TRACKING])
+    if current_task_family in {FAMILY_CIRCLE, FAMILY_ELLIPSE, FAMILY_FIGURE_EIGHT} and _tracking_error_high(metrics):
+        gaps.append(SKILL_CURVATURE_FOLLOWING)
+    if diagnostic_signals.get("attitude_instability_count", 0) > 0 or failure_modes & {
+        FAILURE_EARLY_TERMINATION,
+        FAILURE_REPEATED_TRUNCATION,
+        FAILURE_SAFETY_LIMIT_VIOLATION,
+    }:
+        gaps.append(SKILL_STABILITY_RECOVERY)
+    return _dedupe(gaps)
+
+
+def _xy_tracking_weak(metrics: Mapping[str, Any]) -> bool:
+    """Return whether XY tracking diagnostics suggest controlled XY practice."""
+    xy_ratio = metrics.get("xy_tracking_ratio")
+    if isinstance(xy_ratio, (int, float)) and float(xy_ratio) < INSUFFICIENT_XY_MOTION_RATIO:
+        return True
+    return _tracking_error_high(metrics) and _float(metrics.get("reference_xy_span_m")) > REFERENCE_XY_SPAN_MOVING_TASK_MIN_M
+
+
+def _tracking_error_high(metrics: Mapping[str, Any]) -> bool:
+    """Return whether tracking error is above the high-error threshold."""
+    return _float(metrics.get("mean_position_error_tracking_m", metrics.get("mean_position_error_m"))) >= HIGH_MEAN_POSITION_ERROR_M
+
+
+def _has_policy_instability(*, failure_modes: set[str], metrics: Mapping[str, Any], trend_status: str) -> bool:
+    """Return whether diagnostics show real control instability rather than task difficulty."""
+    attitude_or_limits = bool(
+        failure_modes & {FAILURE_ATTITUDE_INSTABILITY, FAILURE_SAFETY_LIMIT_VIOLATION}
+        or _int(metrics.get("strict_limit_violation_count")) >= STRICT_LIMIT_VIOLATION_COUNT_MIN
+    )
+    repeated_crash_or_divergence = bool(
+        failure_modes & {FAILURE_EARLY_TERMINATION, FAILURE_REPEATED_TRUNCATION}
+        or _int(metrics.get("eval_terminated_count")) > 0
+        or _int(metrics.get("eval_truncated_count")) > 1
+    )
+    if attitude_or_limits or repeated_crash_or_divergence:
+        return True
+    if FAILURE_Z_INSTABILITY not in failure_modes:
+        return False
+    return _z_instability_severe(metrics) or trend_status == TREND_WORSENING
+
+
+def _z_instability_severe(metrics: Mapping[str, Any]) -> bool:
+    """Return whether altitude diagnostics are severe enough to gate progression."""
+    return (
+        _float(metrics.get("actual_z_span_m")) >= Z_INSTABILITY_SPAN_M * 1.5
+        or _float(metrics.get("mean_abs_z_error")) >= Z_INSTABILITY_MEAN_ABS_ERROR_M * 1.5
+    )
+
+
+def _interpreted_failure_modes(
+    *,
+    current_task_family: str,
+    failure_modes: set[str],
+    metrics: Mapping[str, Any],
+    policy_instability: bool,
+    trend_status: str,
+) -> list[dict[str, Any]]:
+    """Return curriculum-oriented interpretations for each failure mode."""
+    modes = sorted(failure_modes or {"tracking_error_without_specific_failure"})
+    return [
+        _interpreted_failure_mode(
+            mode=mode,
+            current_task_family=current_task_family,
+            metrics=metrics,
+            policy_instability=policy_instability,
+            trend_status=trend_status,
+        )
+        for mode in modes
+    ]
+
+
+def _interpreted_failure_mode(
+    *,
+    mode: str,
+    current_task_family: str,
+    metrics: Mapping[str, Any],
+    policy_instability: bool,
+    trend_status: str,
+) -> dict[str, Any]:
+    """Return one interpreted failure-mode record."""
+    evidence = _feedback_evidence(metrics)
+    if mode == FAILURE_Z_INSTABILITY:
+        is_instability = policy_instability and (_z_instability_severe(metrics) or trend_status == TREND_WORSENING)
+        return _failure_mode_record(
+            name=mode,
+            severity="severe" if is_instability else "moderate",
+            interpretation="Altitude control is weak; train controlled vertical or altitude-hold tasks instead of avoiding z motion by default.",
+            evidence=evidence,
+            is_policy_instability=is_instability,
+            is_task_difficulty=not is_instability,
+        )
+    if mode == FAILURE_ACTION_SATURATION:
+        tracking_ok = _tracking_acceptable(metrics)
+        return _failure_mode_record(
+            name=mode,
+            severity="low" if tracking_ok else "moderate",
+            interpretation=(
+                "Action saturation is a diagnostic signal; use slower or easier related tasks when tracking is poor, "
+                "but do not call it instability by itself."
+            ),
+            evidence=evidence,
+            is_policy_instability=False,
+            is_task_difficulty=not tracking_ok,
+        )
+    if mode == FAILURE_REFERENCE_TOO_HARD:
+        return _failure_mode_record(
+            name=mode,
+            severity="moderate",
+            interpretation=(
+                f"The {current_task_family} reference appears too hard; choose a slower or smaller same-family version before abandoning the family."
+            ),
+            evidence=evidence,
+            is_policy_instability=False,
+            is_task_difficulty=True,
+        )
+    if mode in {FAILURE_HOVER_LOCK, FAILURE_INSUFFICIENT_XY_MOTION, FAILURE_OVERSHOOT}:
+        return _failure_mode_record(
+            name=mode,
+            severity="moderate",
+            interpretation="XY tracking needs a smaller controlled movement progression, such as start-hold line or short slow line.",
+            evidence=evidence,
+            is_policy_instability=False,
+            is_task_difficulty=True,
+        )
+    if mode in {FAILURE_ATTITUDE_INSTABILITY, FAILURE_EARLY_TERMINATION, FAILURE_REPEATED_TRUNCATION, FAILURE_SAFETY_LIMIT_VIOLATION}:
+        return _failure_mode_record(
+            name=mode,
+            severity="severe",
+            interpretation=(
+                "Control stability or safety limits failed; recover with stabilization and very simple slow references before adding path complexity."
+            ),
+            evidence=evidence,
+            is_policy_instability=True,
+            is_task_difficulty=False,
+        )
+    if mode == FAILURE_NONE:
+        return _failure_mode_record(
+            name=mode,
+            severity="none",
+            interpretation="Own-task tracking is acceptable; progress with a bounded next-family task while avoiding immediate duplicates.",
+            evidence=evidence,
+            is_policy_instability=False,
+            is_task_difficulty=False,
+        )
+    return _failure_mode_record(
+        name=mode,
+        severity="moderate",
+        interpretation="Tracking diagnostics suggest targeted skill practice before a large difficulty jump.",
+        evidence=evidence,
+        is_policy_instability=policy_instability,
+        is_task_difficulty=not policy_instability,
+    )
+
+
+def _failure_mode_record(
+    *,
+    name: str,
+    severity: str,
+    interpretation: str,
+    evidence: Mapping[str, Any],
+    is_policy_instability: bool,
+    is_task_difficulty: bool,
+) -> dict[str, Any]:
+    """Return one JSON-serializable interpreted failure-mode record."""
+    return {
+        "name": name,
+        "severity": severity,
+        "interpretation": interpretation,
+        "evidence": dict(evidence),
+        "is_policy_instability": bool(is_policy_instability),
+        "is_task_difficulty": bool(is_task_difficulty),
+        "is_training_signal": True,
+    }
+
+
+def _feedback_evidence(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """Return compact evidence embedded in interpreted feedback records."""
+    return {
+        "mean_position_error_tracking_m": _float(metrics.get("mean_position_error_tracking_m", metrics.get("mean_position_error_m"))),
+        "mean_abs_z_error": _float(metrics.get("mean_abs_z_error")),
+        "actual_z_span_m": _float(metrics.get("actual_z_span_m")),
+        "xy_tracking_ratio": metrics.get("xy_tracking_ratio"),
+        "action_saturation_fraction": _float_list(metrics.get("action_saturation_fraction")),
+        "eval_terminated_count": _int(metrics.get("eval_terminated_count")),
+        "eval_truncated_count": _int(metrics.get("eval_truncated_count")),
+        "strict_limit_violation_count": _int(metrics.get("strict_limit_violation_count")),
+    }
+
+
+def _readiness_level(
+    *,
+    failure_modes: set[str],
+    metrics: Mapping[str, Any],
+    policy_instability: bool,
+    trend_status: str,
+    primary_skill_gaps: Sequence[str],
+) -> str:
+    """Return an allowed, trend-aware readiness label."""
+    if bool(metrics.get("policy_artifact_missing", False)):
+        return READINESS_BLOCKED
+    if policy_instability:
+        return READINESS_UNSTABLE
+    if trend_status == TREND_IMPROVING:
+        return READINESS_IMPROVING
+    if FAILURE_NONE in failure_modes and _tracking_acceptable(metrics):
+        if str(metrics.get("generalization_status", "")).lower() == "successful" and str(metrics.get("scenario_status", "")).lower() in {
+            "successful",
+            "passed",
+        }:
+            return READINESS_STRONG
+        return READINESS_READY
+    if primary_skill_gaps:
+        return READINESS_PARTIALLY_READY
+    return READINESS_PARTIALLY_READY
+
+
+def _own_task_status(readiness_level: str) -> str:
+    """Return a compact own-task status for performance_summary."""
+    mapping = {
+        READINESS_BLOCKED: "blocked",
+        READINESS_UNSTABLE: "control_instability",
+        READINESS_IMPROVING: "improving_with_skill_gaps",
+        READINESS_PARTIALLY_READY: "stable_with_skill_gaps",
+        READINESS_READY: "own_task_ready",
+        READINESS_STRONG: "own_task_strong",
+    }
+    return mapping.get(readiness_level, "unknown")
+
+
+def _recommended_next_task_families(
+    *,
+    current_task_family: str,
+    failure_modes: set[str],
+    metrics: Mapping[str, Any],
+    primary_skill_gaps: Sequence[str],
+    policy_instability: bool,
+) -> list[dict[str, Any]]:
+    """Return constructive next-task family recommendations."""
+    recommendations: list[dict[str, Any]] = []
+    if policy_instability:
+        recommendations.extend(
+            [
+                _recommendation(
+                    FAMILY_HOVER, "Recover stable attitude and altitude before path complexity.", SKILL_STABILITY_RECOVERY, "recovery", 1
+                ),
+                _recommendation(FAMILY_TAKEOFF, "Practice slow vertical control after stabilization is bounded.", SKILL_ALTITUDE_CONTROL, "low", 2),
+                _recommendation(FAMILY_START_HOLD_LINE, "Reintroduce tiny XY motion only after a start hold.", SKILL_XY_TRACKING, "low", 3),
+            ]
+        )
+    elif SKILL_ALTITUDE_CONTROL in primary_skill_gaps:
+        recommendations.extend(
+            [
+                _recommendation(
+                    FAMILY_TAKEOFF,
+                    "Train altitude control directly with a slow bounded vertical target.",
+                    SKILL_ALTITUDE_CONTROL,
+                    "low",
+                    1,
+                    bounds_hint="short z range and conservative duration",
+                ),
+                _recommendation(
+                    FAMILY_HOVER,
+                    "Consolidate altitude hold with mild z variation rather than freezing all vertical demand.",
+                    SKILL_ALTITUDE_CONTROL,
+                    "low",
+                    2,
+                    bounds_hint="small altitude band around the current target",
+                ),
+                _recommendation(
+                    FAMILY_MULTI_HEIGHT_POLYLINE,
+                    "Add multi-height path practice only at low speed if XY tracking is otherwise stable.",
+                    SKILL_ALTITUDE_CONTROL,
+                    "low",
+                    3,
+                    bounds_hint="few segments with small z changes",
+                ),
+            ]
+        )
+    if FAILURE_REFERENCE_TOO_HARD in failure_modes and current_task_family not in {"unknown", FAMILY_HOVER}:
+        recommendations.append(
+            _recommendation(
+                current_task_family,
+                "Use a slower, shorter, or lower-variation version of the same family before avoiding it.",
+                SKILL_SPEED_CONTROL,
+                "easier_same_family",
+                1,
+                variation_strength_hint="lower",
+                bounds_hint="reduce speed, displacement, radius, or segment count",
+            )
+        )
+    if SKILL_XY_TRACKING in primary_skill_gaps:
+        recommendations.extend(
+            [
+                _recommendation(
+                    FAMILY_START_HOLD_LINE,
+                    "Start hold isolates lift and settling before a short XY move.",
+                    SKILL_XY_TRACKING,
+                    "low",
+                    2,
+                    bounds_hint="short displacement and slow move duration",
+                ),
+                _recommendation(
+                    FAMILY_LINE,
+                    "Practice direct XY tracking with a short slow line or diagonal line.",
+                    SKILL_XY_TRACKING,
+                    "low",
+                    3,
+                    bounds_hint="short segment with conservative speed",
+                ),
+            ]
+        )
+    if SKILL_TURN_FOLLOWING in primary_skill_gaps or SKILL_MULTI_SEGMENT_TRACKING in primary_skill_gaps:
+        recommendations.extend(
+            [
+                _recommendation(FAMILY_L_SHAPE, "Train one deliberate turn at low speed before harder polylines.", SKILL_TURN_FOLLOWING, "low", 2),
+                _recommendation(
+                    FAMILY_POLYLINE, "Use a slow two- or three-segment polyline to target turn following.", SKILL_MULTI_SEGMENT_TRACKING, "low", 3
+                ),
+                _recommendation(FAMILY_ZIGZAG, "Use only if the policy is stable enough for repeated gentle turns.", SKILL_TURN_FOLLOWING, "low", 4),
+            ]
+        )
+    if SKILL_CURVATURE_FOLLOWING in primary_skill_gaps:
+        recommendations.extend(
+            [
+                _recommendation(
+                    FAMILY_ELLIPSE, "Train gentle continuous curvature before figure-eight crossings.", SKILL_CURVATURE_FOLLOWING, "low", 2
+                ),
+                _recommendation(
+                    FAMILY_CIRCLE, "Use a slow small-radius circle to consolidate curvature tracking.", SKILL_CURVATURE_FOLLOWING, "low", 3
+                ),
+            ]
+        )
+    if not recommendations:
+        recommendations.extend(_default_progression_recommendations(current_task_family, metrics))
+    return _dedupe_recommendations(recommendations)
+
+
+def _default_progression_recommendations(current_task_family: str, metrics: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return conservative progression recommendations when no major gap is detected."""
+    if current_task_family == FAMILY_HOVER:
+        return [
+            _recommendation(FAMILY_START_HOLD_LINE, "Progress from hover to a bounded short XY move.", SKILL_XY_TRACKING, "low", 1),
+            _recommendation(FAMILY_LINE, "Use a short slow line as the next tracking primitive.", SKILL_XY_TRACKING, "low", 2),
+        ]
+    if current_task_family in {FAMILY_LINE, FAMILY_START_HOLD_LINE}:
+        return [
+            _recommendation(FAMILY_L_SHAPE, "Add one low-speed turn after line tracking is stable.", SKILL_TURN_FOLLOWING, "low", 1),
+            _recommendation(FAMILY_POLYLINE, "Introduce a gentle bounded multi-segment line.", SKILL_MULTI_SEGMENT_TRACKING, "low", 2),
+            _recommendation(FAMILY_ELLIPSE, "Add gentle curvature only if recent tracking remains stable.", SKILL_CURVATURE_FOLLOWING, "low", 3),
+        ]
+    if _tracking_acceptable(metrics):
+        return [
+            _recommendation(
+                current_task_family, "Repeat the family non-consecutively with slightly broader bounded variation.", SKILL_SPEED_CONTROL, "medium", 2
+            ),
+            _recommendation(FAMILY_ELLIPSE, "Use gentle curvature as complementary tracking practice.", SKILL_CURVATURE_FOLLOWING, "low", 3),
+        ]
+    return [_recommendation(FAMILY_LINE, "Consolidate stable short XY tracking before increasing complexity.", SKILL_XY_TRACKING, "low", 1)]
+
+
+def _recommendation(
+    task_family: str,
+    reason: str,
+    targeted_skill: str,
+    difficulty_hint: str,
+    priority: int,
+    *,
+    variation_strength_hint: str = "low",
+    bounds_hint: str | None = None,
+) -> dict[str, Any]:
+    """Return one structured task-family recommendation."""
+    record: dict[str, Any] = {
+        "task_family": task_family,
+        "reason": reason,
+        "targeted_skill": targeted_skill,
+        "difficulty_hint": difficulty_hint,
+        "variation_strength_hint": variation_strength_hint,
+        "priority": int(priority),
+    }
+    if bounds_hint is not None:
+        record["bounds_hint"] = bounds_hint
+    return record
+
+
+def _dedupe_recommendations(recommendations: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate recommendation records by task family while preserving priority."""
+    unique: dict[str, dict[str, Any]] = {}
+    for item in recommendations:
+        family = str(item.get("task_family", ""))
+        if not family:
+            continue
+        candidate = dict(item)
+        existing = unique.get(family)
+        if existing is None or int(candidate.get("priority", 999)) < int(existing.get("priority", 999)):
+            unique[family] = candidate
+    return sorted(unique.values(), key=lambda item: (int(item.get("priority", 999)), str(item.get("task_family", ""))))
+
+
+def _avoid_next_task_families(
+    *,
+    current_task_family: str,
+    failure_modes: set[str],
+    primary_skill_gaps: Sequence[str],
+    policy_instability: bool,
+    trend_status: str,
+    metrics: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return temporary avoid guidance without banning useful families forever."""
+    avoids: list[dict[str, Any]] = []
+    if policy_instability:
+        avoids.extend(
+            [
+                _avoidance(
+                    FAMILY_FIGURE_EIGHT, "Fast crossing curves compound recovery instability.", "attitude, z, and termination diagnostics are stable"
+                ),
+                _avoidance(
+                    FAMILY_CIRCLE, "Continuous curvature should wait until stabilization recovers.", "simple hover/takeoff and line tasks are stable"
+                ),
+                _avoidance(
+                    FAMILY_POLYLINE, "Multi-segment turns should wait until recovery is stable.", "short line tracking succeeds without safety events"
+                ),
+            ]
+        )
+        if _z_instability_severe(metrics) or trend_status == TREND_WORSENING:
+            avoids.append(
+                _avoidance(
+                    FAMILY_MULTI_HEIGHT_POLYLINE,
+                    "Severe or worsening altitude instability makes multi-height paths too broad right now.",
+                    "controlled takeoff or altitude-hold tasks reduce z error",
+                )
+            )
+    if SKILL_CURVATURE_FOLLOWING in primary_skill_gaps:
+        avoids.append(
+            _avoidance(
+                FAMILY_FIGURE_EIGHT,
+                "Figure-eight combines curvature reversal and crossing before gentle curves are ready.",
+                "ellipse or slow circle tracks acceptably",
+            )
+        )
+    if FAILURE_REFERENCE_TOO_HARD in failure_modes and current_task_family not in {"unknown", FAMILY_HOVER}:
+        avoids.append(
+            _avoidance(
+                current_task_family,
+                "Avoid only high-speed or high-variation versions of this family, not the family itself.",
+                "a slower or smaller same-family variant tracks acceptably",
+            )
+        )
+    return _dedupe_avoidances(avoids)
+
+
+def _avoidance(task_family: str, reason: str, condition_to_reintroduce: str) -> dict[str, Any]:
+    """Return one structured temporary avoid record."""
+    return {
+        "task_family": task_family,
+        "reason": reason,
+        "temporary": True,
+        "condition_to_reintroduce": condition_to_reintroduce,
+    }
+
+
+def _dedupe_avoidances(avoidances: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate avoid records by family while preserving first reason."""
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in avoidances:
+        family = str(item.get("task_family", ""))
+        if not family or family in seen:
+            continue
+        unique.append(dict(item))
+        seen.add(family)
+    return unique
+
+
+def _constraints_for_next_curriculum(
+    *,
+    failure_modes: set[str],
+    primary_skill_gaps: Sequence[str],
+    policy_instability: bool,
+    metrics: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    """Return structured next-curriculum constraints with reasons."""
+    constraints: list[dict[str, str]] = []
+    if policy_instability:
+        constraints.append(
+            _constraint("start with stabilization or very slow references", "control instability requires recovery before path complexity")
+        )
+    if SKILL_ALTITUDE_CONTROL in primary_skill_gaps:
+        constraints.append(
+            _constraint(
+                "include controlled altitude practice",
+                "z diagnostics should become an explicit training target rather than a reason to avoid all vertical motion",
+            )
+        )
+    if SKILL_XY_TRACKING in primary_skill_gaps:
+        constraints.append(
+            _constraint("use short displacement and slower reference velocity", "XY tracking is weak but stable enough to train directly")
+        )
+    if SKILL_TURN_FOLLOWING in primary_skill_gaps or SKILL_MULTI_SEGMENT_TRACKING in primary_skill_gaps:
+        constraints.append(_constraint("limit segment count and turn speed", "turn following should be trained with one or two gentle turns first"))
+    if SKILL_CURVATURE_FOLLOWING in primary_skill_gaps:
+        constraints.append(
+            _constraint("prefer gentle ellipse or slow circle before figure-eight", "curvature should be introduced without crossing complexity")
+        )
+    if FAILURE_REFERENCE_TOO_HARD in failure_modes:
+        constraints.append(
+            _constraint("make the related family slower or smaller", "reference-too-hard indicates task difficulty, not automatic policy instability")
+        )
+    if _diagnostic_signal_counts(failure_modes, metrics).get("action_saturation_count", 0) > 0:
+        constraints.append(
+            _constraint("monitor action saturation without treating it as a standalone recovery trigger", "saturation alone is diagnostic context")
+        )
+    if not constraints:
+        constraints.append(
+            _constraint("avoid the immediately previous accepted family", "prevents curriculum loops while preserving bounded progression")
+        )
+    return _dedupe_constraints(constraints)
+
+
+def _constraint(constraint: str, reason: str) -> dict[str, str]:
+    """Return one structured constraint record."""
+    return {"constraint": constraint, "reason": reason}
+
+
+def _dedupe_constraints(constraints: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+    """Deduplicate constraint records by text."""
+    unique: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in constraints:
+        text = str(item.get("constraint", ""))
+        if not text or text in seen:
+            continue
+        unique.append({"constraint": text, "reason": str(item.get("reason", ""))})
+        seen.add(text)
+    return unique
+
+
+def _curriculum_strategy(
+    *,
+    readiness_level: str,
+    current_task_family: str,
+    failure_modes: set[str],
+    primary_skill_gaps: Sequence[str],
+    policy_instability: bool,
+    trend_status: str,
+    difficulty_level: str,
+) -> dict[str, Any]:
+    """Return the high-level curriculum strategy for the next stage."""
+    if policy_instability:
+        progression_type = "recover"
+    elif trend_status == TREND_IMPROVING and primary_skill_gaps:
+        progression_type = "targeted_skill_training"
+    elif FAILURE_REFERENCE_TOO_HARD in failure_modes or difficulty_level == "high":
+        progression_type = "consolidate"
+    elif primary_skill_gaps:
+        progression_type = "controlled_progression"
+    elif readiness_level in {READINESS_READY, READINESS_STRONG}:
+        progression_type = "advance_difficulty"
+    else:
+        progression_type = "complementary_training"
+    rationale = _strategy_rationale(
+        progression_type=progression_type,
+        current_task_family=current_task_family,
+        failure_modes=failure_modes,
+        primary_skill_gaps=primary_skill_gaps,
+        trend_status=trend_status,
+    )
+    return {
+        "progression_type": progression_type,
+        "rationale": rationale,
+        "should_progress": progression_type in {"controlled_progression", "complementary_training", "advance_difficulty"},
+        "should_recover": progression_type == "recover",
+        "should_repeat_family_non_consecutively": progression_type in {"consolidate", "targeted_skill_training"},
+        "avoid_immediate_duplicate_family": True,
+    }
+
+
+def _strategy_rationale(
+    *,
+    progression_type: str,
+    current_task_family: str,
+    failure_modes: set[str],
+    primary_skill_gaps: Sequence[str],
+    trend_status: str,
+) -> str:
+    """Return a concise rationale for curriculum strategy."""
+    modes = ", ".join(sorted(failure_modes)) if failure_modes else "tracking_error_without_specific_failure"
+    gaps = ", ".join(primary_skill_gaps) if primary_skill_gaps else "no major skill gap"
+    return (
+        f"Use {progression_type} after {current_task_family}: diagnostics={modes}, gaps={gaps}, trend={trend_status}. "
+        "Treat diagnostics as curriculum signals and prefer targeted skill training over broad avoidance."
+    )
+
+
+def _llm_instruction_summary(
+    *,
+    readiness_level: str,
+    current_task_family: str,
+    primary_skill_gaps: Sequence[str],
+    recommended_next_task_families: Sequence[Mapping[str, Any]],
+    strategy: Mapping[str, Any],
+) -> str:
+    """Return a short prompt-ready curriculum feedback summary."""
+    recommended = ", ".join(str(item.get("task_family")) for item in recommended_next_task_families[:3]) or "bounded easy progression"
+    gaps = ", ".join(primary_skill_gaps) if primary_skill_gaps else "none"
+    return (
+        f"Readiness {readiness_level}; current family {current_task_family}; primary gaps: {gaps}. "
+        f"Next strategy: {strategy.get('progression_type')}; prefer {recommended}. "
+        "Use this as guidance, not an absolute command."
+    )
+
+
+def _optional_int(value: Any) -> int | None:
+    """Return an int for present values, otherwise ``None``."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _array_field(records: Sequence[Mapping[str, Any]], field: str, min_width: int = POSITION_DIMENSIONS) -> np.ndarray:

@@ -13,6 +13,7 @@ import pytest
 from src import evaluation
 
 TRACE_RECORD_COUNT = 5
+EXPECTED_CURRICULUM_FEEDBACK_VERSION = 2
 
 
 class _ActionSpace:
@@ -101,7 +102,7 @@ def test_diagnostics_classify_hover_lock_and_write_artifacts(tmp_path: Path) -> 
     assert diagnostics.failure_report["primary_failure_mode"] == "hover_lock"
     assert "insufficient_xy_motion" in diagnostics.failure_report["failure_modes"]
     assert "action_saturation" in diagnostics.failure_report["failure_modes"]
-    assert diagnostics.curriculum_feedback["readiness_level"] == "line_not_ready"
+    assert diagnostics.curriculum_feedback["readiness_level"] == "partially_ready"
     assert diagnostics.episode_summaries[0]["reference_xy_span_m"] == pytest.approx(1.0)
     assert diagnostics.episode_summaries[0]["actual_xy_span_m"] == pytest.approx(0.0)
     assert fields["failure_primary_mode"] == "hover_lock"
@@ -115,6 +116,161 @@ def test_diagnostics_classify_hover_lock_and_write_artifacts(tmp_path: Path) -> 
 
     assert len(trace_lines) == TRACE_RECORD_COUNT
     assert failure_payload["training_run_name"] == "ppo_line_smoke"
+
+
+def _curriculum_feedback(
+    task_shape: str,
+    failure_modes: list[str],
+    metrics: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Build curriculum feedback from compact test diagnostics."""
+    payload = {
+        "mean_position_error_m": 0.2,
+        "mean_position_error_tracking_m": 0.2,
+        "final_position_error_m": 0.2,
+        "actual_z_span_m": 0.0,
+        "mean_abs_z_error": 0.0,
+        "reference_xy_span_m": 0.0,
+        "actual_xy_span_m": 0.0,
+        "xy_tracking_ratio": None,
+        "action_saturation_fraction": [0.0, 0.0, 0.0],
+        "eval_terminated_count": 0,
+        "eval_truncated_count": 0,
+        "strict_limit_violation_count": 0,
+    }
+    payload.update(metrics or {})
+    return evaluation.diagnostics.build_curriculum_feedback(
+        current_task_shape=task_shape,
+        failure_report={"failure_modes": failure_modes},
+        metrics=payload,
+    )
+
+
+def test_curriculum_feedback_schema_contains_structured_constructive_guidance() -> None:
+    """Verify curriculum feedback includes the new structured schema and legacy fields."""
+    feedback = _curriculum_feedback(
+        "line",
+        ["hover_lock", "insufficient_xy_motion"],
+        {"mean_position_error_tracking_m": 0.42, "reference_xy_span_m": 1.0, "actual_xy_span_m": 0.0, "xy_tracking_ratio": 0.0},
+    )
+
+    assert feedback["feedback_version"] == EXPECTED_CURRICULUM_FEEDBACK_VERSION
+    assert feedback["readiness_level"] == "partially_ready"
+    assert feedback["current_task_family"] == "line"
+    assert feedback["performance_summary"]["own_task_status"] == "stable_with_skill_gaps"
+    assert "xy_tracking" in feedback["diagnosis"]["primary_skill_gaps"]
+    assert feedback["recommended_next_tasks"]
+    assert feedback["recommended_next_task_families"]
+    assert all(
+        "reason" in item and "targeted_skill" in item and "difficulty_hint" in item and "priority" in item
+        for item in feedback["recommended_next_task_families"]
+    )
+    assert all("reason" in item and "condition_to_reintroduce" in item for item in feedback["avoid_next_task_families"])
+    assert feedback["constraints_for_next_curriculum"]
+    assert "llm_instruction_summary" in feedback
+
+
+def test_curriculum_feedback_z_instability_recommends_controlled_altitude_tasks() -> None:
+    """Verify z instability alone becomes altitude-control practice instead of blanket avoidance."""
+    feedback = _curriculum_feedback(
+        "line",
+        ["z_instability"],
+        {
+            "mean_position_error_tracking_m": 0.31,
+            "final_position_error_m": 0.28,
+            "mean_abs_z_error": 0.45,
+            "actual_z_span_m": 0.8,
+            "position_error_trend": "improving",
+        },
+    )
+    recommended = {item["task_family"] for item in feedback["recommended_next_task_families"]}
+    avoided = {item["task_family"] for item in feedback["avoid_next_task_families"]}
+
+    assert feedback["readiness_level"] == "improving"
+    assert feedback["curriculum_strategy"]["progression_type"] == "targeted_skill_training"
+    assert "altitude_control" in feedback["diagnosis"]["primary_skill_gaps"]
+    assert {"takeoff_stabilization", "hover_stabilization", "multi_height_polyline"}.issubset(recommended)
+    assert "takeoff_stabilization" not in avoided
+    assert "multi_height_polyline" not in avoided
+
+
+def test_curriculum_feedback_action_saturation_alone_is_not_unstable() -> None:
+    """Verify action saturation alone remains diagnostic when tracking is stable."""
+    feedback = _curriculum_feedback(
+        "line",
+        ["action_saturation"],
+        {
+            "mean_position_error_tracking_m": 0.12,
+            "final_position_error_m": 0.1,
+            "action_saturation_fraction": [1.0, 0.0, 0.0],
+        },
+    )
+    action_mode = next(item for item in feedback["diagnosis"]["interpreted_failure_modes"] if item["name"] == "action_saturation")
+
+    assert feedback["readiness_level"] == "partially_ready"
+    assert action_mode["is_policy_instability"] is False
+    assert feedback["curriculum_strategy"]["should_recover"] is False
+
+
+def test_curriculum_feedback_reference_too_hard_recommends_easier_same_family() -> None:
+    """Verify hard references produce easier same-family guidance instead of broad family avoidance."""
+    feedback = _curriculum_feedback(
+        "polyline",
+        ["reference_too_fast_or_too_hard"],
+        {"mean_position_error_tracking_m": 0.55, "final_position_error_m": 0.5, "reference_xy_span_m": 1.2, "actual_xy_span_m": 0.5},
+    )
+    polyline_recommendation = next(item for item in feedback["recommended_next_task_families"] if item["task_family"] == "polyline")
+
+    assert polyline_recommendation["difficulty_hint"] == "easier_same_family"
+    assert "slower" in polyline_recommendation["reason"]
+    assert "speed_control" in feedback["diagnosis"]["primary_skill_gaps"]
+    assert feedback["diagnosis"]["interpreted_failure_modes"][0]["is_task_difficulty"] is True
+
+
+def test_curriculum_feedback_hard_scenario_failure_does_not_dominate_own_task_readiness() -> None:
+    """Verify hard scenario failures remain stress-test context for own-task feedback."""
+    feedback = _curriculum_feedback(
+        "line",
+        ["no_failure_detected"],
+        {"mean_position_error_tracking_m": 0.08, "final_position_error_m": 0.08, "scenario_status": "hard_scenario_failed"},
+    )
+
+    assert feedback["readiness_level"] == "ready"
+    assert feedback["performance_summary"]["own_task_status"] == "own_task_ready"
+    assert feedback["performance_summary"]["scenario_status"] == "hard_scenario_failed"
+
+
+def test_curriculum_feedback_turn_and_curvature_gaps_are_constructive() -> None:
+    """Verify turn and curvature weaknesses recommend targeted families."""
+    turn_feedback = _curriculum_feedback(
+        "polyline",
+        ["reference_too_fast_or_too_hard"],
+        {"mean_position_error_tracking_m": 0.5, "final_position_error_m": 0.45, "reference_xy_span_m": 1.0, "actual_xy_span_m": 0.6},
+    )
+    curve_feedback = _curriculum_feedback(
+        "figure_eight",
+        ["reference_too_fast_or_too_hard"],
+        {"mean_position_error_tracking_m": 0.5, "final_position_error_m": 0.45, "reference_xy_span_m": 1.0, "actual_xy_span_m": 0.6},
+    )
+
+    assert {"l_shape", "polyline"}.issubset({item["task_family"] for item in turn_feedback["recommended_next_task_families"]})
+    assert "turn_following" in turn_feedback["diagnosis"]["primary_skill_gaps"]
+    assert {"ellipse", "circle"}.issubset({item["task_family"] for item in curve_feedback["recommended_next_task_families"]})
+    assert "figure_eight" in {item["task_family"] for item in curve_feedback["avoid_next_task_families"]}
+
+
+def test_curriculum_feedback_severe_attitude_divergence_still_recovers() -> None:
+    """Verify true control instability still produces recovery recommendations."""
+    feedback = _curriculum_feedback(
+        "circle",
+        ["attitude_instability", "safety_limit_violation"],
+        {"mean_position_error_tracking_m": 0.6, "final_position_error_m": 0.7, "max_abs_roll_pitch_rad": 0.6, "strict_limit_violation_count": 1},
+    )
+
+    assert feedback["readiness_level"] == "unstable"
+    assert feedback["curriculum_strategy"]["progression_type"] == "recover"
+    assert feedback["curriculum_strategy"]["should_recover"] is True
+    assert feedback["recommended_next_task_families"][0]["task_family"] == "hover_stabilization"
 
 
 def test_diagnostics_keep_normalized_and_real_action_metrics_separate() -> None:
@@ -374,4 +530,4 @@ def test_diagnostics_report_no_failure_for_accurate_hover() -> None:
 
     assert diagnostics.failure_report["overall_status"] == "successful"
     assert diagnostics.failure_report["failure_modes"] == ["no_failure_detected"]
-    assert diagnostics.curriculum_feedback["readiness_level"] == "near_target_ready"
+    assert diagnostics.curriculum_feedback["readiness_level"] == "ready"

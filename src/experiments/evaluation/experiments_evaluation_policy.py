@@ -2083,6 +2083,16 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "failure_primary_mode",
         "failure_modes",
         "failure_overall_status",
+        "curriculum_feedback_version",
+        "curriculum_feedback_summary",
+        "curriculum_current_task_family",
+        "curriculum_current_difficulty_level",
+        "curriculum_primary_skill_gaps",
+        "curriculum_diagnostic_signals",
+        "curriculum_strategy",
+        "curriculum_recommended_next_task_families",
+        "curriculum_avoid_next_task_families",
+        "curriculum_constraints_for_next",
     )
     return {key: metrics.get(key) for key in keys}
 

@@ -100,10 +100,16 @@ def build_task_proposal_messages(
         f"{JSON_ONLY_INSTRUCTION}\n"
         "Propose the next training task using this bounded context. Prefer a small, feasible progression from the latest accepted task. "
         "Do not repeat immediate_previous_stage_task_shape; choose a different task family/shape as a concrete task or known distribution. "
-        "Use curriculum_history and curriculum_summary to avoid looping on the same family and to choose concrete, safe progressions. "
+        "Use curriculum_history, curriculum_summary, and curriculum_feedback to avoid looping on the same family "
+        "and to choose concrete, safe progressions. "
+        "Use curriculum_feedback as guidance, not as an absolute command. Prefer targeted skill training over returning to hover for every problem. "
         "Use concrete metrics and trends instead of a single readiness_level; readiness_level is intentionally omitted from context. "
-        "Do not overreact to one failure mode. Treat action_saturation, z_instability, and reference_too_fast_or_too_hard "
-        "as diagnostic context or task-difficulty signals unless repeated crash/divergence metrics confirm true control instability. "
+        "Do not overreact to one diagnostic flag. If z/altitude is weak, consider controlled vertical, takeoff, or altitude-hold tasks. "
+        "If XY tracking is weak, consider shorter or slower line tasks. If turns are weak, consider slow polyline or L-shape tasks. "
+        "If curvature is weak, consider gentle ellipse or slow circle before figure-eight. "
+        "If a reference was too hard, choose an easier or slower same-family variant. "
+        "Treat action_saturation, z_instability, and reference_too_fast_or_too_hard as diagnostic context or task-difficulty signals "
+        "unless repeated crash/divergence metrics confirm true control instability. "
         "Do not choose broad shows, scenarios, or basic_training_show as normal LLM stages; "
         "every accepted stage should train on a bounded per-episode distribution. "
         "If adaptive budget profiles are enabled, choose only a stage_budget_profile from llm_stage_budget.allowed_profile_names; "
@@ -188,8 +194,11 @@ def build_task_repair_messages(
         "Return either a concrete task with task_type and shape, or a valid task-distribution reference from the supported list "
         "using task_distribution_id or task_distribution_config_path. "
         "Use supported shapes, supported task-distribution families, concrete safe task values, "
-        "and remember that action_saturation, z_instability, and reference_too_fast_or_too_hard diagnose difficulty "
-        "unless repeated crash/divergence metrics show true instability. Do not choose broad shows, scenarios, or basic_training_show "
+        "and use curriculum_feedback as guidance, not as an absolute command. Prefer targeted skill training over defaulting to hover. "
+        "Remember that action_saturation, z_instability, and reference_too_fast_or_too_hard diagnose difficulty "
+        "unless repeated crash/divergence metrics show true instability; z weakness can be repaired with controlled vertical or takeoff tasks, "
+        "XY weakness with slower/shorter lines, turn weakness with slow L-shape/polyline, and curvature weakness with gentle ellipse/circle. "
+        "Do not choose broad shows, scenarios, or basic_training_show "
         "as normal LLM stages; known distribution ids/paths and one budget profile from llm_stage_budget.allowed_profile_names are required. "
         "If stage_budget_profile is invalid, repair it to an allowed profile; "
         "bootstrap is for stage 1 only and arbitrary timestep values are forbidden. "
@@ -226,6 +235,7 @@ def _context_payload(
         "recent_rejected_tasks": _tail(recent_rejected_tasks, recent_context_limit),
         "curriculum_history": _copy_all(curriculum_history),
         "curriculum_summary": dict(curriculum_summary or {}),
+        "curriculum_feedback": _curriculum_feedback_context(metrics_summary, curriculum_summary),
         "latest_metrics_summary": dict(metrics_summary or {}),
         "diagnostic_interpretation_policy": {
             "readiness_level_omitted": True,
@@ -234,10 +244,34 @@ def _context_payload(
             "z_instability": "diagnostic_signal_not_automatic_instability",
             "reference_too_fast": "difficulty_signal_not_automatic_instability",
             "reference_too_fast_or_too_hard": "difficulty_signal_not_automatic_instability",
+            "altitude_weakness_next_tasks": ["takeoff_stabilization", "hover_stabilization", "multi_height_polyline"],
+            "xy_weakness_next_tasks": ["start_hold_then_line", "line"],
+            "turn_weakness_next_tasks": ["l_shape", "polyline"],
+            "curvature_weakness_next_tasks": ["ellipse", "circle"],
+            "hard_reference_response": "choose_easier_or_slower_same_family_variant",
             "instability_requires_supporting_crash_or_divergence_metrics": True,
             "avoid_normal_stage_families": ["basic_training_show", "broad_suite", "variation_suite", "scenario", "show"],
             "accepted_stages_train_on_bounded_per_episode_distributions": True,
         },
+    }
+
+
+def _curriculum_feedback_context(
+    metrics_summary: Mapping[str, Any] | None,
+    curriculum_summary: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return compact structured curriculum-feedback guidance for prompts."""
+    metrics = dict(metrics_summary or {})
+    summary = dict(curriculum_summary or {})
+    return {
+        "guidance_not_absolute_command": True,
+        "latest_feedback_summary": metrics.get("curriculum_feedback_summary"),
+        "latest_primary_skill_gaps": list(metrics.get("curriculum_primary_skill_gaps") or []),
+        "latest_strategy": dict(metrics.get("curriculum_strategy", {})) if isinstance(metrics.get("curriculum_strategy"), Mapping) else {},
+        "latest_recommended_next_task_families": list(metrics.get("curriculum_recommended_next_task_families") or []),
+        "latest_avoid_next_task_families": list(metrics.get("curriculum_avoid_next_task_families") or []),
+        "previous_feedback_summaries": list(summary.get("previous_feedback_summaries") or []),
+        "skill_gap_counts": dict(summary.get("skill_gap_counts", {})) if isinstance(summary.get("skill_gap_counts"), Mapping) else {},
     }
 
 

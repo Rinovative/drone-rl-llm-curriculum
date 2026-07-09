@@ -253,8 +253,49 @@ def test_repair_prompt_mentions_supported_distributions_and_concrete_task_values
     assert "readiness_level_omitted" in content
     assert "reference_too_fast" in content
     assert "z_instability" in content
+    assert "curriculum_feedback" in content
+    assert "controlled vertical" in content
+    assert "slow L-shape/polyline" in content
+    assert "gentle ellipse/circle" in content
     assert "Do not choose broad shows, scenarios, or basic_training_show" in content
     assert "true instability" in content
+
+
+def test_proposal_prompt_embeds_structured_curriculum_feedback_guidance() -> None:
+    """Verify proposal prompts include compact structured feedback and constructive guidance."""
+    messages = llm.prompts.build_task_proposal_messages(
+        curriculum_name="curriculum_llm_test",
+        stage_index=3,
+        recent_accepted_tasks=({"stage_index": 2, "accepted_task_family": "line", "task_shape": "line"},),
+        recent_rejected_tasks=(),
+        metrics_summary={
+            "failure_primary_mode": "z_instability",
+            "curriculum_feedback_summary": "Altitude control weak; use controlled altitude practice.",
+            "curriculum_primary_skill_gaps": ["altitude_control"],
+            "curriculum_recommended_next_task_families": [
+                {
+                    "task_family": "takeoff_stabilization",
+                    "reason": "controlled z practice",
+                    "targeted_skill": "altitude_control",
+                    "difficulty_hint": "low",
+                    "priority": 1,
+                }
+            ],
+        },
+        curriculum_history=({"stage_index": 2, "feedback_summary": {"primary_skill_gaps": ["altitude_control"]}},),
+        curriculum_summary={"previous_feedback_summaries": [{"primary_skill_gaps": ["altitude_control"]}]},
+        recent_context_limit=3,
+    )
+    content = messages[-1]["content"]
+
+    assert "curriculum_feedback" in content
+    assert "guidance_not_absolute_command" in content
+    assert "takeoff_stabilization" in content
+    assert "controlled vertical" in content
+    assert "shorter or slower line" in content
+    assert "slow polyline or L-shape" in content
+    assert "gentle ellipse or slow circle" in content
+    assert "easier or slower same-family variant" in content
 
 
 def test_invalid_budget_profile_is_repaired_once_and_accepted(tmp_path: Path) -> None:

@@ -564,7 +564,7 @@ def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path
         "failure_primary_mode": "hover_lock",
         "failure_modes": ["hover_lock", "insufficient_xy_motion"],
         "failure_overall_status": "failed",
-        "curriculum_readiness_level": "line_not_ready",
+        "curriculum_readiness_level": "partially_ready",
         "curriculum_recommended_next_tasks": ["short_slow_line"],
         "curriculum_avoid_next_tasks": ["circle"],
         "termination_limits_mode": "relaxed",
@@ -588,7 +588,7 @@ def test_ppo_tracking_manifest_includes_failure_diagnostics_paths(tmp_path: Path
     assert manifest["diagnostics_dir"] == str(tmp_path / "diagnostics")
     assert manifest["evaluation_trace_path"].endswith("evaluation_trace.jsonl")
     assert manifest["failure_primary_mode"] == "hover_lock"
-    assert manifest["curriculum_readiness_level"] == "line_not_ready"
+    assert manifest["curriculum_readiness_level"] == "partially_ready"
     assert manifest["termination_limits_mode"] == "relaxed"
     assert manifest["base_truncation_policy"] == "diagnose_only"
     assert manifest["diagnostics"]["strict_limit_violation_count"] == STRICT_TEST_LIMIT_VIOLATIONS

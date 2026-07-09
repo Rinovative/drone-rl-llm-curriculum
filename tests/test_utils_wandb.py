@@ -228,7 +228,7 @@ def test_wandb_summary_metrics_group_final_diagnostics() -> None:
         "real_action_saturation_fraction": [REAL_ACTION_SATURATION_0, 0.0, 1.0],
         "failure_modes": ["hover_lock", "action_saturation"],
         "failure_primary_mode": "hover_lock",
-        "curriculum_readiness_level": "line_not_ready",
+        "curriculum_readiness_level": "partially_ready",
         "curriculum_recommended_next_tasks": ["short_slow_line"],
         "curriculum_avoid_next_tasks": ["circle"],
         "position_bounds": {"min": [0, 0, 0], "max": [1, 1, 1]},
@@ -249,7 +249,7 @@ def test_wandb_summary_metrics_group_final_diagnostics() -> None:
     assert summary["failure/hover_lock"] == 1
     assert summary["failure/action_saturation"] == 1
     assert summary["failure/no_failure_detected"] == 0
-    assert summary["curriculum/readiness_level"] == "line_not_ready"
+    assert summary["curriculum/readiness_level"] == "partially_ready"
     assert summary["curriculum/recommended_next_tasks"] == ["short_slow_line"]
     assert summary["run/training_run_name"] == "ppo_line_smoke"
     assert summary["run/normalize_actions"] is True

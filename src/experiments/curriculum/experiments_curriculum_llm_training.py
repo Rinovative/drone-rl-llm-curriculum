@@ -2302,6 +2302,7 @@ def _llm_context_history_item(entry: Mapping[str, Any]) -> dict[str, Any]:
         "sample_on_reset": sample_metadata.get("task_distribution_sample_on_reset"),
         "family_weights": sample_metadata.get("task_distribution_family_weights"),
         "metrics": _metrics_summary_from_entry(entry),
+        "feedback_summary": _feedback_summary_from_entry(entry),
     }
 
 
@@ -2311,6 +2312,8 @@ def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metr
     family_errors: dict[str, list[float]] = {}
     position_errors: list[float] = []
     repeated_failure_modes: dict[str, int] = {}
+    skill_gap_counts: dict[str, int] = {}
+    feedback_summaries: list[dict[str, Any]] = []
     for entry in stage_entries:
         family = _accepted_stage_family(entry)
         if family:
@@ -2325,6 +2328,12 @@ def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metr
         if failure_mode is not None and str(failure_mode).strip():
             key = str(failure_mode)
             repeated_failure_modes[key] = repeated_failure_modes.get(key, 0) + 1
+        feedback_summary = _feedback_summary_from_entry(entry)
+        if feedback_summary:
+            feedback_summaries.append(feedback_summary)
+            for skill_gap in feedback_summary.get("primary_skill_gaps", []):
+                key = str(skill_gap)
+                skill_gap_counts[key] = skill_gap_counts.get(key, 0) + 1
 
     ranked_families = _rank_task_families_by_error(family_errors)
     trend = _position_error_trend(position_errors)
@@ -2346,6 +2355,10 @@ def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metr
         "strongest_task_families": ranked_families[:3],
         "weakest_task_families": list(reversed(ranked_families[-3:])),
         "latest_metrics_summary": dict(latest_metrics_summary),
+        "latest_curriculum_feedback_summary": latest_metrics_summary.get("curriculum_feedback_summary"),
+        "latest_recommended_next_task_families": list(latest_metrics_summary.get("curriculum_recommended_next_task_families") or []),
+        "previous_feedback_summaries": feedback_summaries[-3:],
+        "skill_gap_counts": skill_gap_counts,
         "recommended_avoid_immediate_duplicate_family": True,
         "allowed_task_families": allowed_families,
         "task_families_with_bounded_variation_support": allowed_families,
@@ -2357,14 +2370,50 @@ def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metr
         "diagnostic_guidance": {
             "prefer_metrics_over_readiness_label": True,
             "do_not_overreact_to_single_failure_mode": True,
+            "prefer_targeted_skill_training_over_default_hover": True,
             "action_saturation": "treat_as_task_difficulty_signal_unless_crash_or_divergence_confirms_instability",
-            "z_instability": "treat_as_diagnostic_signal_unless_repeated_or_control_divergence_confirms_instability",
+            "z_instability": "consider_controlled_vertical_takeoff_or_altitude_hold_unless_repeated_control_divergence_confirms_instability",
+            "xy_tracking": "consider_shorter_slower_line_or_start_hold_then_line",
+            "turn_following": "consider_slow_l_shape_or_polyline",
+            "curvature_following": "consider_gentle_ellipse_or_slow_circle_before_figure_eight",
             "reference_too_fast": "treat_as_task_difficulty_signal_unless_crash_or_divergence_confirms_instability",
-            "reference_too_fast_or_too_hard": "treat_as_task_difficulty_signal_not_policy_instability",
+            "reference_too_fast_or_too_hard": "choose_easier_or_slower_same_family_variant",
             "accepted_concrete_tasks_are_materialized_as_bounded_distributions": True,
             "hard_scenarios_are_stress_tests_not_whole_policy_readiness_labels": True,
         },
     }
+
+
+def _feedback_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return compact structured feedback fields for LLM prompt history."""
+    strategy = entry.get("curriculum_strategy")
+    strategy_payload = dict(strategy) if isinstance(strategy, Mapping) else {}
+    feedback_summary = {
+        "readiness_level_omitted": True,
+        "llm_instruction_summary": entry.get("curriculum_feedback_summary"),
+        "current_task_family": entry.get("curriculum_current_task_family"),
+        "current_difficulty_level": entry.get("curriculum_current_difficulty_level"),
+        "primary_skill_gaps": list(entry.get("curriculum_primary_skill_gaps") or []),
+        "diagnostic_signals": dict(entry.get("curriculum_diagnostic_signals") or {})
+        if isinstance(entry.get("curriculum_diagnostic_signals"), Mapping)
+        else {},
+        "strategy": strategy_payload,
+        "recommended_next_task_families": list(entry.get("curriculum_recommended_next_task_families") or []),
+        "avoid_next_task_families": list(entry.get("curriculum_avoid_next_task_families") or []),
+    }
+    has_feedback = any(
+        bool(feedback_summary[key])
+        for key in (
+            "llm_instruction_summary",
+            "current_task_family",
+            "primary_skill_gaps",
+            "diagnostic_signals",
+            "strategy",
+            "recommended_next_task_families",
+            "avoid_next_task_families",
+        )
+    )
+    return feedback_summary if has_feedback else {}
 
 
 def _rank_task_families_by_error(family_errors: Mapping[str, Sequence[float]]) -> list[str]:
@@ -2507,6 +2556,16 @@ def _metrics_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "failure_primary_mode",
         "curriculum_recommended_next_tasks",
         "curriculum_avoid_next_tasks",
+        "curriculum_feedback_version",
+        "curriculum_feedback_summary",
+        "curriculum_current_task_family",
+        "curriculum_current_difficulty_level",
+        "curriculum_primary_skill_gaps",
+        "curriculum_diagnostic_signals",
+        "curriculum_strategy",
+        "curriculum_recommended_next_task_families",
+        "curriculum_avoid_next_task_families",
+        "curriculum_constraints_for_next",
     )
     summary = {key: entry.get(key) for key in keys if key in entry}
     summary["readiness_level_omitted_from_llm_context"] = True
@@ -2517,11 +2576,15 @@ def _metrics_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
 def _diagnostic_interpretation_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     """Return concrete diagnostic interpretation hints without readiness labels."""
     failure_mode = str(entry.get("failure_primary_mode") or "")
+    feedback_summary = _feedback_summary_from_entry(entry)
     return {
         "failure_primary_mode": failure_mode or None,
         "action_saturation_is_difficulty_signal": "action_saturation" in failure_mode,
         "reference_too_fast_is_difficulty_signal": "reference_too_fast" in failure_mode,
         "do_not_treat_difficulty_signals_as_automatic_instability": True,
+        "primary_skill_gaps": list(feedback_summary.get("primary_skill_gaps", [])),
+        "recommended_next_task_families": list(feedback_summary.get("recommended_next_task_families", [])),
+        "curriculum_feedback_summary": feedback_summary.get("llm_instruction_summary"),
     }
 
 

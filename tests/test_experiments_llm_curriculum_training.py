@@ -814,6 +814,12 @@ def test_llm_context_summary_uses_trends_and_diagnostic_guidance() -> None:
             "mean_position_error_tracking_m": 0.42,
             "failure_primary_mode": "action_saturation",
             "resolved_task_sample_metadata": {"task_distribution_sampled_family": "hover_stabilization"},
+            "curriculum_feedback_summary": "Action saturation is diagnostic; use bounded progression.",
+            "curriculum_current_task_family": "hover_stabilization",
+            "curriculum_primary_skill_gaps": ["speed_control"],
+            "curriculum_recommended_next_task_families": [
+                {"task_family": "line", "reason": "short line", "targeted_skill": "xy_tracking", "difficulty_hint": "low", "priority": 1}
+            ],
         },
         {
             "stage_index": 2,
@@ -822,6 +828,18 @@ def test_llm_context_summary_uses_trends_and_diagnostic_guidance() -> None:
             "mean_position_error_tracking_m": 0.30,
             "failure_primary_mode": "z_instability",
             "resolved_task_sample_metadata": {"task_distribution_sampled_family": "line"},
+            "curriculum_feedback_summary": "Altitude control weak; use controlled takeoff or altitude hold.",
+            "curriculum_current_task_family": "line",
+            "curriculum_primary_skill_gaps": ["altitude_control"],
+            "curriculum_recommended_next_task_families": [
+                {
+                    "task_family": "takeoff_stabilization",
+                    "reason": "z practice",
+                    "targeted_skill": "altitude_control",
+                    "difficulty_hint": "low",
+                    "priority": 1,
+                }
+            ],
         },
     ]
 
@@ -844,6 +862,13 @@ def test_llm_context_summary_uses_trends_and_diagnostic_guidance() -> None:
     assert guidance["prefer_metrics_over_readiness_label"] is True
     assert guidance["do_not_overreact_to_single_failure_mode"] is True
     assert "difficulty" in guidance["action_saturation"]
-    assert "diagnostic" in guidance["z_instability"]
-    assert guidance["reference_too_fast_or_too_hard"] == "treat_as_task_difficulty_signal_not_policy_instability"
+    assert "controlled_vertical" in guidance["z_instability"]
+    assert guidance["xy_tracking"] == "consider_shorter_slower_line_or_start_hold_then_line"
+    assert guidance["turn_following"] == "consider_slow_l_shape_or_polyline"
+    assert guidance["curvature_following"] == "consider_gentle_ellipse_or_slow_circle_before_figure_eight"
+    assert guidance["reference_too_fast_or_too_hard"] == "choose_easier_or_slower_same_family_variant"
+    assert guidance["prefer_targeted_skill_training_over_default_hover"] is True
+    assert summary["previous_feedback_summaries"][-1]["primary_skill_gaps"] == ["altitude_control"]
+    assert summary["skill_gap_counts"] == {"speed_control": 1, "altitude_control": 1}
+    assert summary["latest_curriculum_feedback_summary"] is None
     assert guidance["accepted_concrete_tasks_are_materialized_as_bounded_distributions"] is True
