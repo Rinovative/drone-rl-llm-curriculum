@@ -244,6 +244,35 @@ def test_duplicate_consecutive_task_family_is_rejected_and_repaired(tmp_path: Pa
     assert events[1]["accepted_stage_task_shape"] == "line"
 
 
+def test_short_line_to_line_progression_is_not_rejected_as_duplicate(tmp_path: Path) -> None:
+    """Verify a held short-line stage can progress to a normal line task."""
+    logger = _logger(tmp_path)
+    response = (
+        '{"task_type":"trajectory","shape":"line","duration_sec":5.0,'
+        '"sample_rate_hz":10.0,"start":[0.0,0.0,1.0],"end":[0.6,0.0,1.0],"reason":"Longer line."}'
+    )
+    context = llm.curriculum.ProposalContext(
+        curriculum_name="curriculum_llm_test",
+        stage_index=2,
+        recent_accepted_tasks=({"accepted_stage_task_shape": "start_hold_then_short_line"},),
+    )
+
+    result = llm.curriculum.propose_next_task(
+        client=llm.client.MockLLMClient([response]),
+        context=context,
+        settings=llm.curriculum.ProposalSettings(max_repair_attempts=0),
+        logger=logger,
+    )
+    events = llm.logging.read_jsonl(logger.log_path)
+
+    assert result.task is not None
+    assert result.task["shape"] == "line"
+    assert result.stats["duplicate_task_rejections"] == 0
+    assert events[0]["status"] == "accepted"
+    assert events[0]["previous_stage_task_shape"] == "start_hold_then_short_line"
+    assert events[0]["accepted_stage_task_shape"] == "line"
+
+
 def test_valid_task_distribution_proposal_is_accepted_and_logged(tmp_path: Path) -> None:
     """Verify a constrained distribution reference proposal is accepted and logged."""
     logger = _logger(tmp_path)

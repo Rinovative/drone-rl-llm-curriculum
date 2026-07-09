@@ -42,6 +42,8 @@ BUDGET_TEST_STAGE_BUDGETS = [30, 40, 20, 20]
 TASKDIST_RESOLUTION_EFFECTIVE_SEED = 12
 FALLBACK_FAILED_PROPOSAL_COUNT = 2
 EXPECTED_PROGRESSION_REPAIR_COUNT = 2
+EXPECTED_SHORT_LINE_DUPLICATE_REJECTIONS = 2
+EXPECTED_LINE_BOOTSTRAP_SAMPLE_INDEX_AFTER_REPAIR = 3
 
 
 def test_llm_curriculum_config_loads_and_validates() -> None:
@@ -593,6 +595,81 @@ def test_llm_taskdist_fallback_logs_and_resolves_concrete_task(tmp_path: Path, m
     assert "missing required keys" in fallback_events[0]["proposal_failure_reason"]
 
 
+def test_llm_fallback_resolves_line_after_rejected_short_line_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify fallback repairs the short-line duplicate crash by resolving a normal line stage."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    duplicate_short_line_distribution = (
+        '{"proposal_kind":"task_distribution","task_distribution_id":"short_line_bootstrap","reason":"Repeat short line."}'
+    )
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_short_line_fallback_unit",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
+            "seed": 2,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "max_stages": 2,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "proposal_fallback": {
+                "enabled": True,
+                "task_distribution_id": "tracking_medium",
+                "default_stage_budget_profile": "normal",
+                "ready_stage_budget_profile": "normal",
+            },
+            "bootstrap": {
+                "enabled": True,
+                "stage_name": "start_hold_then_short_line",
+                "task_shape": "start_hold_then_short_line",
+                "total_timesteps": 8,
+                "eval_steps": 4,
+                "task": {
+                    "task_type": "trajectory",
+                    "shape": "start_hold_then_short_line",
+                    "hold_duration_sec": 1.0,
+                    "move_duration_sec": 3.0,
+                    "sample_rate_hz": 10.0,
+                    "start_hold_enabled": True,
+                    "start_hold_sec": 1.0,
+                    "exclude_start_hold_from_tracking_metrics": True,
+                    "start": [0.0, 0.0, 1.0],
+                    "end": [0.35, 0.0, 1.0],
+                },
+            },
+            "llm": {
+                "provider": "mock",
+                "model": "mock",
+                "max_repair_attempts": 1,
+                "skip_invalid_proposals": False,
+                "mock_responses": [duplicate_short_line_distribution, duplicate_short_line_distribution],
+            },
+        }
+    )
+
+    result = llm_curriculum_training.run_llm_curriculum_training(settings, dry_run_proposals=True)
+    summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
+    fallback_events = [event for event in events if event["event_type"] == "llm_proposal_fallback"]
+    duplicate_events = [event for event in events if event.get("error_type") == "duplicate_task"]
+    fallback_stage = summary["stages"][1]
+
+    assert len(duplicate_events) == EXPECTED_SHORT_LINE_DUPLICATE_REJECTIONS
+    assert summary["proposal_stats"]["fallback_proposals"] == 1
+    assert fallback_stage["proposal_fallback_used"] is True
+    assert fallback_stage["task_distribution_id"] == "line_bootstrap"
+    assert fallback_stage["resolved_task_shape"] == "line"
+    assert fallback_stage["resolved_task_sample_metadata"]["task_distribution_sampled_family"] == "line"
+    assert fallback_stage["resolved_task_sample_metadata"]["task_distribution_sample_index"] == EXPECTED_LINE_BOOTSTRAP_SAMPLE_INDEX_AFTER_REPAIR
+    assert (
+        fallback_stage["resolved_task_sample_metadata"]["distribution_resolution_attempts"] == EXPECTED_LINE_BOOTSTRAP_SAMPLE_INDEX_AFTER_REPAIR + 1
+    )
+    assert fallback_stage["resolved_task_sample_metadata"]["duplicate_samples_rejected"] == EXPECTED_LINE_BOOTSTRAP_SAMPLE_INDEX_AFTER_REPAIR
+    assert fallback_stage["resolved_task_sample_metadata"]["progression_transition_reason"] == "valid_difficulty_increase"
+    assert fallback_stage["resolved_task_sample_metadata"]["fallback_distribution_attempts"] == 1
+    assert fallback_events[0]["task_distribution_reference"]["task_distribution_id"] == "line_bootstrap"
+    assert fallback_events[0]["fallback_distribution_attempts"] == 1
+    assert fallback_events[0]["fallback_final_distribution_id"] == "line_bootstrap"
+
+
 def _budget_test_settings() -> llm_curriculum_training.LLMCurriculumSettings:
     """Return tiny dry-run settings that exercise adaptive budget resolution."""
     return llm_curriculum_training.llm_curriculum_settings_from_mapping(
@@ -753,23 +830,23 @@ def test_llm_taskdist_stage_names_use_resolved_concrete_shapes(tmp_path: Path, m
     events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
     stage_names = [stage["stage_name"] for stage in summary["stages"]]
 
-    assert stage_names == ["start_hold_then_short_line", "polyline", "line", "vertical"]
+    assert stage_names == ["start_hold_then_short_line", "line", "polyline", "vertical"]
     assert summary["stages"][0]["proposal_repaired"] is True
     assert summary["stages"][0]["proposal_final_distribution_id"] == "short_line_bootstrap"
-    assert summary["stages"][1]["proposal_final_distribution_id"] == "delayed_altitude_polyline_bootstrap"
+    assert summary["stages"][1]["proposal_final_distribution_id"] == "angled_vertical_bootstrap"
     assert summary["stages"][0]["stage_progression_bucket"] == "xy_line"
     assert summary["stages"][1]["stage_progression_bucket"] == "altitude_combined"
     assert all("tracking_medium" not in stage["run_name"] for stage in summary["stages"])
-    assert summary["stage_run_names"][1] == "curriculum_llm_stage_name_unit_stage02_polyline_seed0"
-    assert summary["stages"][1]["resolved_task_shape"] == "polyline"
+    assert summary["stage_run_names"][1] == "curriculum_llm_stage_name_unit_stage02_line_seed0"
+    assert summary["stages"][1]["resolved_task_shape"] == "line"
     assert summary["stages"][3]["resolved_task_shape"] == "vertical"
     assert summary["curriculum_coverage"]["xy_line_count"] == 1
     assert summary["curriculum_coverage"]["altitude_combined_count"] == 1
     assert summary["proposal_progression_repair_count"] == EXPECTED_PROGRESSION_REPAIR_COUNT
     budget_events = [event for event in events if event["event_type"] == "llm_stage_budget_decision"]
     assert budget_events[0]["stage_name"] == "start_hold_then_short_line"
-    assert budget_events[1]["stage_name"] == "polyline"
-    assert budget_events[1]["accepted_task"]["shape"] == "polyline"
+    assert budget_events[1]["stage_name"] == "line"
+    assert budget_events[1]["accepted_task"]["shape"] == "line"
 
 
 def test_llm_taskdist_wandb_identity_uses_resolved_stage_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -934,7 +1011,7 @@ def test_context_overflow_fallback_prefers_focused_distribution_before_broad() -
         context_overflow=True,
     )
 
-    assert fallback["task"]["task_distribution_id"] == "delayed_altitude_polyline_bootstrap"
+    assert fallback["task"]["task_distribution_id"] == "angled_vertical_bootstrap"
     assert fallback["task"]["task_distribution_id"] != "tracking_small"
     assert fallback["task"]["task_distribution_id"] != "tracking_medium"
     assert fallback["llm_request_failed_due_to_context_size"] is True

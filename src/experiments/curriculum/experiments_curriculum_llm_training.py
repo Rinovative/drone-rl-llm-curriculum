@@ -764,22 +764,18 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
             llm.curriculum.merge_proposal_stats(proposal_stats, exc.stats)
             recent_rejected_tasks.extend(exc.rejected_proposals)
             proposal_stats["fallback_proposals"] = int(proposal_stats.get("fallback_proposals", 0)) + 1
-            fallback_proposal = _fallback_proposal_from_failure(
+            fallback_resolution = _stage_from_fallback_failure(
                 settings=settings,
                 stage_index=next_stage_index,
                 metrics_summary=latest_metrics_summary,
                 failure_reason=str(exc),
                 previous_stage_task_shape=previous_stage_task_shape,
                 context_overflow=context_overflow,
-            )
-            fallback_repair = _repair_proposal_for_progression(
-                settings=settings,
-                stage_index=next_stage_index,
-                task=fallback_proposal["task"],
-                proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
                 stage_entries=stage_entries,
                 latest_metrics_summary=latest_metrics_summary,
             )
+            fallback_proposal = fallback_resolution["fallback_proposal"]
+            fallback_repair = fallback_resolution["fallback_repair"]
             if fallback_repair["proposal_repaired"]:
                 _log_proposal_progression_repair(
                     logger=proposal_logger,
@@ -788,20 +784,7 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                     repair=fallback_repair,
                     proposal_fallback_used=True,
                 )
-            stage = _stage_from_proposal(
-                settings=settings,
-                stage_index=next_stage_index,
-                task=fallback_repair["task"],
-                task_reason=fallback_proposal["task_reason"],
-                stage_budget_profile=fallback_proposal["stage_budget_profile"],
-                budget_rationale=fallback_proposal["budget_rationale"],
-                proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
-                original_proposal=fallback_proposal["original_proposal"],
-                previous_stage_task_shape=previous_stage_task_shape,
-                proposal_fallback_used=True,
-                proposal_failure_reason=str(exc),
-                progression_repair=fallback_repair,
-            )
+            stage = fallback_resolution["stage"]
             _log_proposal_fallback(
                 logger=proposal_logger,
                 settings=settings,
@@ -1729,11 +1712,12 @@ def _first_known_distribution(candidate_ids: Sequence[str], *, fallback: str) ->
 
 
 def _distribution_duplicates_previous_shape(distribution_id: str, previous_stage_task_shape: str | None) -> bool:
-    """Return whether a distribution would resolve to the previous duplicate-prevention family."""
-    expected_shape = PROGRESSION_DISTRIBUTION_EXPECTED_SHAPES.get(distribution_id)
-    if expected_shape is None:
-        return False
-    return _is_consecutive_duplicate_stage_shape(previous_stage_task_shape, expected_shape)
+    """Return whether a distribution is not a valid immediate progression."""
+    allowed, _ = llm.progression.is_valid_progression_transition(
+        previous_stage_task_shape,
+        _progression_stage_context(distribution_id=distribution_id),
+    )
+    return not allowed
 
 
 def _latest_stage_task_shape(stage_entries: Sequence[Mapping[str, Any]]) -> str | None:
@@ -1973,6 +1957,23 @@ def _stage_from_proposal(
     )
 
 
+def _progression_stage_context(
+    *,
+    distribution_id: str | None = None,
+    task_shape: str | None = None,
+    sample_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a stage-like mapping for progression transition checks."""
+    context: dict[str, Any] = {}
+    if distribution_id is not None:
+        context[llm.task_schema.TASK_DISTRIBUTION_ID_FIELD] = distribution_id
+    if task_shape is not None:
+        context[validation.contracts.FIELD_SHAPE] = task_shape
+    if sample_metadata is not None:
+        context["resolved_task_sample_metadata"] = dict(sample_metadata)
+    return context
+
+
 def _resolve_task_distribution_stage_task(
     *,
     settings: LLMCurriculumSettings,
@@ -1987,21 +1988,37 @@ def _resolve_task_distribution_stage_task(
     stage_seed = _stage_task_distribution_seed(settings=settings, distribution_settings=distribution_settings, stage_index=stage_index)
     sampler_settings = replace(distribution_settings, seed=stage_seed)
     sampler = envs.task_distribution.TaskDistributionSampler(sampler_settings, env_rank=0)
-    duplicate_shapes: list[str] = []
-    for _ in range(RESOLVED_DISTRIBUTION_MAX_ATTEMPTS):
+    rejected_samples: list[str] = []
+    for resolution_attempt in range(1, RESOLVED_DISTRIBUTION_MAX_ATTEMPTS + 1):
         resolved_task = sampler.sample_task()
+        resolved_sample_metadata = dict(sampler.sample_metadata())
         validation_result = validation.tasks.validate_task(resolved_task, limits=sampler_settings.validation_limits)
         if not validation_result.is_valid:
             details = "; ".join(validation_result.messages)
             message = f"resolved task-distribution proposal {distribution_id!r} produced an invalid task: {details}"
             raise ValueError(message)
         resolved_task_shape = str(resolved_task.get(validation.contracts.FIELD_SHAPE) or "")
-        if not _is_consecutive_duplicate_stage_shape(previous_stage_task_shape, resolved_task_shape):
+        candidate_stage = _progression_stage_context(
+            distribution_id=distribution_id,
+            task_shape=resolved_task_shape,
+            sample_metadata=resolved_sample_metadata,
+        )
+        allowed, transition_reason = llm.progression.is_valid_progression_transition(previous_stage_task_shape, candidate_stage)
+        if allowed:
+            resolved_sample_metadata.update(
+                {
+                    "distribution_resolution_attempts": resolution_attempt,
+                    "duplicate_samples_rejected": len(rejected_samples),
+                    "candidate_distribution_rejected": False,
+                    "candidate_distribution_rejection_reason": None,
+                    "progression_transition_reason": transition_reason,
+                }
+            )
             break
-        duplicate_shapes.append(resolved_task_shape)
+        rejected_samples.append(f"{resolved_task_shape} ({transition_reason})")
     else:
-        details = ", ".join(duplicate_shapes[-3:]) or str(previous_stage_task_shape)
-        message = f"resolved task-distribution proposal {distribution_id!r} only produced duplicate consecutive shape(s): {details}"
+        details = ", ".join(rejected_samples[-3:]) or str(previous_stage_task_shape)
+        message = f"resolved task-distribution proposal {distribution_id!r} only produced invalid consecutive progression sample(s): {details}"
         raise ValueError(message)
     return {
         "task_distribution_config_path": config_path,
@@ -2012,7 +2029,7 @@ def _resolve_task_distribution_stage_task(
         },
         "resolved_task": dict(resolved_task),
         "resolved_task_shape": resolved_task_shape,
-        "resolved_task_sample_metadata": sampler.sample_metadata(),
+        "resolved_task_sample_metadata": resolved_sample_metadata,
     }
 
 
@@ -2322,27 +2339,9 @@ def _shape_from_distribution_family(family: str) -> str:
 
 
 def _is_consecutive_duplicate_stage_shape(previous_shape: str | None, next_shape: str | None) -> bool:
-    """Return whether two stage shapes belong to the same duplicate-prevention family."""
-    if previous_shape is None or next_shape is None:
-        return False
-    return _canonical_stage_task_family(previous_shape) == _canonical_stage_task_family(next_shape)
-
-
-def _canonical_stage_task_family(shape: str) -> str:
-    """Return the duplicate-prevention family for a stage task shape."""
-    if shape in {
-        validation.contracts.SHAPE_HOVER,
-        validation.contracts.SHAPE_HOVER_STABILIZATION,
-        validation.contracts.SHAPE_NEARBY_TARGET_HOVER,
-    }:
-        return validation.contracts.SHAPE_HOVER_STABILIZATION
-    if shape in {
-        validation.contracts.SHAPE_LINE,
-        validation.contracts.SHAPE_SHORT_SLOW_LINE,
-        validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
-    }:
-        return validation.contracts.SHAPE_LINE
-    return shape
+    """Return whether two concrete stage shapes are not a valid immediate progression."""
+    allowed, _ = llm.progression.is_valid_progression_transition(previous_shape, next_shape)
+    return not allowed
 
 
 def _previous_accepted_stage_shape(recent_accepted_tasks: Sequence[Mapping[str, Any]]) -> str | None:
@@ -2557,6 +2556,110 @@ def _write_stage_task_config(
     return task_config_path
 
 
+def _stage_from_fallback_failure(
+    *,
+    settings: LLMCurriculumSettings,
+    stage_index: int,
+    metrics_summary: Mapping[str, Any],
+    failure_reason: str,
+    previous_stage_task_shape: str | None,
+    context_overflow: bool,
+    stage_entries: Sequence[Mapping[str, Any]],
+    latest_metrics_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Resolve a deterministic fallback by trying valid candidate distributions in order."""
+    rejected_candidates: list[str] = []
+    candidate_ids = _fallback_distribution_candidates(
+        settings=settings,
+        previous_stage_task_shape=previous_stage_task_shape,
+        metrics_summary=metrics_summary,
+        stage_index=stage_index,
+        context_overflow=context_overflow,
+    )
+    for distribution_id in candidate_ids:
+        allowed, transition_reason = llm.progression.is_valid_progression_transition(
+            previous_stage_task_shape,
+            _progression_stage_context(distribution_id=distribution_id),
+            history=stage_entries,
+            diagnostics={"stage_index": stage_index, "max_stages": settings.max_stages},
+        )
+        if not allowed:
+            rejected_candidates.append(f"{distribution_id}: {transition_reason}")
+            continue
+        fallback_proposal = _fallback_proposal_from_failure(
+            settings=settings,
+            stage_index=stage_index,
+            metrics_summary=metrics_summary,
+            failure_reason=failure_reason,
+            previous_stage_task_shape=previous_stage_task_shape,
+            context_overflow=context_overflow,
+            distribution_id=distribution_id,
+        )
+        fallback_repair = _repair_proposal_for_progression(
+            settings=settings,
+            stage_index=stage_index,
+            task=fallback_proposal["task"],
+            proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+            stage_entries=stage_entries,
+            latest_metrics_summary=latest_metrics_summary,
+        )
+        final_distribution_id = fallback_repair.get("proposal_final_distribution_id")
+        if isinstance(final_distribution_id, str) and final_distribution_id.strip():
+            final_allowed, final_reason = llm.progression.is_valid_progression_transition(
+                previous_stage_task_shape,
+                _progression_stage_context(distribution_id=final_distribution_id),
+                history=stage_entries,
+                diagnostics={"stage_index": stage_index, "max_stages": settings.max_stages},
+            )
+            if not final_allowed:
+                rejected_candidates.append(f"{distribution_id}->{final_distribution_id}: {final_reason}")
+                continue
+        try:
+            stage = _stage_from_proposal(
+                settings=settings,
+                stage_index=stage_index,
+                task=fallback_repair["task"],
+                task_reason=fallback_proposal["task_reason"],
+                stage_budget_profile=fallback_proposal["stage_budget_profile"],
+                budget_rationale=fallback_proposal["budget_rationale"],
+                proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+                original_proposal=fallback_proposal["original_proposal"],
+                previous_stage_task_shape=previous_stage_task_shape,
+                proposal_fallback_used=True,
+                proposal_failure_reason=failure_reason,
+                progression_repair=fallback_repair,
+            )
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            rejected_candidates.append(f"{distribution_id}: {exc}")
+            continue
+        fallback_attempts = len(rejected_candidates) + 1
+        if stage.resolved_task_sample_metadata is not None:
+            stage = replace(
+                stage,
+                resolved_task_sample_metadata={
+                    **stage.resolved_task_sample_metadata,
+                    "fallback_distribution_attempts": fallback_attempts,
+                },
+            )
+        fallback_proposal["fallback_distribution_attempts"] = fallback_attempts
+        fallback_proposal["fallback_original_distribution_id"] = distribution_id
+        fallback_proposal["fallback_final_distribution_id"] = stage.task_distribution_id
+        fallback_proposal["original_proposal"]["fallback_distribution_attempts"] = fallback_attempts
+        fallback_proposal["original_proposal"]["fallback_original_distribution_id"] = distribution_id
+        fallback_proposal["original_proposal"]["fallback_final_distribution_id"] = stage.task_distribution_id
+        if rejected_candidates:
+            fallback_proposal["fallback_resolution_rejections"] = list(rejected_candidates)
+            fallback_proposal["original_proposal"]["fallback_resolution_rejections"] = list(rejected_candidates)
+        return {
+            "fallback_proposal": fallback_proposal,
+            "fallback_repair": fallback_repair,
+            "stage": stage,
+        }
+    details = "; ".join(rejected_candidates) or "no known fallback candidates"
+    message = f"deterministic fallback could not resolve a valid progression at stage {stage_index}: {details}"
+    raise ValueError(message)
+
+
 def _fallback_proposal_from_failure(
     *,
     settings: LLMCurriculumSettings,
@@ -2565,15 +2668,17 @@ def _fallback_proposal_from_failure(
     failure_reason: str,
     previous_stage_task_shape: str | None,
     context_overflow: bool = False,
+    distribution_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic safe proposal after exhausted LLM proposal attempts."""
-    distribution_id = _fallback_distribution_id(
-        settings=settings,
-        previous_stage_task_shape=previous_stage_task_shape,
-        metrics_summary=metrics_summary,
-        stage_index=stage_index,
-        context_overflow=context_overflow,
-    )
+    if distribution_id is None:
+        distribution_id = _fallback_distribution_id(
+            settings=settings,
+            previous_stage_task_shape=previous_stage_task_shape,
+            metrics_summary=metrics_summary,
+            stage_index=stage_index,
+            context_overflow=context_overflow,
+        )
     config_path = llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[distribution_id]
     stage_budget_profile = _fallback_stage_budget_profile(settings=settings, metrics_summary=metrics_summary)
     status = metrics_summary.get("failure_overall_status") or metrics_summary.get("status")
@@ -2620,29 +2725,84 @@ def _fallback_distribution_id(
     stage_index: int = 1,
     context_overflow: bool = False,
 ) -> str:
-    """Return a safe fallback distribution that avoids immediate duplicates when possible."""
+    """Return a safe fallback distribution that avoids invalid immediate repeats when possible."""
+    candidates = _fallback_distribution_candidates(
+        settings=settings,
+        previous_stage_task_shape=previous_stage_task_shape,
+        metrics_summary=metrics_summary or {},
+        stage_index=stage_index,
+        context_overflow=context_overflow,
+    )
+    return _first_non_duplicate_distribution(
+        candidates,
+        configured_id=settings.proposal_fallback.task_distribution_id,
+        previous_stage_task_shape=previous_stage_task_shape,
+    )
+
+
+def _fallback_distribution_candidates(
+    *,
+    settings: LLMCurriculumSettings,
+    previous_stage_task_shape: str | None,
+    metrics_summary: Mapping[str, Any],
+    stage_index: int,
+    context_overflow: bool,
+) -> tuple[str, ...]:
+    """Return ordered deterministic fallback distribution candidates for one stage."""
     configured_id = settings.proposal_fallback.task_distribution_id
     if not context_overflow:
-        candidates: tuple[str, ...] = (
-            "short_line_bootstrap",
-            "line_bootstrap",
-            "angled_vertical_bootstrap",
-            "delayed_altitude_polyline_bootstrap",
-            "polyline_bootstrap",
-            "zigzag_bootstrap",
-            "triangle_bootstrap",
-        )
+        if previous_stage_task_shape in {validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE, validation.contracts.SHAPE_SHORT_SLOW_LINE}:
+            candidates: tuple[str, ...] = (
+                "line_bootstrap",
+                "angled_vertical_bootstrap",
+                "delayed_altitude_polyline_bootstrap",
+                "polyline_bootstrap",
+                "zigzag_bootstrap",
+                "short_line_bootstrap",
+                "triangle_bootstrap",
+            )
+        elif previous_stage_task_shape == validation.contracts.SHAPE_LINE:
+            candidates = (
+                "angled_vertical_bootstrap",
+                "delayed_altitude_polyline_bootstrap",
+                "polyline_bootstrap",
+                "zigzag_bootstrap",
+                "triangle_bootstrap",
+                "line_bootstrap",
+                "short_line_bootstrap",
+            )
+        else:
+            candidates = (
+                "short_line_bootstrap",
+                "line_bootstrap",
+                "angled_vertical_bootstrap",
+                "delayed_altitude_polyline_bootstrap",
+                "polyline_bootstrap",
+                "zigzag_bootstrap",
+                "triangle_bootstrap",
+            )
         if stage_index >= max(settings.max_stages - 1, 1):
             candidates = (*candidates, "tracking_small", configured_id)
-        return _first_non_duplicate_distribution(
-            candidates, configured_id="short_line_bootstrap", previous_stage_task_shape=previous_stage_task_shape
-        )
-    candidates = _context_overflow_fallback_candidates(metrics_summary or {}, previous_stage_task_shape=previous_stage_task_shape)
+        return _known_unique_distribution_ids(candidates)
+
+    candidates = _context_overflow_fallback_candidates(metrics_summary, previous_stage_task_shape=previous_stage_task_shape)
     if stage_index >= max(settings.max_stages - 1, 1):
-        candidates = (*candidates, "tracking_small", "tracking_medium")
+        candidates = (*candidates, "tracking_small", "tracking_medium", configured_id)
     else:
         candidates = (*candidates, "tracking_small")
-    return _first_non_duplicate_distribution(candidates, configured_id="short_line_bootstrap", previous_stage_task_shape=previous_stage_task_shape)
+    return _known_unique_distribution_ids(candidates)
+
+
+def _known_unique_distribution_ids(candidate_ids: Sequence[str]) -> tuple[str, ...]:
+    """Return known distribution ids while preserving first-seen order."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for distribution_id in candidate_ids:
+        if distribution_id in seen or distribution_id not in llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS:
+            continue
+        seen.add(distribution_id)
+        ordered.append(distribution_id)
+    return tuple(ordered)
 
 
 def _context_overflow_fallback_candidates(
@@ -2660,8 +2820,10 @@ def _context_overflow_fallback_candidates(
         return ("polyline_bootstrap", "zigzag_bootstrap", "triangle_bootstrap", "short_line_bootstrap")
     if "curvature_following" in gaps:
         return ("ellipse_bootstrap", "circle_bootstrap", "polyline_bootstrap", "zigzag_bootstrap", "short_line_bootstrap")
-    if previous_stage_task_shape is not None and _canonical_stage_task_family(previous_stage_task_shape) == validation.contracts.SHAPE_LINE:
-        return ("vertical_bootstrap", "polyline_bootstrap", "short_line_bootstrap")
+    if previous_stage_task_shape in {validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE, validation.contracts.SHAPE_SHORT_SLOW_LINE}:
+        return ("line_bootstrap", "angled_vertical_bootstrap", "delayed_altitude_polyline_bootstrap", "polyline_bootstrap")
+    if previous_stage_task_shape == validation.contracts.SHAPE_LINE:
+        return ("angled_vertical_bootstrap", "delayed_altitude_polyline_bootstrap", "polyline_bootstrap", "short_line_bootstrap")
     return ("short_line_bootstrap", "vertical_bootstrap", "polyline_bootstrap", "hover_bootstrap")
 
 
@@ -2685,23 +2847,12 @@ def _first_non_duplicate_distribution(
     configured_id: str,
     previous_stage_task_shape: str | None,
 ) -> str:
-    """Return the first known candidate that does not repeat the previous stage family."""
-    previous_family = _canonical_stage_task_family(previous_stage_task_shape) if previous_stage_task_shape is not None else None
-    for distribution_id in candidate_ids:
-        if distribution_id not in llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS:
-            continue
-        if previous_family is None:
-            return distribution_id
-        proposal_shape = _proposal_requested_stage_task_shape(
-            {
-                llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
-                llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
-                llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[distribution_id],
-            }
-        )
-        if proposal_shape is None or _canonical_stage_task_family(proposal_shape) != previous_family:
-            return distribution_id
-    return configured_id
+    """Return the first known candidate that is a valid immediate progression."""
+    return _first_known_non_duplicate_distribution(
+        candidate_ids,
+        fallback=configured_id,
+        previous_stage_task_shape=previous_stage_task_shape,
+    )
 
 
 def _fallback_stage_budget_profile(*, settings: LLMCurriculumSettings, metrics_summary: Mapping[str, Any]) -> str:
@@ -2741,6 +2892,10 @@ def _log_proposal_fallback(
             "budget_rationale": fallback_proposal.get("budget_rationale"),
             "proposal_fallback_used": True,
             "proposal_failure_reason": fallback_proposal.get("proposal_failure_reason"),
+            "fallback_resolution_rejections": fallback_proposal.get("fallback_resolution_rejections"),
+            "fallback_distribution_attempts": fallback_proposal.get("fallback_distribution_attempts"),
+            "fallback_original_distribution_id": fallback_proposal.get("fallback_original_distribution_id"),
+            "fallback_final_distribution_id": fallback_proposal.get("fallback_final_distribution_id"),
             "llm_request_failed_due_to_context_size": fallback_proposal.get("llm_request_failed_due_to_context_size", False),
             "llm_context_fallback_used": fallback_proposal.get("llm_context_fallback_used", False),
             "llm_context_fallback_reason": fallback_proposal.get("llm_context_fallback_reason"),

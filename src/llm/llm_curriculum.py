@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from src import envs, validation
 
 from . import llm_json as json_parser
+from . import llm_progression as progression
 from . import llm_prompts as prompts
 from . import llm_task_schema as task_schema
 from .llm_client import LLMClientError
@@ -650,6 +651,8 @@ def _evaluate_response(response_text: str, *, context: ProposalContext) -> _Atte
         )
 
     duplicate_reason = _duplicate_task_rejection_reason(
+        previous_stage=_previous_stage_progression_context(context),
+        requested_stage=normalized_task,
         previous_stage_task_shape=previous_stage_task_shape,
         requested_stage_task_shape=requested_stage_task_shape,
         stage_index=context.stage_index,
@@ -722,19 +725,26 @@ def _rejected_outcome(
 
 def _previous_stage_task_shape(context: ProposalContext) -> str | None:
     """Return the latest accepted task shape from bounded context metadata."""
-    if not context.recent_accepted_tasks:
+    previous_stage = _previous_stage_progression_context(context)
+    if previous_stage is None:
         return None
-    latest = dict(context.recent_accepted_tasks[-1])
     for key in ("accepted_stage_task_shape", "resolved_task_shape", "task_shape"):
-        value = latest.get(key)
+        value = previous_stage.get(key)
         if value is not None and str(value).strip():
             return str(value)
-    task = latest.get("resolved_task") or latest.get("task")
+    task = previous_stage.get("resolved_task") or previous_stage.get("task")
     if isinstance(task, Mapping):
         shape = task.get(validation.contracts.FIELD_SHAPE)
         if shape is not None and str(shape).strip():
             return str(shape)
     return None
+
+
+def _previous_stage_progression_context(context: ProposalContext) -> Mapping[str, Any] | None:
+    """Return the latest accepted stage context used for progression comparison."""
+    if not context.recent_accepted_tasks:
+        return None
+    return dict(context.recent_accepted_tasks[-1])
 
 
 def _proposal_stage_task_shape(task: Mapping[str, Any] | None) -> str | None:
@@ -783,38 +793,29 @@ def _task_shape_from_distribution_family(family: str) -> str | None:
 
 def _duplicate_task_rejection_reason(
     *,
+    previous_stage: Mapping[str, Any] | str | None,
+    requested_stage: Mapping[str, Any] | str | None,
     previous_stage_task_shape: str | None,
     requested_stage_task_shape: str | None,
     stage_index: int,
 ) -> str | None:
-    """Return a rejection reason when a proposal repeats the immediate previous task family."""
-    if stage_index <= 1 or previous_stage_task_shape is None or requested_stage_task_shape is None:
+    """Return a rejection reason when a proposal repeats without valid progression."""
+    if stage_index <= 1 or previous_stage is None or requested_stage is None:
         return None
-    previous_family = _canonical_task_family(previous_stage_task_shape)
-    requested_family = _canonical_task_family(requested_stage_task_shape)
-    if previous_family != requested_family:
+    allowed, transition_reason = progression.is_valid_progression_transition(previous_stage, requested_stage)
+    if allowed:
         return None
+    previous_label = previous_stage_task_shape or "unknown"
+    requested_label = requested_stage_task_shape or "unknown"
+    if transition_reason == progression.TRANSITION_EXACT_DUPLICATE:
+        return (
+            f"proposed task family/shape {requested_label!r} exactly repeats immediately previous "
+            f"stage {previous_label!r}; choose a different task family, shape, or difficulty progression"
+        )
     return (
-        f"proposed task family/shape {requested_stage_task_shape!r} repeats immediately previous "
-        f"stage {previous_stage_task_shape!r}; choose a different task family or shape"
+        f"proposed task family/shape {requested_label!r} is not a valid immediate progression after "
+        f"previous stage {previous_label!r} ({transition_reason}); choose a different task family, shape, or difficulty progression"
     )
-
-
-def _canonical_task_family(shape: str) -> str:
-    """Return the duplicate-prevention family for a validation shape."""
-    if shape in {
-        validation.contracts.SHAPE_HOVER,
-        validation.contracts.SHAPE_HOVER_STABILIZATION,
-        validation.contracts.SHAPE_NEARBY_TARGET_HOVER,
-    }:
-        return validation.contracts.SHAPE_HOVER_STABILIZATION
-    if shape in {
-        validation.contracts.SHAPE_LINE,
-        validation.contracts.SHAPE_SHORT_SLOW_LINE,
-        validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
-    }:
-        return validation.contracts.SHAPE_LINE
-    return shape
 
 
 def _proposal_type(task: Mapping[str, Any] | None) -> str | None:

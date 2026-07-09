@@ -2,7 +2,7 @@
 _Open Interactive Jupyter Notebook directly in your browser (via Colab)_
 
 # Drone RL with LLM-Guided Curriculum Learning  
-### *Deep Reinforcement Learning Project – MSE Data Science, Autumn 2026*
+### *Deep Reinforcement Learning Project – MSE Data Science, Spring 2026*
 
 **Master of Science in Engineering – Major Data Science**  
 **Eastern Switzerland University of Applied Sciences (OST)**  

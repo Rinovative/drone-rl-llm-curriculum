@@ -114,6 +114,11 @@ def test_active_direct_ppo_training_configs_use_representative_tasks_and_nested_
         assert config["action_interface"] == values["action_interface"]
         assert config["include_dynamics_observation"] is values["include_dynamics_observation"]
         assert config["include_previous_action"] is values["include_previous_action"]
+        assert config["initial_state"]["mode"] == "reference_start_random_offset"
+        assert config["initial_state"]["xy_offset_range_m"] == [0.1, 0.3]
+        assert config["initial_state"]["z_offset_range_m"] == [-0.18, 0.08]
+        assert config["initial_state"]["z_offset_bias"] == "below"
+        assert config["initial_state"]["below_probability"] == pytest.approx(0.7)
         assert config["wandb_mode"] == "auto"
 
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)
@@ -124,7 +129,24 @@ def test_active_direct_ppo_training_configs_use_representative_tasks_and_nested_
         assert settings.task_distribution_config_path == Path(values["task_distribution_config_path"])
         assert settings.include_dynamics_observation is values["include_dynamics_observation"]
         assert settings.include_previous_action is values["include_previous_action"]
+        assert settings.initial_state.mode == "reference_start_random_offset"
+        assert settings.initial_state.xy_offset_range_m == (0.1, 0.3)
+        assert settings.initial_state.z_offset_range_m == (-0.18, 0.08)
+        assert settings.initial_state.z_offset_bias == "below"
+        assert settings.initial_state.below_probability == pytest.approx(0.7)
         assert settings.ppo_config.to_dict() == {**config["ppo"], "policy_kwargs": ppo_config.default_policy_kwargs()}
+
+
+def test_active_scenario_configs_use_randomized_reference_start_offset() -> None:
+    """Verify active scenario/show configs start near but not exactly on the reference."""
+    for config_path in sorted(Path("configs/evaluation/scenarios").glob("show_*.yaml")):
+        config = experiments_config.load_experiment_config(config_path)
+        assert config["initial_state"]["mode"] == "reference_start_random_offset"
+        assert config["initial_state"]["xy_offset_range_m"] == [0.1, 0.3]
+        assert config["initial_state"]["z_offset_range_m"] == [-0.18, 0.08]
+        assert config["initial_state"]["z_offset_bias"] == "below"
+        assert config["initial_state"]["below_probability"] == pytest.approx(0.7)
+        assert config["start_hold_sec"] == pytest.approx(1.0)
 
 
 def test_direct_rpm_smoke_config_is_explicit_and_safe() -> None:

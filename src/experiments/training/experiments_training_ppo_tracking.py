@@ -75,11 +75,18 @@ INITIAL_STATE_METADATA_KEYS = (
     "actual_initial_xyz",
     "initial_xyz_source",
     "initial_xyz_offset",
+    "initial_xy_offset_m",
+    "initial_z_offset_m",
+    "initial_offset_distance_m",
+    "initial_offset_policy",
+    "initial_offset_seed",
+    "initial_offset_sample_index",
     "initial_reference_xyz",
     "initial_xyz_matches_reference_start",
     "initial_position_error_m",
     "initial_z_error_m",
     "initial_z_error_signed_m",
+    "spawned_near_reference_start",
     "spawned_at_reference_start",
 )
 PID_Z_METADATA_KEYS = (

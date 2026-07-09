@@ -309,7 +309,8 @@ def _proposal_instruction_text(mode: str) -> str:
             f"{prefix} Use feedback/history/catalog. Avoid immediate duplicate accepted identity. "
             "Choose focused task-family distributions; hover and pure vertical are bootstrap/recovery only, "
             "tracking_small is fallback/consolidation only, and tracking_medium is final_broad/late only. "
-            "Prefer known safe distributions over raw geometry. Use standard reference starts around 0.9-1.1m with start_hold_sec=2.0. "
+            "Prefer known safe distributions over raw geometry. Use standard-height references around 0.9-1.1m "
+            "with randomized nearby starts and start_hold_sec=1.0. "
             "Output valid JSON with one allowed stage_budget_profile; never request raw timesteps."
         )
     return (
@@ -328,7 +329,7 @@ def _proposal_instruction_text(mode: str) -> str:
         "Choose focused task-family distributions; tracking_small is fallback/consolidation only "
         "and tracking_medium is final_broad/late consolidation only. "
         "Use bounded per-episode distributions and prefer known safe distributions over raw geometry. "
-        "Use standard reference starts around 0.9-1.1m, start_hold_enabled=true, start_hold_sec=2.0, "
+        "Use standard-height references around 0.9-1.1m, randomized nearby starts, start_hold_enabled=true, start_hold_sec=1.0, "
         "and exclude_start_hold_from_tracking_metrics=true. If adaptive budgets are enabled, choose only a listed stage_budget_profile. "
         "Never request raw timesteps."
     )
@@ -368,7 +369,7 @@ def _essential_rules(mode: str) -> list[str]:
     if mode != PROMPT_COMPACTION_MINIMAL:
         rules.extend(
             [
-                "standard reference starts should usually be 0.9-1.1m, with start_hold_sec=2.0",
+                "standard-height references should usually be 0.9-1.1m, with randomized nearby starts and start_hold_sec=1.0",
                 "do not request PPO hyperparameters, action interfaces, observation flags, reward changes, or raw timesteps",
             ]
         )

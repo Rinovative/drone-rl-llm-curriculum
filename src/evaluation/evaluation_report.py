@@ -25,11 +25,14 @@ Boundaries:
 from __future__ import annotations
 
 import csv
+import fnmatch
 import json
+import re
 from math import isfinite
 from pathlib import Path
 from typing import Any
 
+MATRIX_SCRIPT_PATH = Path("scripts/experiment_matrix.sh")
 MATRIX_TSV_PATH = Path("docs/experiments/overnight_lane_assignment.tsv")
 DEFAULT_ARTIFACT_ROOT = Path("/workspace/storage/runs")
 RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -54,14 +57,14 @@ REPORT_METRIC_KEYS = (
 )
 
 
-def load_experiment_matrix(path: str | Path = MATRIX_TSV_PATH) -> list[dict[str, Any]]:
+def load_experiment_matrix(path: str | Path = MATRIX_SCRIPT_PATH) -> list[dict[str, Any]]:
     """
-    Load the planned experiment matrix TSV.
+    Load the planned experiment matrix from the active script or legacy TSV.
 
     Parameters
     ----------
     path
-        TSV file with planned experiment rows.
+        Active shell matrix or legacy TSV file with planned experiment rows.
 
     Returns
     -------
@@ -72,13 +75,62 @@ def load_experiment_matrix(path: str | Path = MATRIX_TSV_PATH) -> list[dict[str,
     matrix_path = Path(path)
     if not matrix_path.exists():
         return []
+    if matrix_path.suffix == ".sh":
+        return _load_experiment_matrix_script(matrix_path)
+    return _load_experiment_matrix_tsv(matrix_path)
+
+
+def expected_run_names(matrix_rows: list[dict[str, Any]] | None = None) -> tuple[str, ...]:
+    """Return planned run names from matrix rows in matrix order."""
+    rows = load_experiment_matrix() if matrix_rows is None else matrix_rows
+    return tuple(_row_run_name(row) for row in rows if _row_run_name(row))
+
+
+def _load_experiment_matrix_tsv(matrix_path: Path) -> list[dict[str, Any]]:
+    """Load a legacy TSV experiment matrix."""
     with matrix_path.open("r", encoding="utf-8", newline="") as handle:
         rows = [dict(row) for row in csv.DictReader(handle, delimiter="\t")]
+    return _normalize_matrix_rows(rows)
+
+
+def _load_experiment_matrix_script(matrix_path: Path) -> list[dict[str, Any]]:
+    """Load the active shell-script experiment matrix without executing it."""
+    script_text = matrix_path.read_text(encoding="utf-8")
+    kind_by_id = _read_case_echo_map(script_text, "experiment_kind")
+    config_by_id = _read_case_echo_map(script_text, "experiment_config")
+    units_by_pattern = _read_case_echo_map(script_text, "experiment_units")
+    priority_by_id = _read_case_echo_map(script_text, "experiment_priority")
+    notes_by_id = _read_case_echo_map(script_text, "experiment_notes")
+    experiments_by_lane = _read_case_echo_map(script_text, "lane_experiments")
+
+    rows: list[dict[str, Any]] = []
+    for lane in sorted(experiments_by_lane, key=_lane_sort_key):
+        for experiment_id in experiments_by_lane[lane].split():
+            kind = kind_by_id.get(experiment_id, "")
+            rows.append(
+                {
+                    "lane": lane,
+                    "experiment_id": experiment_id,
+                    "kind": kind,
+                    "curriculum_kind": _curriculum_kind(kind),
+                    "config_path": config_by_id.get(experiment_id, ""),
+                    "expected_run_name": experiment_id,
+                    "unit_count": _lookup_case_value(units_by_pattern, experiment_id),
+                    "priority": priority_by_id.get(experiment_id, ""),
+                    "notes": notes_by_id.get(experiment_id, ""),
+                }
+            )
+    return _normalize_matrix_rows(rows)
+
+
+def _normalize_matrix_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add report-facing derived fields to planned matrix rows."""
     for row in rows:
         row["lane"] = _int_or_none(row.get("lane"))
         row["unit_count"] = _int_or_none(row.get("unit_count"))
         run_name = _row_run_name(row)
         row["run_name"] = run_name
+        row["expected_run_name"] = str(row.get("expected_run_name") or run_name)
         row["action_interface"] = infer_action_interface(run_name)
         row["training_target"] = infer_training_target(run_name)
         row["ppo_variant"] = infer_ppo_variant(run_name)
@@ -86,10 +138,33 @@ def load_experiment_matrix(path: str | Path = MATRIX_TSV_PATH) -> list[dict[str,
     return rows
 
 
-def expected_run_names(matrix_rows: list[dict[str, Any]] | None = None) -> tuple[str, ...]:
-    """Return planned run names from matrix rows in matrix order."""
-    rows = load_experiment_matrix() if matrix_rows is None else matrix_rows
-    return tuple(_row_run_name(row) for row in rows if _row_run_name(row))
+def _read_case_echo_map(script_text: str, function_name: str) -> dict[str, str]:
+    """Extract simple ``case`` entries that echo a quoted string."""
+    function_match = re.search(rf"^{re.escape(function_name)}\(\) \{{\n(?P<body>.*?)^\}}", script_text, re.MULTILINE | re.DOTALL)
+    if function_match is None:
+        return {}
+    entries = re.findall(r'^\s*([^\n)]+)\)\s+echo\s+"([^"]*)"\s+;;', function_match.group("body"), re.MULTILINE)
+    return {key.strip(): value for key, value in entries if key.strip() != "*"}
+
+
+def _lookup_case_value(case_map: dict[str, str], key: str) -> str | None:
+    """Resolve an exact or shell-pattern case value for a key."""
+    if key in case_map:
+        return case_map[key]
+    for pattern, value in case_map.items():
+        if fnmatch.fnmatchcase(key, pattern):
+            return value
+    return None
+
+
+def _lane_sort_key(value: str) -> tuple[int, int | str]:
+    """Sort numeric lane labels before any nonnumeric labels."""
+    return (0, int(value)) if value.isdigit() else (1, value)
+
+
+def _curriculum_kind(kind: str) -> str:
+    """Return the compact curriculum kind used by runner summaries."""
+    return {"manual_curriculum": "manual", "llm_curriculum": "llm"}.get(kind, "")
 
 
 def artifact_root(root: str | Path | None = None) -> Path:
@@ -460,6 +535,7 @@ def _as_float(value: Any) -> float | None:
 
 __all__ = [
     "DEFAULT_ARTIFACT_ROOT",
+    "MATRIX_SCRIPT_PATH",
     "MATRIX_TSV_PATH",
     "MEDIA_SUFFIXES",
     "METRICS_GLOB",

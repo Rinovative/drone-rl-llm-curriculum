@@ -156,8 +156,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
     include_previous_action
         Whether observations append the previous PPO-facing action.
     initial_state
-        Optional initial drone spawn-position config. Use ``reference_start`` to
-        spawn at the first reference point instead of the upstream near-ground default.
+        Optional initial drone spawn-position config. Use ``reference_start_random_offset``
+        to spawn near, but not exactly on, the first reference point.
     termination_limits
         Optional hard episode-control safety limits. Defaults preserve upstream truncation behavior.
     diagnostic_limits
@@ -260,6 +260,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         self._termination_limit_violation_steps = 0
         self._previous_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self._previous_action_override: np.ndarray | None = None
+        self._initial_state_seed: int | None = None
+        self._initial_state_reset_index = 0
         self._closed = False
 
     def reset(
@@ -285,6 +287,9 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
 
         """
         super().reset(seed=seed)
+        if seed is not None:
+            self._initial_state_seed = int(seed)
+            self._initial_state_reset_index = 0
         self._refresh_task_reference_for_reset()
         self._prepare_initial_state_for_reset()
         _, base_info = self.base_env.reset(seed=seed, options=options)
@@ -440,7 +445,11 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             self.initial_state_config,
             _reference_start_position(self.reference),
             default_initial_xyz=default_initial_xyz,
+            rng=self.np_random,
+            offset_seed=self._initial_state_seed,
+            offset_sample_index=self._initial_state_reset_index,
         )
+        self._initial_state_reset_index += 1
         initial_xyzs = self._last_initial_state_resolution.initial_xyzs_array()
         if initial_xyzs is not None:
             self.base_env.INIT_XYZS = initial_xyzs

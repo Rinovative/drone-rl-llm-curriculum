@@ -473,7 +473,7 @@ def _mark_tracking_starts(axis: Any, plot_data: _TracePlotData, label: bool) -> 
 
 
 def _mark_xy_initial_positions(axis: Any, arrays: dict[str, np.ndarray]) -> None:
-    """Draw actual and reference start markers on the XY trace plot."""
+    """Draw reference start, actual initial position, and offset markers on the XY trace plot."""
     reference_start = arrays["reference"][0, :2]
     actual_start = arrays["actual"][0, :2]
     axis.scatter(
@@ -487,6 +487,17 @@ def _mark_xy_initial_positions(axis: Any, arrays: dict[str, np.ndarray]) -> None
         label="reference start",
         zorder=5,
     )
+    if not np.allclose(reference_start, actual_start, atol=1.0e-6, rtol=0.0):
+        axis.plot(
+            [reference_start[0], actual_start[0]],
+            [reference_start[1], actual_start[1]],
+            color="#d62728",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.85,
+            label="initial offset",
+            zorder=4,
+        )
     axis.scatter(
         actual_start[0],
         actual_start[1],
@@ -494,7 +505,7 @@ def _mark_xy_initial_positions(axis: Any, arrays: dict[str, np.ndarray]) -> None
         marker="x",
         s=55,
         linewidths=1.6,
-        label="actual start",
+        label="actual initial position",
         zorder=6,
     )
 

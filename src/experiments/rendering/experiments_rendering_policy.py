@@ -1492,11 +1492,18 @@ def _initial_state_trace_fields(info: dict[str, Any]) -> dict[str, Any]:
         "actual_initial_xyz",
         "initial_xyz_source",
         "initial_xyz_offset",
+        "initial_xy_offset_m",
+        "initial_z_offset_m",
+        "initial_offset_distance_m",
+        "initial_offset_policy",
+        "initial_offset_seed",
+        "initial_offset_sample_index",
         "initial_reference_xyz",
         "initial_xyz_matches_reference_start",
         "initial_position_error_m",
         "initial_z_error_m",
         "initial_z_error_signed_m",
+        "spawned_near_reference_start",
         "spawned_at_reference_start",
     )
     return {key: info[key] for key in keys if key in info}

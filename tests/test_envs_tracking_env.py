@@ -4,10 +4,12 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
-from src import envs, validation
+from src import envs, utils, validation
 
 BASE_OBSERVATION_DIM = 10
 DYNAMICS_OBSERVATION_DIM = 19
@@ -16,6 +18,11 @@ DIRECT_RPM_DYNAMICS_PREVIOUS_ACTION_OBSERVATION_DIM = 23
 PID_ACTION_DIM = 3
 DIRECT_RPM_ACTION_DIM = 4
 UPSTREAM_DEFAULT_SPAWN_REFERENCE_ERROR_MIN_M = 0.2
+RANDOM_OFFSET_XY_MIN_M = 0.10
+RANDOM_OFFSET_XY_MAX_M = 0.30
+RANDOM_OFFSET_Z_MIN_M = -0.18
+RANDOM_OFFSET_Z_MAX_M = 0.08
+RANDOM_OFFSET_BELOW_PROBABILITY = 0.70
 
 
 def _hover_task() -> dict[str, object]:
@@ -186,6 +193,164 @@ def test_reference_start_with_offset_initial_state_records_offset_error() -> Non
         tracking_env.close()
 
 
+def test_reference_start_random_offset_spawns_near_reference_and_reports_json_safe_metadata() -> None:
+    """Verify randomized reference-start mode spawns near but not exactly at the first reference."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        _hover_task(),
+        gui=False,
+        record=False,
+        initial_state={
+            "mode": "reference_start_random_offset",
+            "xy_offset_range_m": [0.10, 0.30],
+            "z_offset_range_m": [-0.18, 0.08],
+            "z_offset_bias": "below",
+            "below_probability": 0.70,
+        },
+    )
+    try:
+        _, info = tracking_env.reset(seed=0)
+
+        reference_xyz = np.asarray(info["initial_reference_xyz"], dtype=float)
+        actual_xyz = np.asarray(info["actual_initial_xyz"], dtype=float)
+        offset_xyz = actual_xyz - reference_xyz
+        xy_offset_m = float(np.linalg.norm(offset_xyz[:2]))
+        offset_distance_m = float(np.linalg.norm(offset_xyz))
+        assert info["initial_state_mode"] == "reference_start_random_offset"
+        assert info["initial_xyz_source"] == "reference_start_random_offset"
+        assert info["spawned_near_reference_start"] is True
+        assert info["spawned_at_reference_start"] is False
+        assert info["initial_xyz_matches_reference_start"] is False
+        assert RANDOM_OFFSET_XY_MIN_M <= xy_offset_m <= RANDOM_OFFSET_XY_MAX_M
+        assert RANDOM_OFFSET_Z_MIN_M <= offset_xyz[2] <= RANDOM_OFFSET_Z_MAX_M
+        assert np.all(np.abs(actual_xyz[:2]) <= envs.initial_state.DEFAULT_INITIAL_STATE_MAX_ABS_XY_M)
+        assert envs.initial_state.DEFAULT_INITIAL_STATE_MIN_Z_M <= actual_xyz[2] <= envs.initial_state.DEFAULT_INITIAL_STATE_MAX_Z_M
+        assert info["real_pid_z_target_low"] <= actual_xyz[2] <= info["real_pid_z_target_high"]
+        assert info["initial_xy_offset_m"] == pytest.approx(xy_offset_m)
+        assert info["initial_z_offset_m"] == pytest.approx(offset_xyz[2])
+        assert info["initial_offset_distance_m"] == pytest.approx(offset_distance_m)
+        assert info["initial_position_error_m"] == pytest.approx(offset_distance_m)
+        assert info["initial_z_error_m"] == pytest.approx(abs(offset_xyz[2]))
+        assert info["initial_offset_seed"] == 0
+        assert info["initial_offset_sample_index"] == 0
+        assert info["initial_offset_policy"]["xy_offset_range_m"] == [0.10, 0.30]
+        assert info["initial_offset_policy"]["z_offset_range_m"] == [-0.18, 0.08]
+        assert info["initial_offset_policy"]["z_offset_bias"] == "below"
+        assert info["initial_offset_policy"]["below_probability"] == pytest.approx(RANDOM_OFFSET_BELOW_PROBABILITY)
+        assert info["initial_offset_policy"]["z_sampling"] == "below_biased_uniform_subranges"
+        initial_state_fields = {
+            key: value
+            for key, value in info.items()
+            if key.startswith("initial_") or key in {"spawned_at_reference_start", "spawned_near_reference_start"}
+        }
+        assert utils.serialization.find_non_jsonable_paths(initial_state_fields) == []
+        json.dumps(initial_state_fields, allow_nan=False)
+    finally:
+        tracking_env.close()
+
+
+def test_reference_start_random_offset_sequence_is_seed_reproducible_and_varies_by_episode() -> None:
+    """Verify one seed reproduces a varied randomized-offset reset sequence."""
+
+    def offset_sequence() -> tuple[list[list[float]], list[int]]:
+        tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+            _hover_task(),
+            gui=False,
+            record=False,
+            initial_state={"mode": "reference_start_random_offset"},
+        )
+        try:
+            infos = []
+            _, info = tracking_env.reset(seed=123)
+            infos.append(info)
+            for _ in range(2):
+                _, info = tracking_env.reset()
+                infos.append(info)
+            return [list(info["initial_xyz_offset"]) for info in infos], [int(info["initial_offset_sample_index"]) for info in infos]
+        finally:
+            tracking_env.close()
+
+    first_offsets, first_indices = offset_sequence()
+    second_offsets, second_indices = offset_sequence()
+
+    assert np.allclose(first_offsets, second_offsets)
+    assert first_indices == [0, 1, 2]
+    assert second_indices == [0, 1, 2]
+    assert any(not np.allclose(first_offsets[0], offset) for offset in first_offsets[1:])
+
+
+def test_reference_start_random_offset_sampler_varies_direction_and_biases_below() -> None:
+    """Verify random offsets vary direction while biasing z starts below the reference."""
+    config = envs.initial_state.InitialStateConfig(mode="reference_start_random_offset")
+    offsets = [
+        envs.initial_state.resolve_initial_state(
+            config,
+            [0.0, 0.0, 1.0],
+            rng=np.random.default_rng(seed),
+            offset_seed=seed,
+        ).initial_xyz_offset
+        for seed in range(64)
+    ]
+    z_offsets = [offset[2] for offset in offsets]
+    angles = [float(np.arctan2(offset[1], offset[0])) for offset in offsets]
+
+    assert any(offset > 0.0 for offset in z_offsets)
+    assert any(offset < 0.0 for offset in z_offsets)
+    assert sum(offset < 0.0 for offset in z_offsets) > sum(offset > 0.0 for offset in z_offsets)
+    assert max(angles) - min(angles) > 1.0
+
+
+def test_reference_start_random_offset_rank_seed_changes_sequence_deterministically() -> None:
+    """Verify rank-derived seeds give deterministic but different offset sequences."""
+
+    def sequence(seed: int) -> list[list[float]]:
+        tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+            _hover_task(),
+            gui=False,
+            record=False,
+            initial_state={"mode": "reference_start_random_offset"},
+        )
+        try:
+            offsets = []
+            _, info = tracking_env.reset(seed=seed)
+            offsets.append(list(info["initial_xyz_offset"]))
+            _, info = tracking_env.reset()
+            offsets.append(list(info["initial_xyz_offset"]))
+            return offsets
+        finally:
+            tracking_env.close()
+
+    rank_zero = sequence(seed=41)
+    rank_zero_repeat = sequence(seed=41)
+    rank_one = sequence(seed=42)
+
+    assert np.allclose(rank_zero, rank_zero_repeat)
+    assert not np.allclose(rank_zero, rank_one)
+
+
+def test_invalid_reference_start_random_offset_ranges_raise_clear_errors() -> None:
+    """Verify invalid randomized-offset ranges fail during config parsing."""
+    with pytest.raises(ValueError, match="xy_offset_range_m"):
+        envs.initial_state.parse_initial_state_config({"mode": "reference_start_random_offset", "xy_offset_range_m": [0.30, 0.10]})
+    with pytest.raises(ValueError, match="z_offset_range_m"):
+        envs.initial_state.parse_initial_state_config({"mode": "reference_start_random_offset", "z_offset_range_m": [0.08, -0.18]})
+    with pytest.raises(ValueError, match="z_offset_bias"):
+        envs.initial_state.parse_initial_state_config({"mode": "reference_start_random_offset", "z_offset_bias": "up"})
+    with pytest.raises(ValueError, match="below_probability"):
+        envs.initial_state.parse_initial_state_config({"mode": "reference_start_random_offset", "below_probability": 1.1})
+    with pytest.raises(ValueError, match="nonzero"):
+        envs.initial_state.parse_initial_state_config(
+            {"mode": "reference_start_random_offset", "xy_offset_range_m": [0.0, 0.0], "z_offset_range_m": [0.0, 0.0]}
+        )
+
+
+def test_invalid_initial_state_mode_and_xyz_raise_clear_errors() -> None:
+    """Verify invalid modes and malformed XYZ values are rejected clearly."""
+    with pytest.raises(ValueError, match=r"initial_state\.mode"):
+        envs.initial_state.parse_initial_state_config({"mode": "unsupported_start"})
+    with pytest.raises(ValueError, match=r"initial_state\.xyz"):
+        envs.initial_state.parse_initial_state_config({"mode": "fixed", "xyz": [0.0, 0.0]})
+
+
 def test_reference_start_initial_state_is_supported_for_direct_rpm() -> None:
     """Verify direct-RPM envs preserve motor semantics while using reference-start spawn."""
     tracking_env = envs.tracking_env.make_trajectory_tracking_env(
@@ -248,6 +413,62 @@ def test_reference_start_initial_state_updates_after_randomized_reset() -> None:
             _assert_xyz_close(info["actual_initial_xyz"], info["initial_reference_xyz"])
             _assert_xyz_close(info["requested_initial_xyz"], info["initial_reference_xyz"])
         assert np.allclose(tracking_env.base_env.INIT_XYZS, second_reference.reshape(1, 3))
+    finally:
+        tracking_env.close()
+
+
+def test_random_offset_initial_state_updates_after_randomized_task_reset() -> None:
+    """Verify sampled task references are used before randomizing initial XYZ on each reset."""
+    settings = envs.task_distribution.TaskDistributionSettings(
+        name="randomized_line_initial_state_offset",
+        enabled=True,
+        mode=envs.task_distribution.MODE_RANDOMIZED,
+        seed=7,
+        strength=1.0,
+        sample_on_reset=True,
+        base_task=_line_task(),
+        family_weights={envs.task_distribution.FAMILY_LINE: 1.0},
+        variations={
+            envs.task_distribution.FAMILY_LINE: {
+                "start_xy_radius_m": 0.35,
+                "heading_jitter_deg": 90.0,
+                "length_range_m": [0.3, 0.45],
+                "base_z_range_m": [0.9, 1.1],
+                "duration_range_sec": [3.0, 3.0],
+                "start_hold_range_sec": [1.0, 1.0],
+            }
+        },
+    )
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        settings,
+        gui=False,
+        record=False,
+        initial_state={
+            "mode": "reference_start_random_offset",
+            "xy_offset_range_m": [0.10, 0.30],
+            "z_offset_range_m": [-0.18, 0.08],
+            "z_offset_bias": "below",
+            "below_probability": 0.70,
+        },
+    )
+    try:
+        _, first_info = tracking_env.reset(seed=0)
+        _, second_info = tracking_env.reset()
+
+        first_reference = np.asarray(first_info["initial_reference_xyz"], dtype=float)
+        second_reference = np.asarray(second_info["initial_reference_xyz"], dtype=float)
+        second_requested = np.asarray(second_info["requested_initial_xyz"], dtype=float)
+        assert not np.allclose(first_reference, second_reference)
+        assert not np.allclose(first_info["initial_xyz_offset"], second_info["initial_xyz_offset"])
+        for info in (first_info, second_info):
+            reference = np.asarray(info["initial_reference_xyz"], dtype=float)
+            requested = np.asarray(info["requested_initial_xyz"], dtype=float)
+            offset = np.asarray(info["initial_xyz_offset"], dtype=float)
+            assert info["task_distribution_sample_on_reset"] is True
+            assert info["spawned_near_reference_start"] is True
+            assert info["spawned_at_reference_start"] is False
+            assert np.allclose(requested, reference + offset)
+        assert np.allclose(tracking_env.base_env.INIT_XYZS, second_requested.reshape(1, 3))
     finally:
         tracking_env.close()
 

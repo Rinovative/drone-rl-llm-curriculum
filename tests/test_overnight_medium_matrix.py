@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import csv
 import json
 import shutil
 import subprocess
@@ -12,14 +11,14 @@ from pathlib import Path
 
 import yaml
 
-from src import envs, validation
+from src import envs, evaluation, validation
 from src.experiments.curriculum import experiments_curriculum_llm_training as llm_training
 from src.experiments.curriculum import experiments_curriculum_training as manual_training
 from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
 from src.experiments.rendering import experiments_rendering_scenario as scenario_render
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
-LANE_ASSIGNMENT = Path("docs/experiments/overnight_lane_assignment.tsv")
+MATRIX_SCRIPT = Path("scripts/experiment_matrix.sh")
 MANUAL_CURRICULUM_UNIT_COUNT = 5
 LLM_CURRICULUM_STAGE_COUNT = 10
 LLM_CURRICULUM_UNIT_COUNT = 5
@@ -94,9 +93,9 @@ EXPECTED_EXPERIMENT_IDS = {
 }
 
 
-def _assignment_rows() -> list[dict[str, str]]:
-    """Return parsed lane assignment rows."""
-    return list(csv.DictReader(LANE_ASSIGNMENT.read_text(encoding="utf-8").splitlines(), delimiter="	"))
+def _assignment_rows() -> list[dict[str, object]]:
+    """Return parsed active experiment matrix rows."""
+    return evaluation.report.load_experiment_matrix(MATRIX_SCRIPT)
 
 
 def _assert_randomized_distribution_config(config_path: Path) -> envs.task_distribution.TaskDistributionSettings:
@@ -185,9 +184,9 @@ def test_lane_assignment_contains_exact_approved_matrix() -> None:
     """Verify the lane TSV includes exactly the approved 18 experiments."""
     rows = _assignment_rows()
 
-    assert LANE_ASSIGNMENT.is_file()
+    assert MATRIX_SCRIPT.is_file()
     assert {row["experiment_id"] for row in rows} == EXPECTED_EXPERIMENT_IDS
-    assert {row["lane"] for row in rows} == {"1", "2", "3", "4", "5", "6"}
+    assert {row["lane"] for row in rows} == {1, 2, 3, 4, 5, 6}
     assert all("final" not in row["config_path"] for row in rows)
     assert all("task_distribution_tracking_small" not in row["config_path"] for row in rows)
 
@@ -221,11 +220,12 @@ def test_final_direct_ppo_variants_are_symmetric_and_minimal() -> None:
 
 def test_lane_unit_counts_are_balanced() -> None:
     """Verify each lane has the same inferred unit count."""
-    totals: dict[str, int] = {}
+    totals: dict[int, int] = {}
     for row in _assignment_rows():
-        totals[row["lane"]] = totals.get(row["lane"], 0) + int(row["unit_count"])
+        lane = int(row["lane"])
+        totals[lane] = totals.get(lane, 0) + int(row["unit_count"])
 
-    assert totals == {"1": 6, "2": 6, "3": 6, "4": 6, "5": 5, "6": 5}
+    assert totals == {1: 6, 2: 6, 3: 6, 4: 6, 5: 5, 6: 5}
 
 
 def test_all_listed_configs_exist_and_match_run_names() -> None:
@@ -341,7 +341,7 @@ def test_medium_matrix_future_names_do_not_contain_duplicate_medium() -> None:
     assert renamed_config_files
     assert all("medium_medium" not in path.name for path in renamed_config_files)
     assert "medium_medium" not in Path("scripts/experiment_matrix.sh").read_text(encoding="utf-8")
-    assert "medium_medium" not in LANE_ASSIGNMENT.read_text(encoding="utf-8")
+    assert "medium_medium" not in MATRIX_SCRIPT.read_text(encoding="utf-8")
 
 
 def test_direct_ppo_training_configs_use_intended_task_distribution() -> None:
@@ -574,13 +574,10 @@ def test_active_evaluation_paths_do_not_reference_compatibility_configs() -> Non
     assert not Path("configs/evaluation/compatibility").exists()
 
     active_files = [
-        Path("scripts/experiment_matrix.sh"),
+        MATRIX_SCRIPT,
         Path("scripts/experiment_runner_common.sh"),
         Path("scripts/evaluate_variation_suite.sh"),
         Path("scripts/render_run_gifs.sh"),
-        Path("docs/experiments/overnight_lane_assignment.tsv"),
-        Path("docs/experiments/overnight_runner_usage.md"),
-        Path("docs/experiments/config_structure.md"),
         Path("src/experiments/evaluation/experiments_evaluation_policy.py"),
         Path("src/experiments/evaluation/experiments_evaluation_suites.py"),
         Path("src/experiments/rendering/experiments_rendering_scenario.py"),
@@ -622,7 +619,7 @@ def test_lane_assignment_uses_updated_curriculum_unit_counts() -> None:
     """Verify documented lane assignment uses 5-stage manual and 5-unit LLM curricula."""
     rows = _assignment_rows()
 
-    assert {row["unit_count"] for row in rows if row["kind"] == "manual_curriculum"} == {"5"}
-    assert {row["unit_count"] for row in rows if row["kind"] == "llm_curriculum"} == {"5"}
-    assert {row["unit_count"] for row in rows if row["kind"] == "direct_ppo"} == {"1"}
+    assert {row["unit_count"] for row in rows if row["kind"] == "manual_curriculum"} == {5}
+    assert {row["unit_count"] for row in rows if row["kind"] == "llm_curriculum"} == {5}
+    assert {row["unit_count"] for row in rows if row["kind"] == "direct_ppo"} == {1}
     assert not any(row["experiment_id"].startswith("curriculum_llm_") for row in rows)

@@ -4,12 +4,15 @@ controller: scripted_reference
 max_steps: 280
 seed: 0
 initial_state:
-  mode: reference_start
-  xyz: null
-  offset_xyz:
-  - 0.0
-  - 0.0
-  - 0.0
+  mode: reference_start_random_offset
+  xy_offset_range_m:
+  - 0.1
+  - 0.3
+  z_offset_range_m:
+  - -0.18
+  - 0.08
+  z_offset_bias: below
+  below_probability: 0.7
 start_hold_sec: 1.0
 final_hold_sec: 1.0
 camera:
