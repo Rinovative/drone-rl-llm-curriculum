@@ -4,6 +4,7 @@ task_config_path: configs/smoke/trajectory_validation.yaml
 controller: scripted_reference
 max_steps: 640
 seed: 0
+start_hold_sec: 2.0
 final_hold_sec: 1.5
 
 camera:

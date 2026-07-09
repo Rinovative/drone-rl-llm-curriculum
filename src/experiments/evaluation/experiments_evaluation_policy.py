@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from src import envs, evaluation, utils, validation
 from src.experiments import experiments_config as config
 from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
@@ -158,6 +160,13 @@ class PolicyEvaluationSpec:
     source_stage: dict[str, Any] | None = None
     model_scope: str | None = None
     evaluated_model_source: str | None = None
+    own_task_source: str | None = None
+    own_task_config_path: Path | None = None
+    own_task_distribution_config_path: Path | None = None
+    own_task_shape: str | None = None
+    own_task_is_show: bool | None = None
+    own_task_fallback_used: bool = False
+    own_task_fallback_reason: str | None = None
 
     def __post_init__(self) -> None:
         """Validate required spec fields."""
@@ -179,6 +188,21 @@ class PolicyEvaluationSpec:
         if self.task_index < 0:
             message = "task_index must be nonnegative"
             raise ValueError(message)
+
+
+@dataclass(frozen=True)
+class OwnTaskResolution:
+    """Resolved task/config pair for one own-task evaluation."""
+
+    task_config_path: Path
+    task_index: int
+    task_shape: str
+    source: str
+    config_path: Path
+    distribution_config_path: Path | None
+    task_is_show: bool
+    fallback_used: bool
+    fallback_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -333,6 +357,13 @@ def run_policy_evaluation(
         "evaluated_model_source": spec.evaluated_model_source or "specified",
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
+        "own_task_source": spec.own_task_source,
+        "own_task_config_path": None if spec.own_task_config_path is None else str(spec.own_task_config_path),
+        "own_task_distribution_config_path": None if spec.own_task_distribution_config_path is None else str(spec.own_task_distribution_config_path),
+        "own_task_shape": spec.own_task_shape,
+        "own_task_is_show": spec.own_task_is_show,
+        "own_task_fallback_used": bool(spec.own_task_fallback_used),
+        "own_task_fallback_reason": spec.own_task_fallback_reason,
         "source_manifest_path": None if spec.source_manifest_path is None else str(spec.source_manifest_path),
         "action_interface": spec.action_interface,
         "rpm_delta_scale": spec.rpm_delta_scale if spec.action_interface == "direct_rpm" else None,
@@ -421,12 +452,7 @@ def run_direct_policy_own_task_evaluation(
     storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
     training = _mapping(run_manifest.get("training"), "training")
     model_path, evaluated_model_source = _select_manifest_model_path(run_root=run_root, payload=training, field_prefix="training")
-    task_config_path = _direct_training_task_config_path(run_manifest=run_manifest, run_root=run_root)
-    if task_config_path is None:
-        message = "direct PPO run manifest must include a training task config snapshot for own_task evaluation"
-        raise ValueError(message)
-    task_index = _direct_training_task_index(run_manifest)
-    task_shape = _direct_training_task_shape(run_manifest)
+    own_task = _resolve_direct_own_task(run_manifest=run_manifest, run_root=run_root, run_name=run_name, storage_root=storage_root)
     total_timesteps = int(run_manifest.get("total_timesteps", 0))
     normalize_actions = bool(run_manifest.get("normalize_actions", True))
     eval_steps = int(run_manifest.get("eval_steps", 120))
@@ -438,9 +464,9 @@ def run_direct_policy_own_task_evaluation(
             label=f"{run_name}_{OWN_TASK_EVALUATION_NAME}",
             model_role="direct_ppo",
             model_path=model_path,
-            task_config_path=task_config_path,
-            task_index=task_index,
-            task_shape=task_shape,
+            task_config_path=own_task.task_config_path,
+            task_index=own_task.task_index,
+            task_shape=own_task.task_shape,
             output_dir=output_root,
             eval_steps=eval_steps,
             seed=seed,
@@ -455,6 +481,13 @@ def run_direct_policy_own_task_evaluation(
             source_run_kind="direct_ppo",
             model_scope="direct",
             evaluated_model_source=evaluated_model_source,
+            own_task_source=own_task.source,
+            own_task_config_path=own_task.config_path,
+            own_task_distribution_config_path=own_task.distribution_config_path,
+            own_task_shape=own_task.task_shape,
+            own_task_is_show=own_task.task_is_show,
+            own_task_fallback_used=own_task.fallback_used,
+            own_task_fallback_reason=own_task.fallback_reason,
         ),
         PolicyEvaluationArtifactOptions(),
     )
@@ -610,6 +643,7 @@ def run_standard_scenario_evaluations(
             frame_interval=loaded.frame_interval,
             image_width=loaded.image_width,
             image_height=loaded.image_height,
+            start_hold_sec=loaded.start_hold_sec,
             final_hold_sec=loaded.final_hold_sec,
         )
         scenario_result = scenario_render.run_scenario_render(settings)
@@ -1027,6 +1061,143 @@ def _evaluation_index_path_from_manifest(run_manifest: Mapping[str, Any], run_ro
     return run_root / utils.artifacts.EVALUATION_INDEX_FILENAME
 
 
+def _resolve_direct_own_task(
+    *,
+    run_manifest: Mapping[str, Any],
+    run_root: Path,
+    run_name: str,
+    storage_root: Path | None,
+) -> OwnTaskResolution:
+    """Resolve the exact direct-PPO own task or distribution representative."""
+    distribution_config_path = _direct_training_task_distribution_config_path(run_manifest=run_manifest, run_root=run_root)
+    if distribution_config_path is not None:
+        task, source, fallback_used, fallback_reason = _own_task_from_distribution_config(distribution_config_path)
+        task_shape = str(task.get(validation.contracts.FIELD_SHAPE) or "")
+        config_path = _write_direct_own_task_config(
+            run_name=run_name,
+            storage_root=storage_root,
+            source=source,
+            task=task,
+        )
+        return OwnTaskResolution(
+            task_config_path=config_path,
+            task_index=0,
+            task_shape=task_shape,
+            source=source,
+            config_path=config_path,
+            distribution_config_path=distribution_config_path,
+            task_is_show=_task_is_show(task),
+            fallback_used=fallback_used,
+            fallback_reason=fallback_reason,
+        )
+
+    task_config_path = _direct_training_task_config_path(run_manifest=run_manifest, run_root=run_root)
+    if task_config_path is None:
+        message = "direct PPO run manifest must include a training task config snapshot for own_task evaluation"
+        raise ValueError(message)
+    task_shape = _direct_training_task_shape(run_manifest)
+    return OwnTaskResolution(
+        task_config_path=task_config_path,
+        task_index=_direct_training_task_index(run_manifest),
+        task_shape=task_shape,
+        source="training_task_snapshot",
+        config_path=task_config_path,
+        distribution_config_path=None,
+        task_is_show=task_shape == validation.contracts.SHAPE_BASIC_TRAINING_SHOW,
+        fallback_used=False,
+        fallback_reason=None,
+    )
+
+
+def _direct_training_task_distribution_config_path(run_manifest: Mapping[str, Any], run_root: Path) -> Path | None:
+    """Return the configured training distribution path for direct PPO, when present."""
+    config_payload = run_manifest.get("config")
+    candidates: list[Any] = [run_manifest.get("task_distribution_config_path")]
+    if isinstance(config_payload, Mapping):
+        candidates.append(config_payload.get("task_distribution_config_path"))
+        task_distribution = config_payload.get("task_distribution")
+        if isinstance(task_distribution, Mapping):
+            candidates.append(task_distribution.get("task_distribution_config_path"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return _resolve_manifest_path(candidate, run_root=run_root)
+    return None
+
+
+def _own_task_from_distribution_config(distribution_config_path: Path) -> tuple[dict[str, Any], str, bool, str | None]:
+    """Load a deterministic own-task representative from a task-distribution config."""
+    payload = yaml.safe_load(distribution_config_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        message = f"task distribution config root must be a mapping: {distribution_config_path}"
+        raise TypeError(message)
+    raw_distribution = payload.get(envs.task_distribution.DISTRIBUTION_CONFIG_KEY, {})
+    if raw_distribution is not None and not isinstance(raw_distribution, Mapping):
+        message = f"task_distribution must be a mapping: {distribution_config_path}"
+        raise TypeError(message)
+    distribution_payload = dict(raw_distribution or {})
+    representative = payload.get("own_task_representative", distribution_payload.get("own_task_representative"))
+    settings = envs.task_distribution.load_task_distribution_settings(distribution_config_path)
+    if isinstance(representative, Mapping):
+        task = dict(representative)
+        source = "task_distribution_own_task_representative"
+        fallback_used = False
+        fallback_reason = None
+    else:
+        task = dict(settings.base_task)
+        source = "task_distribution_base_task"
+        fallback_used = settings.base_task_shape != validation.contracts.SHAPE_BASIC_TRAINING_SHOW
+        fallback_reason = None
+        if fallback_used:
+            fallback_reason = f"no own_task_representative found in {distribution_config_path}; used distribution base_task"
+    result = validation.tasks.validate_task(task, limits=settings.validation_limits)
+    if not result.is_valid:
+        details = "; ".join(result.messages)
+        message = f"invalid own_task representative in {distribution_config_path}: {details}"
+        raise ValueError(message)
+    return task, source, fallback_used, fallback_reason
+
+
+def _write_direct_own_task_config(
+    *,
+    run_name: str,
+    storage_root: Path | None,
+    source: str,
+    task: Mapping[str, Any],
+) -> Path:
+    """Write one run-local own-task config used by distribution-trained direct PPO evaluation."""
+    config_dir = utils.artifacts.get_run_config_dir(run_name, storage_root=storage_root) / "own_task"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    shape = str(task.get(validation.contracts.FIELD_SHAPE) or "task")
+    config_path = config_dir / f"{_safe_name(source)}_{_safe_name(shape)}.yaml"
+    payload = {
+        "name": f"{run_name}_own_task",
+        "own_task_source": source,
+        "tasks": [dict(task)],
+    }
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return config_path
+
+
+def _resolve_manifest_path(value: str, *, run_root: Path) -> Path:
+    """Resolve a manifest path relative to the run root when appropriate."""
+    path = Path(value)
+    if path.is_absolute():
+        return path.resolve(strict=False)
+    run_relative = (run_root / path).resolve(strict=False)
+    if run_relative.exists():
+        return run_relative
+    return path.resolve(strict=False)
+
+
+def _task_is_show(task: Mapping[str, Any]) -> bool:
+    """Return whether an own-task representative is a show-style task."""
+    return bool(
+        task.get("task_is_show")
+        or task.get("show_name")
+        or str(task.get(validation.contracts.FIELD_SHAPE) or "") == validation.contracts.SHAPE_BASIC_TRAINING_SHOW
+    )
+
+
 def _direct_training_task_config_path(run_manifest: Mapping[str, Any], run_root: Path) -> Path | None:
     """Return the task config snapshot used for direct PPO training when available."""
     config_payload = run_manifest.get("config")
@@ -1341,6 +1512,13 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "evaluated_model_source",
         "task_config_path_used_for_evaluation",
         "task_shape_used_for_evaluation",
+        "own_task_source",
+        "own_task_config_path",
+        "own_task_distribution_config_path",
+        "own_task_shape",
+        "own_task_is_show",
+        "own_task_fallback_used",
+        "own_task_fallback_reason",
         "source_manifest_path",
         "action_interface",
         "rpm_delta_scale",

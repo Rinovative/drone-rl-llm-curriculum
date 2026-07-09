@@ -53,9 +53,11 @@ DEFAULT_MANIFEST_FILENAME = "scenario_render_manifest.json"
 DEFAULT_TRACE_FILENAME = "scenario_rollout_trace.jsonl"
 DEFAULT_PHASE_SAMPLE_RATE_HZ = 10.0
 DEFAULT_PHASE_Z_M = 1.0
+DEFAULT_START_HOLD_SEC = 0.0
 DEFAULT_FINAL_HOLD_SEC = 0.0
 SCRIPTED_REFERENCE_SCENARIO_PREFIX = "scripted_reference_"
 PPO_SCENARIO_PREFIX = "ppo_"
+START_HOLD_NAME = "start_hold"
 FINAL_HOLD_NAME = "final_hold"
 NORMAL_TERMINATION_REASONS = {
     "tracking_reference_complete",
@@ -230,6 +232,8 @@ class ScenarioRenderSettings:
         Captured frame width in pixels.
     image_height
         Captured frame height in pixels.
+    start_hold_sec
+        Optional initial stationary reference duration prepended before the first phase.
     final_hold_sec
         Optional final stationary reference duration appended after the last phase.
 
@@ -255,6 +259,7 @@ class ScenarioRenderSettings:
     frame_interval: int = policy_render.DEFAULT_FRAME_INTERVAL
     image_width: int = policy_render.DEFAULT_IMAGE_WIDTH
     image_height: int = policy_render.DEFAULT_IMAGE_HEIGHT
+    start_hold_sec: float = DEFAULT_START_HOLD_SEC
     final_hold_sec: float = DEFAULT_FINAL_HOLD_SEC
 
     def __post_init__(self) -> None:
@@ -291,6 +296,9 @@ class ScenarioRenderSettings:
             raise ValueError(message)
         if not np.isfinite(self.camera_pitch):
             message = "camera_pitch must be finite"
+            raise ValueError(message)
+        if self.start_hold_sec < 0.0 or not np.isfinite(self.start_hold_sec):
+            message = "start_hold_sec must be finite and nonnegative"
             raise ValueError(message)
         if self.final_hold_sec < 0.0 or not np.isfinite(self.final_hold_sec):
             message = "final_hold_sec must be finite and nonnegative"
@@ -334,6 +342,10 @@ class ScenarioComposition:
         Per-phase XYZ offsets applied to local primitive positions.
     phase_geometry
         Manifest-ready local geometry and global endpoints for each phase.
+    start_hold_sec
+        Initial stationary hold duration prepended before the first phase.
+    start_hold_steps
+        Number of reference samples in the initial start hold.
     final_hold_sec
         Final stationary hold duration appended after the last phase.
     reference_motion_steps
@@ -348,6 +360,10 @@ class ScenarioComposition:
         Per-phase hold ``[start, end)`` sample ranges with phase identifiers.
     phase_hold_time_ranges
         Per-phase hold ``[start, end]`` time ranges with phase identifiers.
+    start_hold_step_range
+        Optional ``[start, end)`` sample range for the initial start hold.
+    start_hold_time_range
+        Optional ``[start, end]`` time range for the initial start hold.
     final_hold_step_range
         Optional ``[start, end)`` sample range for the final hold.
     final_hold_time_range
@@ -364,6 +380,10 @@ class ScenarioComposition:
     phase_end_positions: tuple[list[float], ...]
     phase_offsets: tuple[list[float], ...]
     phase_geometry: tuple[dict[str, Any], ...]
+    start_hold_sec: float
+    start_hold_steps: int
+    start_hold_step_range: dict[str, int] | None
+    start_hold_time_range: dict[str, float] | None
     final_hold_sec: float
     scenario_duration_sec: float
     reference_motion_steps: int
@@ -559,6 +579,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         reference_sample_count=reference_sample_count,
         reference_motion_steps=composition.reference_motion_steps,
         reference_motion_end_step=composition.reference_motion_end_step,
+        start_hold_steps=composition.start_hold_steps,
         phase_hold_steps=composition.phase_hold_steps,
         phase_hold_end_step=composition.phase_hold_end_step,
         final_hold_steps=composition.final_hold_steps,
@@ -713,10 +734,23 @@ def compose_scenario_reference(settings: ScenarioRenderSettings) -> ScenarioComp
     )
     times = np.concatenate(combined_times)
     positions = np.vstack(combined_positions)
+    start_hold = _prepend_start_hold(times=times, positions=positions, start_hold_sec=settings.start_hold_sec)
+    times = start_hold["times"]
+    positions = start_hold["positions"]
+    start_hold_steps = int(start_hold["steps"])
+    start_hold_step_range = start_hold["step_range"]
+    start_hold_time_range = start_hold["time_range"]
+    if start_hold_steps > 0:
+        phase_step_ranges = _shift_step_ranges(phase_step_ranges, start_hold_steps)
+        phase_hold_step_ranges = _shift_step_ranges(phase_hold_step_ranges, start_hold_steps)
+        final_hold_step_range = _shift_optional_step_range(final_hold_step_range, start_hold_steps)
+        phase_time_ranges = _shift_time_ranges(phase_time_ranges, float(start_hold["time_shift_sec"]))
+        phase_hold_time_ranges = _shift_time_ranges(phase_hold_time_ranges, float(start_hold["time_shift_sec"]))
+        final_hold_time_range = _shift_optional_time_range(final_hold_time_range, float(start_hold["time_shift_sec"]))
     final_hold_steps = 0 if final_hold_step_range is None else final_hold_step_range["end"] - final_hold_step_range["start"]
     phase_hold_steps = sum(int(step_range["end"] - step_range["start"]) for step_range in phase_hold_step_ranges)
     reference_motion_end_step = int(phase_step_ranges[-1]["end"])
-    phase_hold_end_step = max((int(step_range["end"]) for step_range in phase_hold_step_ranges), default=0)
+    phase_hold_end_step = max((int(step_range["end"]) for step_range in phase_hold_step_ranges), default=start_hold_steps)
     scenario_duration_sec = float(times[-1] - times[0])
     _validate_combined_reference(times=times, positions=positions, phase_step_ranges=phase_step_ranges, limits=limits)
 
@@ -727,16 +761,26 @@ def compose_scenario_reference(settings: ScenarioRenderSettings) -> ScenarioComp
         "points": _unique_positions(waypoint_positions).tolist(),
         "duration_sec": scenario_duration_sec,
         "sample_rate_hz": _nominal_sample_rate(times),
+        "start_hold_enabled": bool(settings.start_hold_sec > 0.0),
+        "start_hold_sec": float(settings.start_hold_sec),
+        "exclude_start_hold_from_tracking_metrics": bool(settings.start_hold_sec > 0.0),
         "final_hold_sec": float(settings.final_hold_sec),
     }
     final_hold_start_step = positions.shape[0] if final_hold_step_range is None else int(final_hold_step_range["start"])
     final_hold_end_time = float(times[-1] if final_hold_step_range is None else times[max(final_hold_start_step - 1, 0)])
+    tracking_phase_start_step = start_hold_steps
+    tracking_phase_start_time = float(times[tracking_phase_start_step]) if tracking_phase_start_step < times.shape[0] else float(times[0])
     reference = envs.task_adapter.EnvironmentTaskReference(
         task=MappingProxyType(dict(scenario_task)),
         shape=SCENARIO_TASK_SHAPE,
         times=np.array(times, dtype=float, copy=True),
         positions=np.array(positions, dtype=float, copy=True),
         validation_messages=("scenario reference composed from validated local phase geometry",),
+        start_hold_enabled=bool(settings.start_hold_sec > 0.0),
+        start_hold_sec=float(settings.start_hold_sec),
+        exclude_start_hold_from_tracking_metrics=bool(settings.start_hold_sec > 0.0),
+        tracking_phase_start_step=int(tracking_phase_start_step),
+        tracking_phase_start_time_sec=tracking_phase_start_time,
         final_hold_enabled=bool(settings.final_hold_sec > 0.0),
         final_hold_sec=float(settings.final_hold_sec),
         exclude_final_hold_from_tracking_metrics=bool(settings.final_hold_sec > 0.0),
@@ -753,6 +797,10 @@ def compose_scenario_reference(settings: ScenarioRenderSettings) -> ScenarioComp
         phase_end_positions=tuple(phase_end_positions),
         phase_offsets=tuple(phase_offsets),
         phase_geometry=tuple(phase_geometry),
+        start_hold_sec=float(settings.start_hold_sec),
+        start_hold_steps=int(start_hold_steps),
+        start_hold_step_range=start_hold_step_range,
+        start_hold_time_range=start_hold_time_range,
         final_hold_sec=float(settings.final_hold_sec),
         scenario_duration_sec=scenario_duration_sec,
         reference_motion_steps=int(reference_motion_steps),
@@ -793,6 +841,7 @@ def _settings_from_mapping(config: dict[str, Any], scenario_config_path: Path) -
         camera_distance=float(camera.get("distance", policy_render.DEFAULT_CAMERA_DISTANCE_M)),
         camera_yaw=float(camera.get("yaw", policy_render.DEFAULT_CAMERA_YAW_DEG)),
         camera_pitch=float(camera.get("pitch", policy_render.DEFAULT_CAMERA_PITCH_DEG)),
+        start_hold_sec=float(config.get("start_hold_sec", DEFAULT_START_HOLD_SEC)),
         final_hold_sec=float(config.get("final_hold_sec", DEFAULT_FINAL_HOLD_SEC)),
     )
 
@@ -1500,6 +1549,70 @@ def _append_phase_hold(
     )
 
 
+def _prepend_start_hold(times: np.ndarray, positions: np.ndarray, start_hold_sec: float) -> dict[str, Any]:
+    """Prepend a stationary start hold before the first scenario phase."""
+    if start_hold_sec <= 0.0:
+        return {
+            "times": times,
+            "positions": positions,
+            "steps": 0,
+            "time_shift_sec": 0.0,
+            "step_range": None,
+            "time_range": None,
+        }
+    sample_rate_hz = _nominal_sample_rate(times)
+    hold_steps = max(1, round(start_hold_sec * sample_rate_hz))
+    sample_interval = 1.0 / sample_rate_hz
+    effective_hold_sec = float(hold_steps * sample_interval)
+    hold_times = float(times[0]) + sample_interval * np.arange(hold_steps, dtype=float)
+    hold_positions = np.repeat(np.asarray(positions[0], dtype=float).reshape(1, XYZ_DIMENSIONS), repeats=hold_steps, axis=0)
+    shifted_times = times + effective_hold_sec
+    return {
+        "times": np.concatenate((hold_times, shifted_times)),
+        "positions": np.vstack((hold_positions, positions)),
+        "steps": int(hold_steps),
+        "time_shift_sec": effective_hold_sec,
+        "step_range": {"start": 0, "end": int(hold_steps)},
+        "time_range": {"start": float(hold_times[0]), "end": float(hold_times[-1])},
+    }
+
+
+def _shift_step_ranges(ranges: Sequence[Mapping[str, Any]], offset: int) -> list[dict[str, Any]]:
+    """Return copied step ranges shifted forward by ``offset`` samples."""
+    shifted: list[dict[str, Any]] = []
+    for step_range in ranges:
+        copied = dict(step_range)
+        copied["start"] = int(copied["start"]) + int(offset)
+        copied["end"] = int(copied["end"]) + int(offset)
+        shifted.append(copied)
+    return shifted
+
+
+def _shift_optional_step_range(step_range: Mapping[str, int] | None, offset: int) -> dict[str, int] | None:
+    """Return an optional step range shifted forward by ``offset`` samples."""
+    if step_range is None:
+        return None
+    return {"start": int(step_range["start"]) + int(offset), "end": int(step_range["end"]) + int(offset)}
+
+
+def _shift_time_ranges(ranges: Sequence[Mapping[str, Any]], offset_sec: float) -> list[dict[str, Any]]:
+    """Return copied time ranges shifted forward by ``offset_sec`` seconds."""
+    shifted: list[dict[str, Any]] = []
+    for time_range in ranges:
+        copied = dict(time_range)
+        copied["start"] = float(copied["start"]) + float(offset_sec)
+        copied["end"] = float(copied["end"]) + float(offset_sec)
+        shifted.append(copied)
+    return shifted
+
+
+def _shift_optional_time_range(time_range: Mapping[str, float] | None, offset_sec: float) -> dict[str, float] | None:
+    """Return an optional time range shifted forward by ``offset_sec`` seconds."""
+    if time_range is None:
+        return None
+    return {"start": float(time_range["start"]) + float(offset_sec), "end": float(time_range["end"]) + float(offset_sec)}
+
+
 def _append_final_hold(
     combined_times: list[np.ndarray],
     combined_positions: list[np.ndarray],
@@ -1631,12 +1744,23 @@ def _add_phase_fields(trace_records: list[dict[str, Any]], composition: Scenario
 
 def _phase_metadata_for_step(step_index: int, composition: ScenarioComposition) -> dict[str, Any]:
     """Return trace phase metadata for a combined-reference step index."""
+    if _is_start_hold_step(step_index, composition.start_hold_step_range):
+        return {
+            "phase_index": -1,
+            "phase_name": START_HOLD_NAME,
+            "phase_type": START_HOLD_NAME,
+            "phase_task_shape": START_HOLD_NAME,
+            "is_start_hold": True,
+            "is_phase_hold": False,
+            "is_final_hold": False,
+        }
     if _is_final_hold_step(step_index, composition.final_hold_step_range):
         return {
             "phase_index": len(composition.phases),
             "phase_name": FINAL_HOLD_NAME,
             "phase_type": FINAL_HOLD_NAME,
             "phase_task_shape": FINAL_HOLD_NAME,
+            "is_start_hold": False,
             "is_phase_hold": False,
             "is_final_hold": True,
         }
@@ -1648,6 +1772,7 @@ def _phase_metadata_for_step(step_index: int, composition: ScenarioComposition) 
             "phase_name": phase.name,
             "phase_type": phase.phase_type,
             "phase_task_shape": phase.task_shape,
+            "is_start_hold": False,
             "is_phase_hold": True,
             "is_final_hold": False,
         }
@@ -1658,9 +1783,17 @@ def _phase_metadata_for_step(step_index: int, composition: ScenarioComposition) 
         "phase_name": phase.name,
         "phase_type": phase.phase_type,
         "phase_task_shape": phase.task_shape,
+        "is_start_hold": False,
         "is_phase_hold": False,
         "is_final_hold": False,
     }
+
+
+def _is_start_hold_step(step_index: int, start_hold_step_range: dict[str, int] | None) -> bool:
+    """Return whether a step index belongs to the prepended start hold."""
+    if start_hold_step_range is None:
+        return False
+    return start_hold_step_range["start"] <= step_index < start_hold_step_range["end"]
 
 
 def _is_final_hold_step(step_index: int, final_hold_step_range: dict[str, int] | None) -> bool:
@@ -1805,6 +1938,7 @@ def _scenario_completion_summary(
     reference_sample_count: int,
     reference_motion_steps: int,
     reference_motion_end_step: int,
+    start_hold_steps: int,
     phase_hold_steps: int,
     phase_hold_end_step: int,
     final_hold_steps: int,
@@ -1828,6 +1962,7 @@ def _scenario_completion_summary(
         "rollout_step_fraction": rollout_step_fraction,
         "reference_completion_fraction": reference_completion_fraction,
         "reference_motion_steps": int(reference_motion_steps),
+        "start_hold_steps": int(start_hold_steps),
         "phase_hold_steps": int(phase_hold_steps),
         "final_hold_steps": int(final_hold_steps),
         "completed_reference": bool(completed_reference),
@@ -1956,6 +2091,11 @@ def _build_scenario_manifest(
         "reference_sample_count": int(composition.reference.positions.shape[0]),
         "reference_motion_steps": int(composition.reference_motion_steps),
         "reference_motion_end_step": int(composition.reference_motion_end_step),
+        "start_hold_enabled": bool(composition.start_hold_sec > 0.0),
+        "start_hold_sec": float(composition.start_hold_sec),
+        "start_hold_steps": int(composition.start_hold_steps),
+        "start_hold_step_range": None if composition.start_hold_step_range is None else dict(composition.start_hold_step_range),
+        "start_hold_time_range": None if composition.start_hold_time_range is None else dict(composition.start_hold_time_range),
         "phase_hold_steps": int(composition.phase_hold_steps),
         "phase_hold_end_step": int(composition.phase_hold_end_step),
         "final_hold_steps": int(composition.final_hold_steps),

@@ -18,7 +18,7 @@ EXPECTED_SMOKE_TASK_COUNT = 5
 REQUIRED_SHAPES = {"hover", "circle", "line", "vertical", "polyline"}
 DIRECT_RPM_DELTA_SCALE = 0.05
 MAX_DIRECT_RPM_SMOKE_TIMESTEPS = 4096
-POLICY_NET_ARCH = [128, 128]
+POLICY_NET_ARCH = [256, 256]
 
 
 def test_smoke_config_loads_and_contains_valid_tasks() -> None:

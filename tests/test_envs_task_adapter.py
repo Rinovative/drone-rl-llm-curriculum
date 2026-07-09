@@ -10,7 +10,7 @@ import pytest
 from src import envs, validation
 
 XYZ_DIMENSIONS = 3
-BASIC_TRAINING_SHOW_SEGMENT_COUNT = 8
+BASIC_TRAINING_SHOW_SEGMENT_COUNT = 9
 
 
 def _line_task() -> dict[str, object]:
@@ -144,6 +144,10 @@ def test_basic_training_show_reference_uses_composed_segments_and_final_hold() -
     reference = envs.task_adapter.make_task_reference(task, limits=settings.validation_limits)
 
     assert reference.shape == validation.contracts.SHAPE_BASIC_TRAINING_SHOW
+    assert reference.start_hold_enabled is True
+    assert reference.start_hold_sec > 0.0
+    assert reference.exclude_start_hold_from_tracking_metrics is True
+    np.testing.assert_allclose(reference.positions[0], reference.positions[reference.tracking_phase_start_step])
     assert reference.final_hold_enabled is True
     assert reference.final_hold_sec > 0.0
     assert reference.task["show_name"] == "basic_training_show"

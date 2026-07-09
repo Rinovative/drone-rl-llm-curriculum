@@ -338,6 +338,9 @@ def test_reason_metadata_is_preserved_but_not_passed_to_validation() -> None:
         ("short_line_bootstrap", "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml"),
         ("vertical_bootstrap", "configs/tasks/task_distribution_vertical_bootstrap_medium.yaml"),
         ("polyline_bootstrap", "configs/tasks/task_distribution_polyline_bootstrap_medium.yaml"),
+        ("zigzag_bootstrap", "configs/tasks/task_distribution_zigzag_bootstrap_medium.yaml"),
+        ("triangle_bootstrap", "configs/tasks/task_distribution_triangle_bootstrap_medium.yaml"),
+        ("multi_height_polyline_bootstrap", "configs/tasks/task_distribution_multi_height_polyline_bootstrap_medium.yaml"),
     ],
 )
 def test_task_schema_accepts_known_task_distribution_reference(distribution_id: str, expected_path: str) -> None:
@@ -389,10 +392,12 @@ def test_prompt_contract_mentions_task_distributions_and_supported_families() ->
     assert "tracking_medium" in prompt_contract
     assert "PID" in prompt_contract
     assert "stage_budget_profile" in prompt_contract
+    assert "may not propose arbitrary sampling bounds" in prompt_contract
+    assert "concrete validated task" in prompt_contract
     assert "bootstrap" in prompt_contract
     assert "short" in prompt_contract
     assert "extend" in prompt_contract
-    for family in ("hover_stabilization", "line", "circle"):
+    for family in ("hover_stabilization", "line", "circle", "zigzag", "triangle", "multi_height_polyline"):
         assert family in prompt_contract
 
 
@@ -406,3 +411,10 @@ def test_schema_does_not_expose_basic_training_show_as_llm_focused_family() -> N
     schema = llm.task_schema.build_task_schema()
 
     assert "basic_training_show" not in schema["supported_task_distribution_families"]
+
+
+def test_schema_documents_sampling_bounds_limitation() -> None:
+    """Verify Option B is explicit: LLM proposals do not define arbitrary sampling bounds."""
+    schema = llm.task_schema.build_task_schema()
+
+    assert "arbitrary sampling-bound proposals are intentionally unsupported" in str(schema["sampling_bounds_scope"])

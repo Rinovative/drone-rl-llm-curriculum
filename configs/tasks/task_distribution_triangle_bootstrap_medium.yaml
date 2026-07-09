@@ -1,0 +1,40 @@
+name: triangle_bootstrap
+notes: Bounded triangular polyline bootstrap distribution for LLM curriculum stages.
+validation_limits:
+  arena_xy_limit: 2.0
+  min_height: 0.2
+  max_height: 2.0
+  max_speed_m_s: 2.0
+  max_acceleration_m_s2: 5.0
+  min_duration_sec: 1.0
+  max_step_distance_m: 0.5
+task_distribution:
+  enabled: true
+  mode: randomized
+  seed: 0
+  strength: 0.45
+  sample_on_reset: true
+  base_task:
+    task_type: trajectory
+    shape: line
+    duration_sec: 4.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [0.55, 0.0, 1.0]
+  family_weights:
+    triangle: 1.0
+  variations:
+    triangle:
+      center_xy_radius_m: 0.10
+      heading_jitter_deg: 30
+      side_range_m: [0.25, 0.45]
+      z_range_m: [0.9, 1.15]
+      duration_range_sec: [7.0, 10.5]
+      start_hold_range_sec: [0.75, 1.5]
+      final_hold_range_sec: [0.75, 1.1]

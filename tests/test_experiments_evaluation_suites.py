@@ -167,9 +167,14 @@ def test_real_evaluation_suites_load_through_suite_loader() -> None:
             "diagonal_line_basic",
             "short_line_start_hold",
             "polyline_l_basic",
+            "rectangle_basic",
+            "square_basic",
             "circle_basic",
             "ellipse_basic",
             "figure_eight_basic",
+            "zigzag_basic",
+            "triangle_basic",
+            "multi_height_polyline_basic",
         ],
     }
 
@@ -205,5 +210,12 @@ def test_generalization_suite_contains_optional_non_line_tasks() -> None:
         "start_hold_then_short_line",
         "vertical",
     }
+    assert {task.task_name for task in suite.tasks if task.task.get("task_family") in {"rectangle", "square"}} == {
+        "rectangle_basic",
+        "square_basic",
+    }
+    assert all(task.task["start_hold_enabled"] is True for task in suite.tasks)
+    assert all(task.task["start_hold_sec"] == 2.0 for task in suite.tasks)
+    assert all(task.task["exclude_start_hold_from_tracking_metrics"] is True for task in suite.tasks)
     assert all(task.task["final_hold_enabled"] is True for task in suite.tasks)
     assert all(task.task["final_hold_sec"] == 1.0 for task in suite.tasks)

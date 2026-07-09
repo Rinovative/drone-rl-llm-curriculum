@@ -25,7 +25,7 @@ ppo:
   max_grad_norm: 0.5
   target_kl: 0.03
   policy_kwargs:
-    net_arch: [128, 128]
+    net_arch: [256, 256]
 wandb_mode: disabled
 wandb_project: drone-rl-llm-curriculum
 wandb_entity: null
@@ -37,4 +37,4 @@ wandb_tags:
   - line
   - dynamics_observation
   - previous_action
-  - medium_net
+  - net256_smoke

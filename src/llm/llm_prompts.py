@@ -6,7 +6,7 @@ Build compact chat prompts for local-LLM curriculum task proposals.
 
 Responsibilities:
   - Package the global task contract and supported schema into bounded prompts
-  - Include recent accepted and rejected proposal context only
+  - Include compact accepted-stage history, recent rejections, and concrete diagnostics
   - Build repair prompts with concrete parse, schema, or validation failures
 
 Design principles:
@@ -50,6 +50,8 @@ def build_task_proposal_messages(
     recent_accepted_tasks: Sequence[Mapping[str, Any]],
     recent_rejected_tasks: Sequence[Mapping[str, Any]],
     metrics_summary: Mapping[str, Any] | None,
+    curriculum_history: Sequence[Mapping[str, Any]] = (),
+    curriculum_summary: Mapping[str, Any] | None = None,
     recent_context_limit: int,
     budget_context: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
@@ -68,6 +70,10 @@ def build_task_proposal_messages(
         Bounded rejected proposal history with reasons.
     metrics_summary
         Compact metrics from the latest trained stage or dry-run placeholder.
+    curriculum_history
+        Compact history for all accepted stages, including stage 1 bootstrap.
+    curriculum_summary
+        Aggregate family counts, trend summaries, and diagnostic guidance.
     recent_context_limit
         Maximum number of accepted and rejected entries included in the prompt.
     budget_context
@@ -85,13 +91,17 @@ def build_task_proposal_messages(
         recent_accepted_tasks=recent_accepted_tasks,
         recent_rejected_tasks=recent_rejected_tasks,
         metrics_summary=metrics_summary,
+        curriculum_history=curriculum_history,
+        curriculum_summary=curriculum_summary,
         recent_context_limit=recent_context_limit,
         budget_context=budget_context,
     )
     user_prompt = (
         f"{JSON_ONLY_INSTRUCTION}\n"
         "Propose the next training task using this bounded context. Prefer a small, feasible progression from the latest accepted task. "
-        "Do not repeat immediate_previous_stage_task_shape; choose a different task family/shape with bounded variation. "
+        "Do not repeat immediate_previous_stage_task_shape; choose a different task family/shape as a concrete task or known distribution. "
+        "Use curriculum_history and curriculum_summary to avoid looping on the same family and to choose concrete, safe progressions. "
+        "Treat action_saturation and reference_too_fast as task-difficulty signals, not automatic instability labels. "
         "If adaptive budget profiles are enabled, choose only a stage_budget_profile from llm_stage_budget.allowed_profile_names; "
         "bootstrap is for stage 1 warmup, short is for easy confirmation, normal is default progression, "
         "recovery is for unstable but promising behavior, and extend is for appropriate but undertrained stages. "
@@ -111,6 +121,8 @@ def build_task_repair_messages(
     recent_accepted_tasks: Sequence[Mapping[str, Any]],
     recent_rejected_tasks: Sequence[Mapping[str, Any]],
     metrics_summary: Mapping[str, Any] | None,
+    curriculum_history: Sequence[Mapping[str, Any]] = (),
+    curriculum_summary: Mapping[str, Any] | None = None,
     recent_context_limit: int,
     budget_context: Mapping[str, Any] | None = None,
     previous_response: str = "",
@@ -131,6 +143,10 @@ def build_task_repair_messages(
         Bounded rejected proposal history with reasons.
     metrics_summary
         Compact metrics from the latest trained stage or dry-run placeholder.
+    curriculum_history
+        Compact history for all accepted stages, including stage 1 bootstrap.
+    curriculum_summary
+        Aggregate family counts, trend summaries, and diagnostic guidance.
     recent_context_limit
         Maximum number of accepted and rejected entries included in the prompt.
     budget_context
@@ -152,6 +168,8 @@ def build_task_repair_messages(
         recent_accepted_tasks=recent_accepted_tasks,
         recent_rejected_tasks=recent_rejected_tasks,
         metrics_summary=metrics_summary,
+        curriculum_history=curriculum_history,
+        curriculum_summary=curriculum_summary,
         recent_context_limit=recent_context_limit,
         budget_context=budget_context,
     )
@@ -165,8 +183,9 @@ def build_task_repair_messages(
         "Repair the previous invalid proposal. Address every error, including any immediate duplicate task-family rejection. "
         "Return either a concrete task with task_type and shape, or a valid task-distribution reference from the supported list "
         "using task_distribution_id or task_distribution_config_path. "
-        "Use supported shapes, supported task-distribution families, safe numeric ranges, "
-        "and one budget profile from llm_stage_budget.allowed_profile_names. "
+        "Use supported shapes, supported task-distribution families, concrete safe task values, "
+        "and remember that action_saturation/reference_too_fast diagnose difficulty unless other metrics show instability, "
+        "known distribution ids/paths, and one budget profile from llm_stage_budget.allowed_profile_names. "
         "If stage_budget_profile is invalid, repair it to an allowed profile; "
         "bootstrap is for stage 1 only and arbitrary timestep values are forbidden. "
         "Return a replacement JSON object only.\n"
@@ -185,6 +204,8 @@ def _context_payload(
     recent_accepted_tasks: Sequence[Mapping[str, Any]],
     recent_rejected_tasks: Sequence[Mapping[str, Any]],
     metrics_summary: Mapping[str, Any] | None,
+    curriculum_history: Sequence[Mapping[str, Any]],
+    curriculum_summary: Mapping[str, Any] | None,
     recent_context_limit: int,
     budget_context: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
@@ -198,7 +219,16 @@ def _context_payload(
         "immediate_previous_stage_task_shape": _previous_stage_task_shape(recent_accepted_tasks),
         "recent_accepted_tasks": _tail(recent_accepted_tasks, recent_context_limit),
         "recent_rejected_tasks": _tail(recent_rejected_tasks, recent_context_limit),
+        "curriculum_history": _copy_all(curriculum_history),
+        "curriculum_summary": dict(curriculum_summary or {}),
         "latest_metrics_summary": dict(metrics_summary or {}),
+        "diagnostic_interpretation_policy": {
+            "readiness_level_omitted": True,
+            "use_concrete_metrics_and_trends": True,
+            "action_saturation": "difficulty_signal_not_automatic_instability",
+            "reference_too_fast": "difficulty_signal_not_automatic_instability",
+            "instability_requires_supporting_crash_or_divergence_metrics": True,
+        },
     }
 
 
@@ -224,6 +254,11 @@ def _tail(items: Sequence[Mapping[str, Any]], limit: int) -> list[dict[str, Any]
     if limit <= 0:
         return []
     return [dict(item) for item in items[-limit:]]
+
+
+def _copy_all(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Return all mapping entries as copied dictionaries."""
+    return [dict(item) for item in items]
 
 
 def _compact_json(payload: Mapping[str, Any]) -> str:

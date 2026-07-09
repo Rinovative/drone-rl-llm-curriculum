@@ -102,6 +102,10 @@ class ProposalContext:
         Recent rejected proposal summaries with reasons.
     metrics_summary
         Compact latest-stage metrics or dry-run placeholder.
+    curriculum_history
+        Compact stage-by-stage accepted history for all completed stages.
+    curriculum_summary
+        Aggregate curriculum context such as family counts and metric trends.
     budget_context
         Optional bounded budget profile context for this stage.
 
@@ -112,6 +116,8 @@ class ProposalContext:
     recent_accepted_tasks: tuple[Mapping[str, Any], ...] = ()
     recent_rejected_tasks: tuple[Mapping[str, Any], ...] = ()
     metrics_summary: Mapping[str, Any] | None = None
+    curriculum_history: tuple[Mapping[str, Any], ...] = ()
+    curriculum_summary: Mapping[str, Any] | None = None
     budget_context: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -375,6 +381,8 @@ def _messages_for_attempt(
             recent_accepted_tasks=context.recent_accepted_tasks,
             recent_rejected_tasks=context.recent_rejected_tasks,
             metrics_summary=context.metrics_summary,
+            curriculum_history=context.curriculum_history,
+            curriculum_summary=context.curriculum_summary,
             recent_context_limit=settings.recent_context_limit,
             budget_context=context.budget_context,
         )
@@ -384,6 +392,8 @@ def _messages_for_attempt(
         recent_accepted_tasks=context.recent_accepted_tasks,
         recent_rejected_tasks=context.recent_rejected_tasks,
         metrics_summary=context.metrics_summary,
+        curriculum_history=context.curriculum_history,
+        curriculum_summary=context.curriculum_summary,
         recent_context_limit=settings.recent_context_limit,
         budget_context=context.budget_context,
         previous_response=previous_response,

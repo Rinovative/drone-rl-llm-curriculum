@@ -24,6 +24,14 @@ LLM_CURRICULUM_STAGE_COUNT = 10
 LLM_CURRICULUM_UNIT_COUNT = 5
 REFERENCE_MEDIUM_TIMESTEPS = 500000
 DIRECT_RPM_MIN_RELAXED_RECOVERY_STEPS = 20
+DEFAULT_PPO_LEARNING_RATE = 0.0003
+LOW_LR_PPO_LEARNING_RATE = 0.0001
+DEFAULT_PPO_ENT_COEF = 0.001
+ENT005_PPO_ENT_COEF = 0.005
+DEFAULT_PPO_CLIP_RANGE = 0.2
+CLIP010_PPO_CLIP_RANGE = 0.1
+DEFAULT_PPO_TARGET_KL = 0.03
+TARGETKL015_PPO_TARGET_KL = 0.015
 MANUAL_TOTAL_BUDGET_TIMESTEPS = MANUAL_CURRICULUM_UNIT_COUNT * REFERENCE_MEDIUM_TIMESTEPS
 LLM_TOTAL_BUDGET_TIMESTEPS = MANUAL_TOTAL_BUDGET_TIMESTEPS
 BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml")
@@ -60,23 +68,22 @@ LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recov
 BASIC_TRAINING_SHOW_DIRECT_PPO_IDS = {
     "direct_ppo_pid_baseline_medium_seed0",
     "direct_ppo_pid_dynprev_medium_seed0",
-    "direct_ppo_pid_dynprev_net256_medium_seed0",
     "direct_ppo_directrpm_dynprev_medium_seed0",
 }
 
 EXPECTED_EXPERIMENT_IDS = {
     "direct_ppo_pid_baseline_medium_seed0",
     "direct_ppo_pid_dynprev_medium_seed0",
-    "direct_ppo_pid_dynprev_net256_medium_seed0",
     "direct_ppo_directrpm_dynprev_medium_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_seed0",
-    "direct_ppo_pid_dynprev_net256_m-taskdist_medium_seed0",
+    "direct_ppo_pid_dynprev_net128_small_m-taskdist_medium_seed0",
+    "direct_ppo_pid_dynprev_net512_large_m-taskdist_medium_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_seed0",
-    "direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0",
+    "direct_ppo_directrpm_dynprev_net512_large_m-taskdist_medium_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0",
-    "direct_ppo_pid_dynprev_net256_m-taskdist_medium_low_lr_seed0",
-    "direct_ppo_pid_dynprev_net256_m-taskdist_medium_ent005_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_targetkl015_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0",
     "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0",
@@ -174,6 +181,34 @@ def test_all_listed_configs_exist_and_match_run_names() -> None:
                 assert settings.termination_limits.profile == "pid_relaxed"
                 assert 0 < settings.termination_limits.allow_recovery_steps < DIRECT_RPM_MIN_RELAXED_RECOVERY_STEPS
             assert settings.termination_limits.terminate_on_base_truncation is False
+            assert settings.ppo_config.policy_kwargs is not None
+            net_arch = settings.ppo_config.policy_kwargs["net_arch"]
+            if "net128_small" in row["experiment_id"]:
+                assert net_arch == {"pi": [128, 128], "vf": [128, 128]}
+            elif "net512_large" in row["experiment_id"]:
+                assert net_arch == {"pi": [512, 512], "vf": [512, 512]}
+            else:
+                assert net_arch == {"pi": [256, 256], "vf": [256, 256]}
+            if row["experiment_id"].endswith("_low_lr_seed0"):
+                assert settings.ppo_config.learning_rate == LOW_LR_PPO_LEARNING_RATE
+                assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
+                assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
+                assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
+            elif row["experiment_id"].endswith("_ent005_seed0"):
+                assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
+                assert settings.ppo_config.ent_coef == ENT005_PPO_ENT_COEF
+                assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
+                assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
+            elif row["experiment_id"].endswith("_clip010_seed0"):
+                assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
+                assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
+                assert settings.ppo_config.clip_range == CLIP010_PPO_CLIP_RANGE
+                assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
+            elif row["experiment_id"].endswith("_targetkl015_seed0"):
+                assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
+                assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
+                assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
+                assert settings.ppo_config.target_kl == TARGETKL015_PPO_TARGET_KL
         elif row["kind"] == "manual_curriculum":
             settings = manual_training.load_manual_curriculum_settings(config_path)
             manual_training.validate_manual_curriculum(settings)
@@ -278,6 +313,9 @@ def test_task_distribution_configs_and_families_validate() -> None:
         "configs/tasks/task_distribution_vertical_bootstrap_medium.yaml",
         "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml",
         "configs/tasks/task_distribution_polyline_bootstrap_medium.yaml",
+        "configs/tasks/task_distribution_zigzag_bootstrap_medium.yaml",
+        "configs/tasks/task_distribution_triangle_bootstrap_medium.yaml",
+        "configs/tasks/task_distribution_multi_height_polyline_bootstrap_medium.yaml",
         "configs/tasks/task_distribution_basic_training_show.yaml",
         "configs/tasks/task_distribution_tracking_broad.yaml",
     ):
@@ -356,9 +394,14 @@ def test_generalization_suite_and_standard_scenarios_validate() -> None:
         "diagonal_line_basic",
         "short_line_start_hold",
         "polyline_l_basic",
+        "rectangle_basic",
+        "square_basic",
         "circle_basic",
         "ellipse_basic",
         "figure_eight_basic",
+        "zigzag_basic",
+        "triangle_basic",
+        "multi_height_polyline_basic",
     ]
     durations = []
     for config_path in (
@@ -368,6 +411,9 @@ def test_generalization_suite_and_standard_scenarios_validate() -> None:
     ):
         composition = scenario_render.compose_scenario_reference(scenario_render.load_scenario_render_settings(config_path))
         durations.append(composition.scenario_duration_sec)
+        assert composition.start_hold_steps > 0
+        assert composition.reference.start_hold_enabled is True
+        assert composition.reference.tracking_phase_start_step == composition.start_hold_steps
         assert composition.final_hold_steps > 0
     assert durations == sorted(durations)
 

@@ -4,6 +4,8 @@ This matrix is medium-screening seed0 only. Final-budget and multi-seed runs are
 
 The matrix remains 18 experiments. Unit accounting is now direct PPO = 1, manual curriculum = 5, and LLM curriculum = 5, for 34 total units across six lanes. The preferred lane totals are 6, 6, 6, 6, 5, and 5 units.
 
+PPO policy architecture is now net256 by default for direct, manual, and LLM runs. The only default-profile architecture comparisons are `net128_small` and `net512_large`; `low_lr`, `ent005`, `clip010`, and `targetkl015` remain net256-only one-parameter comparisons.
+
 Manual curriculum runs use five fixed-budget stages for interpretability: hover stabilization, vertical low/high stabilization, start-hold short line, L-shaped polyline tracking, and the medium tracking-distribution stage. Each manual stage uses the 500000-step reference medium budget, for 2500000 total timesteps.
 
 LLM curriculum runs use ten adaptive budget stages. Stage 1 is a deterministic randomized hover-target stabilization bootstrap; the LLM begins proposing tasks at Stage 2. The LLM may choose only these bounded profiles after deterministic validation:

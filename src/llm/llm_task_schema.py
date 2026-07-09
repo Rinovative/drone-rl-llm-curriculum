@@ -45,6 +45,9 @@ KNOWN_TASK_DISTRIBUTION_CONFIGS = {
     "short_line_bootstrap": "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml",
     "vertical_bootstrap": "configs/tasks/task_distribution_vertical_bootstrap_medium.yaml",
     "polyline_bootstrap": "configs/tasks/task_distribution_polyline_bootstrap_medium.yaml",
+    "zigzag_bootstrap": "configs/tasks/task_distribution_zigzag_bootstrap_medium.yaml",
+    "triangle_bootstrap": "configs/tasks/task_distribution_triangle_bootstrap_medium.yaml",
+    "multi_height_polyline_bootstrap": "configs/tasks/task_distribution_multi_height_polyline_bootstrap_medium.yaml",
     "tracking_small": "configs/tasks/task_distribution_tracking_small.yaml",
     "tracking_medium": "configs/tasks/task_distribution_tracking_medium.yaml",
     "tracking_broad": "configs/tasks/task_distribution_tracking_broad.yaml",
@@ -83,6 +86,10 @@ def build_task_schema() -> dict[str, object]:
         "proposal_kinds": [PROPOSAL_KIND_TASK, PROPOSAL_KIND_TASK_DISTRIBUTION],
         "task_distribution_reference_fields": [TASK_DISTRIBUTION_ID_FIELD, TASK_DISTRIBUTION_CONFIG_PATH_FIELD],
         "known_task_distribution_ids": dict(KNOWN_TASK_DISTRIBUTION_CONFIGS),
+        "sampling_bounds_scope": (
+            "LLM proposals may select concrete validated tasks or known validated task distributions; "
+            "arbitrary sampling-bound proposals are intentionally unsupported."
+        ),
         "supported_task_distribution_families": list(_llm_supported_task_distribution_families()),
         "unsupported_task_distribution_families": list(envs.task_distribution.unsupported_requested_task_families()),
         "optional_metadata_fields": [REASON_FIELD, PROPOSAL_KIND_FIELD, STAGE_BUDGET_PROFILE_FIELD, BUDGET_RATIONALE_FIELD],
@@ -125,6 +132,7 @@ def build_task_prompt_contract() -> str:
         f"Required keys by shape: {required_by_shape}. "
         f"Optional keys by shape: {optional_by_shape}. "
         "Fixed tasks are degenerate task distributions; randomized distributions sample bounded valid tasks across supported families. "
+        "The LLM may not propose arbitrary sampling bounds; choose a concrete validated task or one known distribution id/path. "
         "For stages after stage 1, do not repeat the immediately previous task family or shape; "
         "choose a controlled variation or a different focused distribution. "
         "Concrete tasks may leave final_hold_enabled implicit or set final_hold_sec near 1.0 with final-hold metrics excluded. "

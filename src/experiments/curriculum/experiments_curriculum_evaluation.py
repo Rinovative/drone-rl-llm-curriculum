@@ -597,6 +597,15 @@ def _suite_payloads(
                     source_stage={"stage_index": stage_index, "stage_name": stage_name},
                     model_scope=model_scope,
                     evaluated_model_source=evaluated_model_source,
+                    own_task_source="curriculum_stage_task",
+                    own_task_config_path=Path(str(stage_manifest["task_config_path"])),
+                    own_task_distribution_config_path=Path(str(stage["task_distribution_config_path"]))
+                    if stage.get("task_distribution_config_path")
+                    else None,
+                    own_task_shape=str(stage["task_shape"]),
+                    own_task_is_show=bool(stage.get("task_is_show", False)),
+                    own_task_fallback_used=False,
+                    own_task_fallback_reason=None,
                 ),
                 "stage_index": stage_index,
                 "stage_name": stage_name,

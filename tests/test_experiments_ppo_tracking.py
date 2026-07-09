@@ -293,8 +293,8 @@ def test_ppo_tracking_dynamics_medium_net_smoke_config_loads() -> None:
     assert settings.action_interface == "pid_position"
     assert settings.include_dynamics_observation is True
     assert settings.include_previous_action is True
-    assert settings.ppo_config.policy_kwargs == {"net_arch": POLICY_NET_ARCH}
-    assert settings.ppo_config.to_sb3_kwargs()["policy_kwargs"] == {"net_arch": POLICY_NET_ARCH}
+    assert settings.ppo_config.policy_kwargs == {"net_arch": [256, 256]}
+    assert settings.ppo_config.to_sb3_kwargs()["policy_kwargs"] == {"net_arch": [256, 256]}
     assert settings.wandb_mode == "disabled"
 
 
@@ -403,7 +403,8 @@ def test_direct_ppo_wandb_naming_uses_run_name_group_and_identity_tags() -> None
     assert "observation:dynamics" in wandb_settings.tags
     assert "observation:previous_action" in wandb_settings.tags
     assert "task_distribution:tracking_medium" in wandb_settings.tags
-    assert "net:net128_default" in wandb_settings.tags
+    assert "net:net256_default" in wandb_settings.tags
+    assert "net_role:default" in wandb_settings.tags
     assert "ppo_profile:default" in wandb_settings.tags
     assert "seed:0" in wandb_settings.tags
 

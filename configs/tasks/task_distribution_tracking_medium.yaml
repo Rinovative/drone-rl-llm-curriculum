@@ -7,6 +7,24 @@ validation_limits:
   max_acceleration_m_s2: 5.0
   min_duration_sec: 1.0
   max_step_distance_m: 0.5
+own_task_representative:
+  task_name: tracking_medium_representative
+  task_type: trajectory
+  shape: polyline
+  task_family: tracking_medium_representative
+  duration_sec: 8.0
+  sample_rate_hz: 10.0
+  start_hold_enabled: true
+  start_hold_sec: 1.0
+  exclude_start_hold_from_tracking_metrics: true
+  final_hold_enabled: true
+  final_hold_sec: 1.0
+  exclude_final_hold_from_tracking_metrics: true
+  points:
+    - [0.0, 0.0, 1.0]
+    - [0.5, 0.0, 1.05]
+    - [0.5, 0.35, 1.0]
+    - [0.2, 0.35, 1.0]
 task_distribution:
   enabled: true
   mode: randomized

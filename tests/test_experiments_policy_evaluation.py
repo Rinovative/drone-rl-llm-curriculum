@@ -924,6 +924,123 @@ def test_direct_policy_own_task_evaluation_uses_training_task_snapshot(
     assert (run_root / "evaluation_index.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("distribution_path", "expected_shape", "expected_source", "expected_task_name", "expected_is_show"),
+    [
+        (
+            "configs/tasks/task_distribution_basic_training_show.yaml",
+            "basic_training_show",
+            "task_distribution_base_task",
+            None,
+            True,
+        ),
+        (
+            "configs/tasks/task_distribution_tracking_medium.yaml",
+            "polyline",
+            "task_distribution_own_task_representative",
+            "tracking_medium_representative",
+            False,
+        ),
+    ],
+)
+def test_direct_policy_own_task_evaluation_resolves_distribution_representative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    distribution_path: str,
+    expected_shape: str,
+    expected_source: str,
+    expected_task_name: str | None,
+    expected_is_show: bool,
+) -> None:
+    """Verify distribution-trained direct runs do not fall back to the selected line task."""
+    run_name = f"direct_ppo_{expected_shape}_seed0"
+    run_root = tmp_path / "storage" / "runs" / run_name
+    run_manifest_path = _write_direct_run_manifest(run_root, run_name)
+    manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    manifest["task_distribution_config_path"] = distribution_path
+    manifest["config"]["task_distribution_config_path"] = distribution_path
+    manifest["config"]["task_index"] = 0
+    manifest["config"]["task_shape"] = "line"
+    run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def fake_collect(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        task: dict[str, Any],
+        diagnostics_dir: Path,
+    ) -> tuple[_FakeDiagnostics, dict[str, Any]]:
+        assert spec.evaluation_name == "own_task"
+        assert spec.task_config_path.parent == run_root / "config" / "own_task"
+        assert spec.own_task_source == expected_source
+        assert spec.own_task_distribution_config_path == Path(distribution_path).resolve(strict=False)
+        assert spec.own_task_shape == expected_shape
+        assert spec.own_task_is_show is expected_is_show
+        assert spec.own_task_fallback_used is False
+        assert spec.own_task_fallback_reason is None
+        assert task["shape"] == expected_shape
+        if expected_task_name is not None:
+            assert task["task_name"] == expected_task_name
+        assert task["start_hold_enabled"] is True
+        assert task["final_hold_enabled"] is True
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        trace_path = diagnostics_dir / "evaluation_trace.jsonl"
+        trace_path.write_text("{}\n", encoding="utf-8")
+        return _FakeDiagnostics(metrics={"episode_count": 1}, trace_records=[]), {"evaluation_trace_path": str(trace_path)}
+
+    monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
+    monkeypatch.setattr(policy_evaluation, "_write_render_artifact", _fake_render_artifact)
+
+    result = policy_evaluation.run_direct_policy_own_task_evaluation(run_manifest_path=run_manifest_path, wandb_mode="disabled")
+    metrics = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+
+    assert metrics["own_task_source"] == expected_source
+    assert metrics["own_task_shape"] == expected_shape
+    assert metrics["own_task_is_show"] is expected_is_show
+    assert metrics["own_task_fallback_used"] is False
+    assert metrics["own_task_fallback_reason"] is None
+    assert metrics["own_task_distribution_config_path"] == str(Path(distribution_path).resolve(strict=False))
+
+
+def test_standard_scenario_evaluation_preserves_configured_start_hold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify standard scenario evaluation forwards start holds from scenario configs."""
+    run_root = tmp_path / "storage" / "runs" / "policy_run"
+    model_path = run_root / "models" / "policy.zip"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_bytes(b"model")
+    captured: list[tuple[str, float, float]] = []
+
+    def fake_run_scenario_render(
+        settings: policy_evaluation.scenario_render.ScenarioRenderSettings | None = None,
+    ) -> policy_evaluation.scenario_render.ScenarioRenderResult:
+        assert settings is not None
+        captured.append((settings.scenario_name, settings.start_hold_sec, settings.final_hold_sec))
+        return policy_evaluation.scenario_render.ScenarioRenderResult(
+            gif_path=str(settings.output_dir / "renders" / "scenario.gif"),
+            manifest_path=str(settings.output_dir / "manifests" / "scenario_manifest.json"),
+            metrics={"scenario_name": settings.scenario_name},
+            warnings=(),
+        )
+
+    monkeypatch.setattr(policy_evaluation.scenario_render, "run_scenario_render", fake_run_scenario_render)
+
+    result = policy_evaluation.run_standard_scenario_evaluations(
+        run_root=run_root,
+        run_name="policy_run",
+        model_path=model_path,
+        model_run_name="policy_run",
+        source_run_kind="direct_ppo",
+        source_curriculum_kind=None,
+        model_scope="direct",
+        evaluated_model_source="test",
+        scenario_config_paths={"easy": Path("configs/evaluation/scenarios/show_easy.yaml")},
+    )
+
+    assert result.metrics["scenario_labels"] == ["easy"]
+    assert captured == [("show_easy", 2.0, 1.0)]
+
+
 def test_direct_policy_standard_evaluation_runs_default_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

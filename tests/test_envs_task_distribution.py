@@ -167,6 +167,7 @@ def test_basic_training_show_distribution_samples_bounded_episode_variation() ->
     assert first["variation_enabled"] is True
     assert first["variation_mode"] == "bounded_per_episode"
     assert first["segment_shapes"] == [
+        "start_hold",
         "hover_stabilization",
         "vertical",
         "horizontal_line",
@@ -176,6 +177,15 @@ def test_basic_training_show_distribution_samples_bounded_episode_variation() ->
         "zigzag",
         "final_hold",
     ]
+    assert first["meaningful_figure_count"] == 8
+    assert first["start_hold_enabled"] is True
+    assert 0.8 <= first["start_hold_sec"] <= 1.2
+    assert first["exclude_start_hold_from_tracking_metrics"] is True
+    assert first["final_hold_enabled"] is True
+    assert 0.8 <= first["final_hold_sec"] <= 1.2
+    assert first["duration_range_sec"][0] < 18.0
+    assert "ellipse" in first["segment_shapes"]
+    assert "zigzag" in first["segment_shapes"]
     assert first != second
     assert first == repeated_first
     assert validation.tasks.validate_task(first, limits=settings.validation_limits).is_valid
@@ -202,6 +212,9 @@ def test_supported_generated_family_passes_existing_validation(family: str) -> N
 
     sampled = envs.task_distribution.sample_task(settings)
 
+    assert sampled["start_hold_enabled"] is True
+    assert sampled["start_hold_sec"] > 0.0
+    assert sampled["exclude_start_hold_from_tracking_metrics"] is True
     assert validation.tasks.validate_task(sampled, limits=settings.validation_limits).is_valid
 
 
@@ -232,8 +245,10 @@ def test_task_distribution_training_configs_load() -> None:
     """Verify new task-distribution training configs resolve through the PPO loader."""
     for config_path in (
         "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
-        "configs/training/ppo_tracking_pid_dynprev_net256_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_net128_small_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_net512_large_m-taskdist_medium.yaml",
         "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_directrpm_dynprev_net512_large_m-taskdist_medium.yaml",
     ):
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)
         assert settings.task_distribution_settings is not None

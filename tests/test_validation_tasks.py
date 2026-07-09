@@ -312,16 +312,13 @@ def test_basic_training_show_passes_validation_and_holds_final_point() -> None:
         contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
         contracts.FIELD_SHAPE: contracts.SHAPE_BASIC_TRAINING_SHOW,
         contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+        contracts.FIELD_START_HOLD_ENABLED: True,
+        contracts.FIELD_START_HOLD_SEC: 1.0,
+        contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS: True,
         contracts.FIELD_FINAL_HOLD_ENABLED: True,
         contracts.FIELD_FINAL_HOLD_SEC: 1.0,
         contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS: True,
         contracts.FIELD_SEGMENTS: [
-            {
-                contracts.FIELD_SEGMENT_SHAPE: "hover_stabilization",
-                contracts.FIELD_SEGMENT_START: [0.0, 0.0, 1.0],
-                contracts.FIELD_SEGMENT_END: [0.0, 0.0, 1.0],
-                contracts.FIELD_SEGMENT_DURATION_SEC: 1.0,
-            },
             {
                 contracts.FIELD_SEGMENT_SHAPE: "vertical",
                 contracts.FIELD_SEGMENT_START: [0.0, 0.0, 1.0],
@@ -335,18 +332,20 @@ def test_basic_training_show_passes_validation_and_holds_final_point() -> None:
                 contracts.FIELD_SEGMENT_DURATION_SEC: 2.0,
             },
             {
-                contracts.FIELD_SEGMENT_SHAPE: "ellipse",
+                contracts.FIELD_SEGMENT_SHAPE: "l_shape",
                 contracts.FIELD_SEGMENT_START: [0.3, 0.2, 1.2],
-                contracts.FIELD_SEGMENT_END: [0.3, 0.2, 1.2],
-                contracts.FIELD_SEGMENT_DURATION_SEC: 3.0,
-                "radius_x_m": 0.12,
-                "radius_y_m": 0.08,
-                "phase_deg": 180.0,
+                contracts.FIELD_SEGMENT_END: [0.55, 0.42, 1.15],
+                contracts.FIELD_SEGMENT_DURATION_SEC: 2.5,
+                contracts.FIELD_SEGMENT_POINTS: [
+                    [0.3, 0.2, 1.2],
+                    [0.3, 0.42, 1.2],
+                    [0.55, 0.42, 1.15],
+                ],
             },
             {
                 contracts.FIELD_SEGMENT_SHAPE: "final_hold",
-                contracts.FIELD_SEGMENT_START: [0.3, 0.2, 1.2],
-                contracts.FIELD_SEGMENT_END: [0.3, 0.2, 1.2],
+                contracts.FIELD_SEGMENT_START: [0.55, 0.42, 1.15],
+                contracts.FIELD_SEGMENT_END: [0.55, 0.42, 1.15],
                 contracts.FIELD_SEGMENT_DURATION_SEC: 1.0,
                 contracts.FIELD_SEGMENT_FINAL_HOLD_SEC: 1.0,
             },
@@ -357,6 +356,10 @@ def test_basic_training_show_passes_validation_and_holds_final_point() -> None:
 
     assert result.is_valid, result.messages
     assert result.trajectory is not None
+    assert result.start_hold_enabled is True
+    assert result.start_hold_sec == pytest.approx(1.0)
+    assert result.tracking_phase_start_step > 0
+    np.testing.assert_allclose(result.trajectory.positions[0], result.trajectory.positions[result.tracking_phase_start_step])
     assert result.final_hold_enabled is True
     assert result.final_hold_sec == pytest.approx(1.0)
     np.testing.assert_allclose(result.trajectory.positions[result.tracking_phase_end_step - 1], result.trajectory.positions[-1])

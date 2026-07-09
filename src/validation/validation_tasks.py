@@ -36,15 +36,7 @@ POSITION_ARRAY_NDIM = 2
 XYZ_DIMENSIONS = 3
 DEFAULT_START_HOLD_SEC = 1.0
 DEFAULT_FINAL_HOLD_SEC = 1.0
-START_HOLD_DEFAULT_SHAPES = (
-    validation.contracts.SHAPE_CIRCLE,
-    validation.contracts.SHAPE_ELLIPSE,
-    validation.contracts.SHAPE_FIGURE_EIGHT,
-    validation.contracts.SHAPE_LINE,
-    validation.contracts.SHAPE_POLYLINE,
-    validation.contracts.SHAPE_SHORT_SLOW_LINE,
-    validation.contracts.SHAPE_VERTICAL,
-)
+START_HOLD_DEFAULT_SHAPES = (*validation.contracts.SUPPORTED_TRAJECTORY_SHAPES, validation.contracts.SHAPE_BASIC_TRAINING_SHOW)
 FINAL_HOLD_DEFAULT_SHAPES = (*validation.contracts.SUPPORTED_TRAJECTORY_SHAPES, validation.contracts.SHAPE_BASIC_TRAINING_SHOW)
 BASIC_SHOW_FINAL_HOLD_SHAPE = "final_hold"
 BASIC_SHOW_CONTINUITY_TOLERANCE_M = 1.0e-6

@@ -44,6 +44,7 @@ def test_load_scripted_scenario_settings_parses_concrete_geometry_and_holds() ->
     assert settings.max_steps == CONFIG_MAX_STEPS
     assert settings.seed == 0
     assert settings.camera_mode == "follow_external"
+    assert settings.start_hold_sec == 0.0
     assert settings.final_hold_sec == 2.0
     assert settings.phases[0].name == "line_forward"
     assert settings.phases[0].phase_type == "line"
@@ -100,7 +101,14 @@ def test_standard_show_scenarios_compose_with_ordered_difficulty() -> None:
         composition = scenario_render.compose_scenario_reference(settings)
         compositions.append(composition)
 
+        assert settings.start_hold_sec == 2.0
         assert composition.reference.shape == "scenario"
+        assert composition.start_hold_sec == 2.0
+        assert composition.start_hold_steps > 0
+        assert composition.start_hold_step_range == {"start": 0, "end": composition.start_hold_steps}
+        assert composition.reference.start_hold_enabled is True
+        assert composition.reference.tracking_phase_start_step == composition.start_hold_steps
+        np.testing.assert_allclose(composition.reference.positions[0], composition.reference.positions[composition.start_hold_steps])
         assert composition.final_hold_sec > 0.0
         assert composition.final_hold_steps > 0
         assert np.all(np.diff(composition.reference.times) > 0.0)
@@ -304,12 +312,14 @@ def test_add_phase_fields_labels_trace_rows_with_required_aliases() -> None:
     assert enriched[0]["phase_name"] == "line_forward"
     assert enriched[0]["phase_type"] == "line"
     assert enriched[0]["phase_task_shape"] == "line"
+    assert enriched[0]["is_start_hold"] is False
     assert enriched[0]["is_phase_hold"] is False
     assert enriched[0]["is_final_hold"] is False
     assert enriched[0]["reference_position"] == [0.0, 0.0, 1.0]
     assert enriched[0]["current_position"] == [0.0, 0.0, 1.0]
     assert enriched[0]["position_error"] == 0.0
     assert enriched[1]["phase_index"] == 0
+    assert enriched[1]["is_start_hold"] is False
     assert enriched[1]["is_phase_hold"] is True
     assert enriched[1]["is_final_hold"] is False
     assert enriched[2]["phase_index"] == 1
@@ -385,6 +395,7 @@ def test_build_scenario_manifest_includes_required_fields(tmp_path: Path) -> Non
         reference_sample_count=composition.total_reference_steps,
         reference_motion_steps=composition.reference_motion_steps,
         reference_motion_end_step=composition.reference_motion_end_step,
+        start_hold_steps=composition.start_hold_steps,
         phase_hold_steps=composition.phase_hold_steps,
         phase_hold_end_step=composition.phase_hold_end_step,
         final_hold_steps=composition.final_hold_steps,
@@ -450,6 +461,10 @@ def test_build_scenario_manifest_includes_required_fields(tmp_path: Path) -> Non
     assert payload["effective_max_steps"] == CONFIG_MAX_STEPS
     assert payload["base_time_limit_sec"] > payload["scenario_duration_sec"]
     assert payload["reference_motion_steps"] == 262
+    assert payload["start_hold_enabled"] is False
+    assert payload["start_hold_sec"] == 0.0
+    assert payload["start_hold_steps"] == 0
+    assert payload["start_hold_step_range"] is None
     assert payload["phase_hold_steps"] == 10
     assert payload["final_hold_steps"] == 20
     assert payload["total_reference_steps"] == 292

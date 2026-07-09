@@ -229,14 +229,16 @@ def test_distribution_reference_without_kind_is_accepted_and_logged(tmp_path: Pa
     assert events[0]["task_distribution_reference"]["task_distribution_id"] == "tracking_medium"
 
 
-def test_repair_prompt_mentions_supported_distributions_and_safe_ranges() -> None:
+def test_repair_prompt_mentions_supported_distributions_and_concrete_task_values() -> None:
     """Verify repair prompts include concrete task-distribution repair guidance."""
     messages = llm.prompts.build_task_repair_messages(
         curriculum_name="curriculum_llm_test",
         stage_index=2,
         recent_accepted_tasks=(),
         recent_rejected_tasks=(),
-        metrics_summary={"curriculum_readiness_level": "line_not_ready"},
+        metrics_summary={"failure_primary_mode": "reference_too_fast", "status": "needs_easier_task"},
+        curriculum_history=({"stage_index": 1, "accepted_task_family": "hover_stabilization"},),
+        curriculum_summary={"position_error_trend": "worsening"},
         recent_context_limit=3,
         previous_response="{}",
         error_messages=("unsupported family",),
@@ -244,8 +246,12 @@ def test_repair_prompt_mentions_supported_distributions_and_safe_ranges() -> Non
     content = messages[-1]["content"]
 
     assert "supported" in content
-    assert "safe" in content
+    assert "concrete safe task values" in content
+    assert "known distribution ids/paths" in content
     assert "tracking_small" in content
+    assert "curriculum_history" in content
+    assert "readiness_level_omitted" in content
+    assert "reference_too_fast" in content
 
 
 def test_invalid_budget_profile_is_repaired_once_and_accepted(tmp_path: Path) -> None:

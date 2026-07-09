@@ -50,6 +50,7 @@ DEFAULT_PROPOSAL_FALLBACK_PROFILE = "short"
 DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE = "normal"
 GENERATED_TASK_DISTRIBUTION_STRENGTH = 0.35
 RESOLVED_DISTRIBUTION_MAX_ATTEMPTS = 16
+MIN_ERRORS_FOR_TREND = 2
 
 
 @dataclass(frozen=True)
@@ -644,6 +645,8 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
             recent_accepted_tasks=tuple(recent_accepted_tasks),
             recent_rejected_tasks=tuple(recent_rejected_tasks),
             metrics_summary=latest_metrics_summary,
+            curriculum_history=_llm_context_history(stage_entries),
+            curriculum_summary=_llm_context_summary(stage_entries, latest_metrics_summary),
             budget_context=_budget_prompt_context(settings, next_stage_index, cumulative_llm_budget_timesteps),
         )
         try:
@@ -1578,6 +1581,9 @@ def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]
     elif family in {
         envs.task_distribution.FAMILY_POLYLINE,
         envs.task_distribution.FAMILY_L_SHAPE,
+        envs.task_distribution.FAMILY_ZIGZAG,
+        envs.task_distribution.FAMILY_TRIANGLE,
+        envs.task_distribution.FAMILY_MULTI_HEIGHT_POLYLINE,
         envs.task_distribution.FAMILY_RECTANGLE,
         envs.task_distribution.FAMILY_SQUARE,
     }:
@@ -1683,6 +1689,9 @@ def _shape_from_distribution_family(family: str) -> str:
         envs.task_distribution.FAMILY_START_HOLD_LINE: validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
         envs.task_distribution.FAMILY_POLYLINE: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_L_SHAPE: validation.contracts.SHAPE_POLYLINE,
+        envs.task_distribution.FAMILY_ZIGZAG: validation.contracts.SHAPE_POLYLINE,
+        envs.task_distribution.FAMILY_TRIANGLE: validation.contracts.SHAPE_POLYLINE,
+        envs.task_distribution.FAMILY_MULTI_HEIGHT_POLYLINE: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_RECTANGLE: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_SQUARE: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_CIRCLE: validation.contracts.SHAPE_CIRCLE,
@@ -1940,10 +1949,9 @@ def _fallback_proposal_from_failure(
     distribution_id = _fallback_distribution_id(settings=settings, previous_stage_task_shape=previous_stage_task_shape)
     config_path = llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[distribution_id]
     stage_budget_profile = _fallback_stage_budget_profile(settings=settings, metrics_summary=metrics_summary)
-    readiness = metrics_summary.get("curriculum_readiness_level")
     status = metrics_summary.get("failure_overall_status") or metrics_summary.get("status")
     task_reason = f"Safe fallback after exhausted LLM proposal repair at stage {stage_index}; using known distribution {distribution_id}."
-    budget_rationale = f"Fallback selected {stage_budget_profile!r} from latest readiness={readiness!r} and status={status!r}."
+    budget_rationale = f"Fallback selected {stage_budget_profile!r} from latest concrete status={status!r}."
     task = {
         llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
         llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
@@ -1996,10 +2004,9 @@ def _fallback_distribution_id(*, settings: LLMCurriculumSettings, previous_stage
 
 
 def _fallback_stage_budget_profile(*, settings: LLMCurriculumSettings, metrics_summary: Mapping[str, Any]) -> str:
-    """Return a conservative fallback budget profile from latest readiness feedback."""
-    readiness = str(metrics_summary.get("curriculum_readiness_level") or "")
+    """Return a conservative fallback budget profile from latest concrete status."""
     status = str(metrics_summary.get("failure_overall_status") or metrics_summary.get("status") or "")
-    if readiness == "ready" or status == "passed":
+    if status == "passed":
         return settings.proposal_fallback.ready_stage_budget_profile
     return settings.proposal_fallback.default_stage_budget_profile
 
@@ -2213,6 +2220,7 @@ def _accepted_task_context(entry: Mapping[str, Any]) -> dict[str, Any]:
         "stage_index": entry.get("stage_index"),
         "stage_name": entry.get("stage_name"),
         "task_shape": entry.get("task_shape"),
+        "accepted_task_family": _accepted_stage_family(entry),
         "task": entry.get("task"),
         "task_reason": entry.get("task_reason"),
         "task_distribution_config_path": entry.get("task_distribution_config_path"),
@@ -2220,6 +2228,7 @@ def _accepted_task_context(entry: Mapping[str, Any]) -> dict[str, Any]:
         "proposal_type": entry.get("proposal_type"),
         "task_distribution_reference": entry.get("task_distribution_reference"),
         "resolved_task_shape": entry.get("resolved_task_shape"),
+        "resolved_task_sample_metadata": _compact_sample_metadata(entry.get("resolved_task_sample_metadata")),
         "previous_stage_task_shape": entry.get("previous_stage_task_shape"),
         "requested_stage_task_shape": entry.get("requested_stage_task_shape"),
         "accepted_stage_task_shape": entry.get("accepted_stage_task_shape"),
@@ -2236,6 +2245,117 @@ def _accepted_task_context(entry: Mapping[str, Any]) -> dict[str, Any]:
         "bootstrap_target_sampling_bounds": entry.get("bootstrap_target_sampling_bounds"),
         "metrics": _metrics_summary_from_entry(entry),
     }
+
+
+def _llm_context_history(stage_entries: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    """Return compact full-history items for LLM proposal context."""
+    return tuple(_llm_context_history_item(entry) for entry in stage_entries)
+
+
+def _llm_context_history_item(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return one compact stage-history item for prompts."""
+    sample_metadata = _compact_sample_metadata(entry.get("resolved_task_sample_metadata"))
+    return {
+        "stage_index": entry.get("stage_index"),
+        "stage_name": entry.get("stage_name"),
+        "accepted_task_family": _accepted_stage_family(entry),
+        "task_shape": entry.get("task_shape"),
+        "resolved_task_shape": entry.get("resolved_task_shape"),
+        "task_distribution_id": entry.get("task_distribution_id"),
+        "task_distribution_config_path": entry.get("task_distribution_config_path"),
+        "proposal_type": entry.get("proposal_type"),
+        "selected_stage_budget_profile": entry.get("selected_stage_budget_profile"),
+        "stage_total_timesteps": entry.get("stage_total_timesteps"),
+        "variation_strength": sample_metadata.get("task_distribution_strength"),
+        "sample_on_reset": sample_metadata.get("task_distribution_sample_on_reset"),
+        "family_weights": sample_metadata.get("task_distribution_family_weights"),
+        "metrics": _metrics_summary_from_entry(entry),
+    }
+
+
+def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metrics_summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Return aggregate LLM context that avoids readiness labels."""
+    family_counts: dict[str, int] = {}
+    position_errors: list[float] = []
+    repeated_failure_modes: dict[str, int] = {}
+    for entry in stage_entries:
+        family = _accepted_stage_family(entry)
+        if family:
+            family_counts[family] = family_counts.get(family, 0) + 1
+        error = entry.get("mean_position_error_tracking_m", entry.get("mean_position_error_m"))
+        if isinstance(error, (int, float)):
+            position_errors.append(float(error))
+        failure_mode = entry.get("failure_primary_mode")
+        if failure_mode is not None and str(failure_mode).strip():
+            key = str(failure_mode)
+            repeated_failure_modes[key] = repeated_failure_modes.get(key, 0) + 1
+    return {
+        "completed_stage_count": len(stage_entries),
+        "accepted_task_family_counts": family_counts,
+        "last_accepted_task_family": _accepted_stage_family(stage_entries[-1]) if stage_entries else None,
+        "position_error_trend": _position_error_trend(position_errors),
+        "repeated_failure_modes": repeated_failure_modes,
+        "latest_metrics_summary": dict(latest_metrics_summary),
+        "allowed_task_families": [
+            family for family in envs.task_distribution.supported_task_families() if family != envs.task_distribution.FAMILY_BASIC_TRAINING_SHOW
+        ],
+        "task_families_with_bounded_variation_support": list(envs.task_distribution.supported_task_families()),
+        "readiness_level_omitted_from_llm_context": True,
+        "diagnostic_guidance": {
+            "prefer_metrics_over_readiness_label": True,
+            "action_saturation": "treat_as_task_difficulty_signal_unless_crash_or_divergence_confirms_instability",
+            "reference_too_fast": "treat_as_task_difficulty_signal_unless_crash_or_divergence_confirms_instability",
+            "accepted_concrete_tasks_are_materialized_as_bounded_distributions": True,
+        },
+    }
+
+
+def _position_error_trend(errors: Sequence[float]) -> str:
+    """Return a compact trend label from recent tracking errors."""
+    if len(errors) < MIN_ERRORS_FOR_TREND:
+        return "unknown"
+    previous = errors[-2]
+    current = errors[-1]
+    tolerance = max(1.0e-6, abs(previous) * 0.05)
+    if current < previous - tolerance:
+        return "improving"
+    if current > previous + tolerance:
+        return "worsening"
+    return "flat"
+
+
+def _accepted_stage_family(entry: Mapping[str, Any]) -> str | None:
+    """Return the best available task-family label for an accepted stage."""
+    metadata = entry.get("resolved_task_sample_metadata")
+    if isinstance(metadata, Mapping):
+        family = metadata.get("task_distribution_sampled_family") or metadata.get("task_distribution_name")
+        if family is not None and str(family).strip():
+            return str(family)
+    task = entry.get("resolved_task") or entry.get("task")
+    if isinstance(task, Mapping):
+        task_family = task.get("task_family") or task.get(validation.contracts.FIELD_SHAPE)
+        if task_family is not None and str(task_family).strip():
+            return str(task_family)
+    shape = entry.get("resolved_task_shape") or entry.get("task_shape") or entry.get("accepted_stage_task_shape")
+    return str(shape) if shape is not None and str(shape).strip() else None
+
+
+def _compact_sample_metadata(value: Any) -> dict[str, Any]:
+    """Return prompt-safe sample metadata without embedding full sampled task payloads."""
+    if not isinstance(value, Mapping):
+        return {}
+    keys = (
+        "task_distribution_name",
+        "task_distribution_mode",
+        "task_distribution_strength",
+        "task_distribution_sample_on_reset",
+        "task_distribution_config_path",
+        "task_distribution_family_weights",
+        "task_distribution_sampled_family",
+        "task_distribution_sampled_task_shape",
+        "task_distribution_sample_index",
+    )
+    return {key: value.get(key) for key in keys if key in value}
 
 
 def _result_last_model_path(result: ppo_tracking.PPOTrackingSmokeResult) -> str:
@@ -2313,11 +2433,24 @@ def _metrics_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "xy_tracking_ratio",
         "failure_overall_status",
         "failure_primary_mode",
-        "curriculum_readiness_level",
         "curriculum_recommended_next_tasks",
         "curriculum_avoid_next_tasks",
     )
-    return {key: entry.get(key) for key in keys if key in entry}
+    summary = {key: entry.get(key) for key in keys if key in entry}
+    summary["readiness_level_omitted_from_llm_context"] = True
+    summary["diagnostic_interpretation"] = _diagnostic_interpretation_from_entry(entry)
+    return summary
+
+
+def _diagnostic_interpretation_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return concrete diagnostic interpretation hints without readiness labels."""
+    failure_mode = str(entry.get("failure_primary_mode") or "")
+    return {
+        "failure_primary_mode": failure_mode or None,
+        "action_saturation_is_difficulty_signal": "action_saturation" in failure_mode,
+        "reference_too_fast_is_difficulty_signal": "reference_too_fast" in failure_mode,
+        "do_not_treat_difficulty_signals_as_automatic_instability": True,
+    }
 
 
 def _final_stage_summary(final_stage: Mapping[str, Any] | None) -> dict[str, Any] | None:

@@ -1445,6 +1445,7 @@ def _wandb_tags(
         *observation_tags,
         f"task_distribution:{_task_distribution_tag_value(task_distribution_metadata)}",
         f"net:{_net_arch_label(settings)}",
+        f"net_role:{_net_arch_role(settings)}",
         f"ppo_profile:{_ppo_profile(settings)}",
         f"steps:{_timesteps_label(settings.total_timesteps)}",
         f"seed:{settings.seed}",
@@ -1496,15 +1497,32 @@ def _task_distribution_tag_value(task_distribution_metadata: Mapping[str, Any] |
 def _net_arch_label(settings: PPOTrackingSmokeSettings) -> str:
     """Return a compact network-architecture tag label."""
     net_arch = _policy_net_arch(settings)
-    net128_flat_arch = [128, 128]
-    net128_policy_arch = {"pi": net128_flat_arch, "vf": net128_flat_arch}
-    net256_flat_arch = [256, 256]
-    net256_policy_arch = {"pi": net256_flat_arch, "vf": net256_flat_arch}
-    if net_arch in (net128_flat_arch, net128_policy_arch):
-        return "net128_default"
-    if net_arch in (net256_flat_arch, net256_policy_arch):
-        return "net256_large"
+    if _matches_net_arch(net_arch, width=128):
+        return "net128_small"
+    if _matches_net_arch(net_arch, width=256):
+        return "net256_default"
+    if _matches_net_arch(net_arch, width=512):
+        return "net512_large"
     return "custom"
+
+
+def _net_arch_role(settings: PPOTrackingSmokeSettings) -> str:
+    """Return the experiment role represented by the resolved net architecture."""
+    label = _net_arch_label(settings)
+    if label == "net256_default":
+        return "default"
+    if label == "net128_small":
+        return "small_arch_comparison"
+    if label == "net512_large":
+        return "large_arch_comparison"
+    return "custom_arch"
+
+
+def _matches_net_arch(net_arch: Any, *, width: int) -> bool:
+    """Return whether a policy net architecture uses the same width twice for pi/vf."""
+    flat_arch = [width, width]
+    policy_arch = {"pi": flat_arch, "vf": flat_arch}
+    return net_arch in (flat_arch, policy_arch)
 
 
 def _policy_net_arch(settings: PPOTrackingSmokeSettings) -> Any:
@@ -1520,12 +1538,12 @@ def _policy_net_arch(settings: PPOTrackingSmokeSettings) -> Any:
 
 def _net_arch_metadata(settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
     """Return network-architecture metadata for metrics, manifests, and W&B config."""
-    label = _net_arch_label(settings)
+    net_arch = _policy_net_arch(settings)
     return {
-        "net_arch_label": label,
-        "policy_net_arch": _policy_net_arch(settings),
-        "uses_default_net128_arch": label == "net128_default",
-        "uses_large_net_variant": label == "net256_large",
+        "net_arch_label": _net_arch_label(settings),
+        "net_arch": net_arch,
+        "policy_net_arch": net_arch,
+        "net_arch_role": _net_arch_role(settings),
     }
 
 
@@ -1671,9 +1689,9 @@ def _build_manifest(
         "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
         "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
         "net_arch_label": metrics.get("net_arch_label", _net_arch_label(settings)),
+        "net_arch": metrics.get("net_arch", _policy_net_arch(settings)),
         "policy_net_arch": metrics.get("policy_net_arch", _policy_net_arch(settings)),
-        "uses_default_net128_arch": metrics.get("uses_default_net128_arch", _net_arch_label(settings) == "net128_default"),
-        "uses_large_net_variant": metrics.get("uses_large_net_variant", _net_arch_label(settings) == "net256_large"),
+        "net_arch_role": metrics.get("net_arch_role", _net_arch_role(settings)),
         "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
@@ -1763,9 +1781,9 @@ def _build_run_manifest(
             "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
             "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
             "net_arch_label": metrics.get("net_arch_label", _net_arch_label(settings)),
+            "net_arch": metrics.get("net_arch", _policy_net_arch(settings)),
             "policy_net_arch": metrics.get("policy_net_arch", _policy_net_arch(settings)),
-            "uses_default_net128_arch": metrics.get("uses_default_net128_arch", _net_arch_label(settings) == "net128_default"),
-            "uses_large_net_variant": metrics.get("uses_large_net_variant", _net_arch_label(settings) == "net256_large"),
+            "net_arch_role": metrics.get("net_arch_role", _net_arch_role(settings)),
             "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
             "num_envs": metrics.get("num_envs", settings.num_envs),
             "action_interface": metrics.get("action_interface", settings.action_interface),
@@ -1797,9 +1815,9 @@ def _build_run_manifest(
         "total_timesteps": settings.total_timesteps,
         "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
         "net_arch_label": metrics.get("net_arch_label", _net_arch_label(settings)),
+        "net_arch": metrics.get("net_arch", _policy_net_arch(settings)),
         "policy_net_arch": metrics.get("policy_net_arch", _policy_net_arch(settings)),
-        "uses_default_net128_arch": metrics.get("uses_default_net128_arch", _net_arch_label(settings) == "net128_default"),
-        "uses_large_net_variant": metrics.get("uses_large_net_variant", _net_arch_label(settings) == "net256_large"),
+        "net_arch_role": metrics.get("net_arch_role", _net_arch_role(settings)),
         "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
         "num_envs": metrics.get("num_envs", settings.num_envs),
         "action_interface": metrics.get("action_interface", settings.action_interface),
