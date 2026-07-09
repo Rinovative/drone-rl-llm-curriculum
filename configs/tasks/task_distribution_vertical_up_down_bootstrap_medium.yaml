@@ -5,15 +5,15 @@ sampled_per_episode: true
 constant_within_episode: true
 variation_enabled: true
 lower_start_height_enabled: true
-start_height_policy: lower_active_reference_0p45_0p75m
+start_height_policy: adjusted_lower_reference_0p70_0p95m
 base_z_range_m:
-- 0.45
-- 0.75
+- 0.7
+- 0.95
 base_z_offset_range_m:
-- -0.55
-- -0.25
+- -0.3
+- -0.05
 height_variation_enabled: true
-start_hold_policy: training_1p2s_after_lower_reference
+start_hold_policy: training_1p2s_after_adjusted_lower_reference
 start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
 tracking_reward_starts_after_start_hold: false
 validation_limits:
@@ -24,8 +24,7 @@ validation_limits:
   max_acceleration_m_s2: 5.0
   min_duration_sec: 1.0
   max_step_distance_m: 0.5
-notes: Focused lower-start vertical climb/descent distribution preserving altitude
-  control without an initial high target.
+notes: Focused lower-start vertical climb/descent distribution preserving altitude control without an initial high target.
 task_distribution:
   name: vertical_up_down_bootstrap
   enabled: true
@@ -41,8 +40,8 @@ task_distribution:
     xy:
     - 0.0
     - 0.0
-    start_height: 0.55
-    end_height: 0.82
+    start_height: 0.8
+    end_height: 1.07
     start_hold_enabled: true
     start_hold_sec: 1.2
     exclude_start_hold_from_tracking_metrics: true
@@ -50,14 +49,14 @@ task_distribution:
     final_hold_sec: 1.0
     exclude_final_hold_from_tracking_metrics: true
     lower_start_height_enabled: true
-    start_height_policy: lower_active_reference_0p45_0p75m
-    base_z_m: 0.55
+    start_height_policy: adjusted_lower_reference_0p70_0p95m
+    base_z_m: 0.8
     base_z_range_m:
-    - 0.45
-    - 0.75
-    sampled_start_height_m: 0.55
+    - 0.7
+    - 0.95
+    sampled_start_height_m: 0.8
     height_variation_enabled: true
-    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_policy: training_1p2s_after_adjusted_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false
   family_weights:
@@ -66,11 +65,11 @@ task_distribution:
     vertical_up_down:
       xy_radius_m: 0.16
       start_z_range_m:
-      - 0.45
-      - 0.75
+      - 0.7
+      - 0.95
       end_z_range_m:
-      - 0.35
-      - 1.05
+      - 0.6
+      - 1.3
       height_delta_range_m:
       - 0.18
       - 0.42
@@ -85,18 +84,18 @@ task_distribution:
       - 0.75
       - 1.1
       base_z_range_m:
-      - 0.45
-      - 0.75
+      - 0.7
+      - 0.95
   metadata:
     lower_start_height_enabled: true
-    start_height_policy: lower_active_reference_0p45_0p75m
+    start_height_policy: adjusted_lower_reference_0p70_0p95m
     base_z_range_m:
-    - 0.45
-    - 0.75
+    - 0.7
+    - 0.95
     base_z_offset_range_m:
-    - -0.55
-    - -0.25
+    - -0.3
+    - -0.05
     height_variation_enabled: true
-    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_policy: training_1p2s_after_adjusted_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false

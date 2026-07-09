@@ -4,8 +4,7 @@ task_is_distribution: true
 sampled_per_episode: true
 constant_within_episode: true
 variation_enabled: true
-notes: Bounded per-episode variation around the foundational composed Direct-PPO training
-  show.
+notes: Bounded per-episode variation around the foundational composed Direct-PPO training show.
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -37,55 +36,55 @@ task_distribution:
       segment_start:
       - 0.0
       - 0.0
-      - 0.45
+      - 0.7
       segment_end:
       - 0.0
       - 0.0
-      - 0.45
+      - 0.7
       segment_duration_sec: 1.2
     - segment_name: horizontal_line
       segment_shape: horizontal_line
       segment_start:
       - 0.0
       - 0.0
-      - 0.45
+      - 0.7
       segment_end:
       - 0.42
       - 0.0
-      - 0.45
+      - 0.7
       segment_duration_sec: 2.1
     - segment_name: diagonal_line
       segment_shape: diagonal_line
       segment_start:
       - 0.42
       - 0.0
-      - 0.45
+      - 0.7
       segment_end:
       - 0.7
       - 0.22
-      - 0.47
+      - 0.72
       segment_duration_sec: 2.2
     - segment_name: vertical_lift
       segment_shape: vertical
       segment_start:
       - 0.7
       - 0.22
-      - 0.47
+      - 0.72
       segment_end:
       - 0.7
       - 0.22
-      - 0.69
+      - 0.94
       segment_duration_sec: 1.8
     - segment_name: ellipse_loop
       segment_shape: ellipse
       segment_start:
       - 0.7
       - 0.22
-      - 0.69
+      - 0.94
       segment_end:
       - 0.7
       - 0.22
-      - 0.69
+      - 0.94
       segment_duration_sec: 3.6
       radius_x_m: 0.16
       radius_y_m: 0.11
@@ -95,66 +94,66 @@ task_distribution:
       segment_start:
       - 0.7
       - 0.22
-      - 0.69
+      - 0.94
       segment_end:
       - 1.02
       - 0.52
-      - 0.65
+      - 0.9
       segment_duration_sec: 2.8
       segment_points:
       - - 0.7
         - 0.22
-        - 0.69
+        - 0.94
       - - 0.7
         - 0.52
-        - 0.69
+        - 0.94
       - - 1.02
         - 0.52
-        - 0.65
+        - 0.9
     - segment_name: zigzag_finish
       segment_shape: zigzag
       segment_start:
       - 1.02
       - 0.52
-      - 0.65
+      - 0.9
       segment_end:
       - 1.55
       - 0.58
-      - 0.61
+      - 0.86
       segment_duration_sec: 3.6
       segment_points:
       - - 1.02
         - 0.52
-        - 0.65
+        - 0.9
       - - 1.2
         - 0.66
-        - 0.65
+        - 0.9
       - - 1.38
         - 0.4
-        - 0.61
+        - 0.86
       - - 1.55
         - 0.58
-        - 0.61
+        - 0.86
     - segment_name: final_hold
       segment_shape: final_hold
       segment_start:
       - 1.55
       - 0.58
-      - 0.61
+      - 0.86
       segment_end:
       - 1.55
       - 0.58
-      - 0.61
+      - 0.86
       segment_duration_sec: 1.0
       segment_final_hold_sec: 1.0
     lower_start_height_enabled: true
-    start_height_policy: lower_active_reference_0p45_0p75m
+    start_height_policy: adjusted_lower_reference_0p70_0p95m
     height_variation_enabled: true
-    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_policy: training_1p2s_after_adjusted_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false
-    base_z_m: 0.45
-    sampled_start_height_m: 0.45
+    base_z_m: 0.7
+    sampled_start_height_m: 0.7
   family_weights:
     basic_training_show: 1.0
   variations:
@@ -185,30 +184,30 @@ task_distribution:
       - 0.8
       - 1.2
       base_z_range_m:
-      - 0.45
-      - 0.75
+      - 0.7
+      - 0.95
   metadata:
     lower_start_height_enabled: true
-    start_height_policy: lower_active_reference_0p45_0p75m
+    start_height_policy: adjusted_lower_reference_0p70_0p95m
     base_z_range_m:
-    - 0.45
-    - 0.75
+    - 0.7
+    - 0.95
     base_z_offset_range_m:
-    - -0.55
-    - -0.19
+    - -0.3
+    - -0.05
     height_variation_enabled: true
-    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_policy: training_1p2s_after_adjusted_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false
 lower_start_height_enabled: true
-start_height_policy: lower_active_reference_0p45_0p75m
+start_height_policy: adjusted_lower_reference_0p70_0p95m
 base_z_range_m:
-- 0.45
-- 0.75
+- 0.7
+- 0.95
 base_z_offset_range_m:
-- -0.55
-- -0.19
+- -0.3
+- -0.05
 height_variation_enabled: true
-start_hold_policy: training_1p2s_after_lower_reference
+start_hold_policy: training_1p2s_after_adjusted_lower_reference
 start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
 tracking_reward_starts_after_start_hold: false

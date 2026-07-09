@@ -43,6 +43,7 @@ KNOWN_TASK_DISTRIBUTION_CONFIGS = {
     "bootstrap_randomized_hover_target": "configs/tasks/task_distribution_hover_bootstrap_medium.yaml",
     "hover_bootstrap": "configs/tasks/task_distribution_hover_bootstrap_medium.yaml",
     "short_line_bootstrap": "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml",
+    "line_bootstrap": "configs/tasks/task_distribution_line_small.yaml",
     "vertical_bootstrap": "configs/tasks/task_distribution_vertical_bootstrap_medium.yaml",
     "vertical_up_down_bootstrap": "configs/tasks/task_distribution_vertical_up_down_bootstrap_medium.yaml",
     "angled_vertical_bootstrap": "configs/tasks/task_distribution_angled_vertical_bootstrap_medium.yaml",
@@ -138,15 +139,15 @@ def build_task_prompt_contract() -> str:
         "The LLM may not propose arbitrary sampling bounds; choose a concrete validated task or one known distribution id/path. "
         "For stages after stage 1, do not repeat the immediately previous task family or shape; "
         "choose a controlled variation or a different focused distribution. "
-        "Concrete tasks should use lower starts around 0.45-0.75m where safe, start_hold_enabled=true, start_hold_sec=1.2, "
+        "Concrete tasks should use adjusted lower starts around 0.70-0.95m where safe, start_hold_enabled=true, start_hold_sec=1.2, "
         "exclude_start_hold_from_tracking_metrics=true, and may leave final_hold_enabled implicit "
         "or set final_hold_sec near 1.0 with final-hold metrics excluded. "
         f"Known task distribution ids and paths: {distribution_ids}. "
         f"Supported task-distribution families: {supported_families}. "
         f"Unsupported broad families for now: {unsupported_families}. "
         "Evaluation remains fixed and deterministic. Prefer PID with dynamics and previous-action observations; direct-RPM is experimental. "
-        "For overnight screening prefer focused lower-start distributions such as tracking_small, tracking_medium, and altitude-control bootstraps; "
-        "tracking_broad is experimental and only after simpler distributions are stable. "
+        "For overnight screening prefer focused lower-start bootstraps; tracking_small is fallback/consolidation only, "
+        "tracking_medium is late/final broad preparation only, and tracking_broad is experimental after simpler distributions are stable. "
         f"Optional stage budget metadata: {STAGE_BUDGET_PROFILE_FIELD} must be one of {budget_profiles}; "
         f"{BUDGET_RATIONALE_FIELD} may briefly justify the selected profile. "
         "Use bootstrap mainly for stage 1 policy warmup, short for easy confirmation stages, normal for progression, "

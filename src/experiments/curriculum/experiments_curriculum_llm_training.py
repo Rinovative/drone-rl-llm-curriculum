@@ -50,6 +50,11 @@ DEFAULT_PROPOSAL_FALLBACK_PROFILE = "short"
 DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE = "normal"
 GENERATED_TASK_DISTRIBUTION_STRENGTH = 0.35
 GENERATED_TASK_START_HOLD_SEC = 1.2
+ADJUSTED_LOWER_REFERENCE_POLICY = "adjusted_lower_reference_0p70_0p95m"
+ADJUSTED_LOWER_REFERENCE_OFFSET_M = 0.25
+ADJUSTED_LOWER_REFERENCE_MAX_START_M = 0.95
+PREVIOUS_LOWER_REFERENCE_MAX_START_M = 0.75
+XYZ_VECTOR_LENGTH = 3
 GENERATED_TASK_DISTRIBUTION_LABELS = {
     validation.contracts.SHAPE_HOVER: "hover",
     validation.contracts.SHAPE_HOVER_STABILIZATION: "hover",
@@ -529,6 +534,9 @@ def llm_curriculum_settings_from_mapping(
         max_repair_attempts=int(llm_config.get("max_repair_attempts", 1)),
         skip_invalid_proposals=bool(llm_config.get("skip_invalid_proposals", False)),
         recent_context_limit=int(llm_config.get("recent_context_limit", DEFAULT_RECENT_CONTEXT_LIMIT)),
+        prompt_context_limit_tokens=int(llm_config.get("prompt_context_limit_tokens", llm.prompts.DEFAULT_PROMPT_CONTEXT_LIMIT_TOKENS)),
+        prompt_response_reserve_tokens=int(llm_config.get("prompt_response_reserve_tokens", llm.prompts.DEFAULT_PROMPT_RESPONSE_RESERVE_TOKENS)),
+        prompt_budget_tokens=int(llm_config.get("prompt_budget_tokens", llm.prompts.DEFAULT_PROMPT_BUDGET_TOKENS)),
     )
     return LLMCurriculumSettings(
         curriculum_name=str(config.get("curriculum_name") or ""),
@@ -671,7 +679,8 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 logger=proposal_logger,
             )
         except llm.curriculum.LLMCurriculumProposalError as exc:
-            if not settings.proposal_fallback.enabled:
+            context_overflow = bool(exc.stats.get("llm_request_failed_due_to_context_size"))
+            if not settings.proposal_fallback.enabled and not context_overflow:
                 raise
             llm.curriculum.merge_proposal_stats(proposal_stats, exc.stats)
             recent_rejected_tasks.extend(exc.rejected_proposals)
@@ -682,6 +691,7 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 metrics_summary=latest_metrics_summary,
                 failure_reason=str(exc),
                 previous_stage_task_shape=previous_stage_task_shape,
+                context_overflow=context_overflow,
             )
             stage = _stage_from_proposal(
                 settings=settings,
@@ -1581,6 +1591,7 @@ def _materialize_concrete_task_distribution(
 
 def _with_generated_task_start_hold(task: dict[str, Any]) -> dict[str, Any]:
     """Apply the LLM curriculum start-hold policy to a materialized concrete task."""
+    task = _with_adjusted_generated_reference_height(task)
     task[validation.contracts.FIELD_START_HOLD_ENABLED] = True
     task[validation.contracts.FIELD_START_HOLD_SEC] = max(
         float(task.get(validation.contracts.FIELD_START_HOLD_SEC, GENERATED_TASK_START_HOLD_SEC)),
@@ -1588,8 +1599,8 @@ def _with_generated_task_start_hold(task: dict[str, Any]) -> dict[str, Any]:
     )
     task[validation.contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS] = True
     task.setdefault("lower_start_height_enabled", True)
-    task.setdefault("start_height_policy", "lower_active_reference_0p45_0p75m")
-    task.setdefault("start_hold_policy", "reduced_training_hold_after_lower_reference")
+    task.setdefault("start_height_policy", ADJUSTED_LOWER_REFERENCE_POLICY)
+    task.setdefault("start_hold_policy", "training_1p2s_after_adjusted_lower_reference")
     task.setdefault("start_hold_reward_policy", "full_tracking_reward_active_during_short_lower_start_hold")
     task.setdefault("tracking_reward_starts_after_start_hold", False)
     if task.get(validation.contracts.FIELD_SHAPE) == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
@@ -1598,6 +1609,57 @@ def _with_generated_task_start_hold(task: dict[str, Any]) -> dict[str, Any]:
             GENERATED_TASK_START_HOLD_SEC,
         )
     return task
+
+
+def _with_adjusted_generated_reference_height(task: dict[str, Any]) -> dict[str, Any]:
+    """Raise old lower-reference concrete proposals into the adjusted active band."""
+    offset = _generated_reference_raise_offset(task)
+    if offset <= 0.0:
+        return task
+    if validation.contracts.FIELD_POSITION in task:
+        task[validation.contracts.FIELD_POSITION] = _raised_xyz(task[validation.contracts.FIELD_POSITION], offset)
+    if validation.contracts.FIELD_START in task:
+        task[validation.contracts.FIELD_START] = _raised_xyz(task[validation.contracts.FIELD_START], offset)
+    if validation.contracts.FIELD_END in task:
+        task[validation.contracts.FIELD_END] = _raised_xyz(task[validation.contracts.FIELD_END], offset)
+    if validation.contracts.FIELD_POINTS in task:
+        task[validation.contracts.FIELD_POINTS] = [_raised_xyz(point, offset) for point in task[validation.contracts.FIELD_POINTS]]
+    if validation.contracts.FIELD_START_HEIGHT in task:
+        task[validation.contracts.FIELD_START_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_START_HEIGHT]) + offset)
+    if validation.contracts.FIELD_END_HEIGHT in task:
+        task[validation.contracts.FIELD_END_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_END_HEIGHT]) + offset)
+    if validation.contracts.FIELD_HEIGHT in task:
+        task[validation.contracts.FIELD_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_HEIGHT]) + offset)
+    task["base_z_m"] = _round_height(_task_z_anchor(task) or ADJUSTED_LOWER_REFERENCE_MAX_START_M)
+    task["sampled_start_height_m"] = task["base_z_m"]
+    task["base_z_range_m"] = [0.70, 0.95]
+    task["base_z_offset_range_m"] = [-0.30, -0.05]
+    task["height_variation_enabled"] = True
+    return task
+
+
+def _generated_reference_raise_offset(task: Mapping[str, Any]) -> float:
+    """Return +0.25m only for concrete proposals still in the old lowered band."""
+    anchor = _task_z_anchor(task)
+    if anchor is None or anchor > PREVIOUS_LOWER_REFERENCE_MAX_START_M:
+        return 0.0
+    raised_start = min(anchor + ADJUSTED_LOWER_REFERENCE_OFFSET_M, ADJUSTED_LOWER_REFERENCE_MAX_START_M)
+    return max(0.0, raised_start - anchor)
+
+
+def _raised_xyz(value: Any, offset: float) -> list[float]:
+    """Return an XYZ vector with z raised by ``offset``."""
+    vector = [float(component) for component in value]
+    if len(vector) != XYZ_VECTOR_LENGTH:
+        message = "reference point must contain exactly three values"
+        raise ValueError(message)
+    vector[2] = _round_height(vector[2] + offset)
+    return [float(round(vector[0], 6)), float(round(vector[1], 6)), vector[2]]
+
+
+def _round_height(value: float) -> float:
+    """Return a compact rounded height value."""
+    return float(round(float(value), 6))
 
 
 def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]) -> dict[str, Any]:
@@ -1619,8 +1681,8 @@ def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]
         variation.update(
             {
                 "xy_radius_m": 0.08,
-                "start_z_range_m": _bounded_range(start_height, 0.08, lower=0.45, upper=1.6),
-                "z_range_m": _bounded_range(end_height, 0.12, lower=0.4, upper=1.8),
+                "start_z_range_m": _bounded_range(start_height, 0.08, lower=0.70, upper=1.6),
+                "z_range_m": _bounded_range(end_height, 0.12, lower=0.60, upper=1.8),
             }
         )
     elif family in {envs.task_distribution.FAMILY_LINE, envs.task_distribution.FAMILY_START_HOLD_LINE}:
@@ -1683,6 +1745,8 @@ def _task_z_anchor(task: Mapping[str, Any]) -> float | None:
         return float(task[validation.contracts.FIELD_START][2])
     if validation.contracts.FIELD_POINTS in task:
         return float(task[validation.contracts.FIELD_POINTS][0][2])
+    if validation.contracts.FIELD_START_HEIGHT in task:
+        return float(task[validation.contracts.FIELD_START_HEIGHT])
     if validation.contracts.FIELD_END_HEIGHT in task:
         return float(task[validation.contracts.FIELD_END_HEIGHT])
     if validation.contracts.FIELD_HEIGHT in task:
@@ -1740,6 +1804,8 @@ def _shape_from_distribution_family(family: str) -> str:
     family_to_shape = {
         envs.task_distribution.FAMILY_HOVER: validation.contracts.SHAPE_HOVER_STABILIZATION,
         envs.task_distribution.FAMILY_TAKEOFF: validation.contracts.SHAPE_VERTICAL,
+        envs.task_distribution.FAMILY_VERTICAL_UP_DOWN: validation.contracts.SHAPE_VERTICAL,
+        envs.task_distribution.FAMILY_ANGLED_VERTICAL: validation.contracts.SHAPE_LINE,
         envs.task_distribution.FAMILY_LINE: validation.contracts.SHAPE_LINE,
         envs.task_distribution.FAMILY_START_HOLD_LINE: validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
         envs.task_distribution.FAMILY_POLYLINE: validation.contracts.SHAPE_POLYLINE,
@@ -1747,6 +1813,7 @@ def _shape_from_distribution_family(family: str) -> str:
         envs.task_distribution.FAMILY_ZIGZAG: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_TRIANGLE: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_MULTI_HEIGHT_POLYLINE: validation.contracts.SHAPE_POLYLINE,
+        envs.task_distribution.FAMILY_DELAYED_ALTITUDE_POLYLINE: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_RECTANGLE: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_SQUARE: validation.contracts.SHAPE_POLYLINE,
         envs.task_distribution.FAMILY_CIRCLE: validation.contracts.SHAPE_CIRCLE,
@@ -1999,14 +2066,25 @@ def _fallback_proposal_from_failure(
     metrics_summary: Mapping[str, Any],
     failure_reason: str,
     previous_stage_task_shape: str | None,
+    context_overflow: bool = False,
 ) -> dict[str, Any]:
-    """Build a deterministic safe proposal after exhausted LLM repair attempts."""
-    distribution_id = _fallback_distribution_id(settings=settings, previous_stage_task_shape=previous_stage_task_shape)
+    """Build a deterministic safe proposal after exhausted LLM proposal attempts."""
+    distribution_id = _fallback_distribution_id(
+        settings=settings,
+        previous_stage_task_shape=previous_stage_task_shape,
+        metrics_summary=metrics_summary,
+        stage_index=stage_index,
+        context_overflow=context_overflow,
+    )
     config_path = llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[distribution_id]
     stage_budget_profile = _fallback_stage_budget_profile(settings=settings, metrics_summary=metrics_summary)
     status = metrics_summary.get("failure_overall_status") or metrics_summary.get("status")
-    task_reason = f"Safe fallback after exhausted LLM proposal repair at stage {stage_index}; using known distribution {distribution_id}."
-    budget_rationale = f"Fallback selected {stage_budget_profile!r} from latest concrete status={status!r}."
+    if context_overflow:
+        task_reason = f"Safe focused fallback after LLM context overflow at stage {stage_index}; using known distribution {distribution_id}."
+        budget_rationale = f"Context-overflow fallback selected {stage_budget_profile!r} from latest concrete status={status!r}."
+    else:
+        task_reason = f"Safe fallback after exhausted LLM proposal repair at stage {stage_index}; using known distribution {distribution_id}."
+        budget_rationale = f"Fallback selected {stage_budget_profile!r} from latest concrete status={status!r}."
     task = {
         llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
         llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
@@ -2019,6 +2097,9 @@ def _fallback_proposal_from_failure(
         llm.task_schema.BUDGET_RATIONALE_FIELD: budget_rationale,
         "proposal_fallback_used": True,
         "proposal_failure_reason": failure_reason,
+        "llm_request_failed_due_to_context_size": context_overflow,
+        "llm_context_fallback_used": context_overflow,
+        "llm_context_fallback_reason": failure_reason if context_overflow else None,
     }
     return {
         "task": task,
@@ -2027,25 +2108,83 @@ def _fallback_proposal_from_failure(
         "budget_rationale": budget_rationale,
         "original_proposal": original_proposal,
         "proposal_failure_reason": failure_reason,
+        "llm_request_failed_due_to_context_size": context_overflow,
+        "llm_context_fallback_used": context_overflow,
+        "llm_context_fallback_reason": failure_reason if context_overflow else None,
     }
 
 
-def _fallback_distribution_id(*, settings: LLMCurriculumSettings, previous_stage_task_shape: str | None) -> str:
-    """Return a safe fallback distribution that avoids the immediate previous family when possible."""
+def _fallback_distribution_id(
+    *,
+    settings: LLMCurriculumSettings,
+    previous_stage_task_shape: str | None,
+    metrics_summary: Mapping[str, Any] | None = None,
+    stage_index: int = 1,
+    context_overflow: bool = False,
+) -> str:
+    """Return a safe fallback distribution that avoids immediate duplicates when possible."""
     configured_id = settings.proposal_fallback.task_distribution_id
-    if previous_stage_task_shape is None:
-        return configured_id
-    previous_family = _canonical_stage_task_family(previous_stage_task_shape)
-    candidate_ids = (
-        "short_line_bootstrap",
-        "vertical_bootstrap",
-        "polyline_bootstrap",
-        "hover_bootstrap",
-        configured_id,
-    )
+    if not context_overflow:
+        return _first_non_duplicate_distribution(
+            (configured_id, "short_line_bootstrap", "vertical_bootstrap", "polyline_bootstrap", "hover_bootstrap"),
+            configured_id=configured_id,
+            previous_stage_task_shape=previous_stage_task_shape,
+        )
+    candidates = _context_overflow_fallback_candidates(metrics_summary or {}, previous_stage_task_shape=previous_stage_task_shape)
+    if stage_index >= max(settings.max_stages - 1, 1):
+        candidates = (*candidates, "tracking_small", "tracking_medium")
+    else:
+        candidates = (*candidates, "tracking_small")
+    return _first_non_duplicate_distribution(candidates, configured_id="short_line_bootstrap", previous_stage_task_shape=previous_stage_task_shape)
+
+
+def _context_overflow_fallback_candidates(
+    metrics_summary: Mapping[str, Any],
+    *,
+    previous_stage_task_shape: str | None,
+) -> tuple[str, ...]:
+    """Return focused fallback candidates from latest compact skill gaps."""
+    gaps = set(_latest_skill_gaps(metrics_summary))
+    if "altitude_control" in gaps:
+        return ("vertical_up_down_bootstrap", "angled_vertical_bootstrap", "delayed_altitude_polyline_bootstrap", "vertical_bootstrap")
+    if "xy_tracking" in gaps:
+        return ("short_line_bootstrap", "line_bootstrap", "vertical_bootstrap")
+    if "turn_following" in gaps:
+        return ("polyline_bootstrap", "zigzag_bootstrap", "triangle_bootstrap", "short_line_bootstrap")
+    if "curvature_following" in gaps:
+        return ("polyline_bootstrap", "zigzag_bootstrap", "short_line_bootstrap")
+    if previous_stage_task_shape is not None and _canonical_stage_task_family(previous_stage_task_shape) == validation.contracts.SHAPE_LINE:
+        return ("vertical_bootstrap", "polyline_bootstrap", "short_line_bootstrap")
+    return ("short_line_bootstrap", "vertical_bootstrap", "polyline_bootstrap", "hover_bootstrap")
+
+
+def _latest_skill_gaps(metrics_summary: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return normalized latest skill-gap labels from metrics and feedback summaries."""
+    raw = metrics_summary.get("curriculum_primary_skill_gaps")
+    if not raw:
+        strategy = metrics_summary.get("curriculum_strategy")
+        if isinstance(strategy, Mapping):
+            raw = strategy.get("primary_skill_gaps") or strategy.get("candidate_next_skills")
+    if isinstance(raw, str):
+        return (raw,)
+    if not isinstance(raw, Sequence):
+        return ()
+    return tuple(str(item) for item in raw if item is not None)
+
+
+def _first_non_duplicate_distribution(
+    candidate_ids: Sequence[str],
+    *,
+    configured_id: str,
+    previous_stage_task_shape: str | None,
+) -> str:
+    """Return the first known candidate that does not repeat the previous stage family."""
+    previous_family = _canonical_stage_task_family(previous_stage_task_shape) if previous_stage_task_shape is not None else None
     for distribution_id in candidate_ids:
         if distribution_id not in llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS:
             continue
+        if previous_family is None:
+            return distribution_id
         proposal_shape = _proposal_requested_stage_task_shape(
             {
                 llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
@@ -2095,6 +2234,9 @@ def _log_proposal_fallback(
             "budget_rationale": fallback_proposal.get("budget_rationale"),
             "proposal_fallback_used": True,
             "proposal_failure_reason": fallback_proposal.get("proposal_failure_reason"),
+            "llm_request_failed_due_to_context_size": fallback_proposal.get("llm_request_failed_due_to_context_size", False),
+            "llm_context_fallback_used": fallback_proposal.get("llm_context_fallback_used", False),
+            "llm_context_fallback_reason": fallback_proposal.get("llm_context_fallback_reason"),
             **_stage_proposal_metadata(stage),
         }
     )

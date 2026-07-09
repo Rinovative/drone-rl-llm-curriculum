@@ -4,8 +4,8 @@ representative_task_config_path: configs/training/ppo_tracking_representative_ta
 training_task_distribution_config_paths:
   basic_training_show: configs/tasks/task_distribution_basic_training_show.yaml
   tracking_medium: configs/tasks/task_distribution_tracking_medium.yaml
-notes: Deterministic representative tasks for own_task evaluation, rendering, and
-  task-shape selection only; varied training uses explicit task distribution configs.
+notes: Deterministic representative tasks for own_task evaluation, rendering, and task-shape selection only; varied training
+  uses explicit task distribution configs.
 seed: 0
 validation_limits:
   arena_xy_limit: 2.0
@@ -27,19 +27,19 @@ tasks:
   start:
   - 0.0
   - 0.0
-  - 0.55
+  - 0.8
   end:
   - 1.2
   - 0.0
-  - 0.55
+  - 0.8
   lower_start_height_enabled: true
-  start_height_policy: lower_active_reference_0p45_0p75m
+  start_height_policy: adjusted_lower_reference_0p70_0p95m
   height_variation_enabled: true
-  start_hold_policy: evaluation_1p8s_after_lower_reference
+  start_hold_policy: evaluation_1p8s_after_adjusted_lower_reference
   start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
   tracking_reward_starts_after_start_hold: false
-  base_z_m: 0.55
-  sampled_start_height_m: 0.55
+  base_z_m: 0.8
+  sampled_start_height_m: 0.8
 - task_name: line_long_final
   task_type: trajectory
   shape: line
@@ -51,19 +51,19 @@ tasks:
   start:
   - 0.0
   - 0.0
-  - 0.55
+  - 0.8
   end:
   - 1.8
   - 0.0
-  - 0.55
+  - 0.8
   lower_start_height_enabled: true
-  start_height_policy: lower_active_reference_0p45_0p75m
+  start_height_policy: adjusted_lower_reference_0p70_0p95m
   height_variation_enabled: true
-  start_hold_policy: evaluation_1p8s_after_lower_reference
+  start_hold_policy: evaluation_1p8s_after_adjusted_lower_reference
   start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
   tracking_reward_starts_after_start_hold: false
-  base_z_m: 0.55
-  sampled_start_height_m: 0.55
+  base_z_m: 0.8
+  sampled_start_height_m: 0.8
 - task_name: line_diagonal_validation
   task_type: trajectory
   shape: line
@@ -75,19 +75,19 @@ tasks:
   start:
   - 0.0
   - 0.0
-  - 0.55
+  - 0.8
   end:
   - 1.0
   - 0.75
-  - 0.55
+  - 0.8
   lower_start_height_enabled: true
-  start_height_policy: lower_active_reference_0p45_0p75m
+  start_height_policy: adjusted_lower_reference_0p70_0p95m
   height_variation_enabled: true
-  start_hold_policy: evaluation_1p8s_after_lower_reference
+  start_hold_policy: evaluation_1p8s_after_adjusted_lower_reference
   start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
   tracking_reward_starts_after_start_hold: false
-  base_z_m: 0.55
-  sampled_start_height_m: 0.55
+  base_z_m: 0.8
+  sampled_start_height_m: 0.8
 - task_name: basic_training_show
   task_type: trajectory
   shape: basic_training_show
@@ -121,55 +121,55 @@ tasks:
     segment_start:
     - 0.0
     - 0.0
-    - 0.45
+    - 0.7
     segment_end:
     - 0.0
     - 0.0
-    - 0.45
+    - 0.7
     segment_duration_sec: 1.2
   - segment_name: horizontal_line
     segment_shape: horizontal_line
     segment_start:
     - 0.0
     - 0.0
-    - 0.45
+    - 0.7
     segment_end:
     - 0.42
     - 0.0
-    - 0.45
+    - 0.7
     segment_duration_sec: 2.1
   - segment_name: diagonal_line
     segment_shape: diagonal_line
     segment_start:
     - 0.42
     - 0.0
-    - 0.45
+    - 0.7
     segment_end:
     - 0.7
     - 0.22
-    - 0.47
+    - 0.72
     segment_duration_sec: 2.2
   - segment_name: vertical_lift
     segment_shape: vertical
     segment_start:
     - 0.7
     - 0.22
-    - 0.47
+    - 0.72
     segment_end:
     - 0.7
     - 0.22
-    - 0.69
+    - 0.94
     segment_duration_sec: 1.8
   - segment_name: ellipse_loop
     segment_shape: ellipse
     segment_start:
     - 0.7
     - 0.22
-    - 0.69
+    - 0.94
     segment_end:
     - 0.7
     - 0.22
-    - 0.69
+    - 0.94
     segment_duration_sec: 3.6
     radius_x_m: 0.16
     radius_y_m: 0.11
@@ -179,63 +179,63 @@ tasks:
     segment_start:
     - 0.7
     - 0.22
-    - 0.69
+    - 0.94
     segment_end:
     - 1.02
     - 0.52
-    - 0.65
+    - 0.9
     segment_duration_sec: 2.8
     segment_points:
     - - 0.7
       - 0.22
-      - 0.69
+      - 0.94
     - - 0.7
       - 0.52
-      - 0.69
+      - 0.94
     - - 1.02
       - 0.52
-      - 0.65
+      - 0.9
   - segment_name: zigzag_finish
     segment_shape: zigzag
     segment_start:
     - 1.02
     - 0.52
-    - 0.65
+    - 0.9
     segment_end:
     - 1.55
     - 0.58
-    - 0.61
+    - 0.86
     segment_duration_sec: 3.6
     segment_points:
     - - 1.02
       - 0.52
-      - 0.65
+      - 0.9
     - - 1.2
       - 0.66
-      - 0.65
+      - 0.9
     - - 1.38
       - 0.4
-      - 0.61
+      - 0.86
     - - 1.55
       - 0.58
-      - 0.61
+      - 0.86
   - segment_name: final_hold
     segment_shape: final_hold
     segment_start:
     - 1.55
     - 0.58
-    - 0.61
+    - 0.86
     segment_end:
     - 1.55
     - 0.58
-    - 0.61
+    - 0.86
     segment_duration_sec: 1.0
     segment_final_hold_sec: 1.0
   lower_start_height_enabled: true
-  start_height_policy: lower_active_reference_0p45_0p75m
+  start_height_policy: adjusted_lower_reference_0p70_0p95m
   height_variation_enabled: true
-  start_hold_policy: evaluation_1p8s_after_lower_reference
+  start_hold_policy: evaluation_1p8s_after_adjusted_lower_reference
   start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
   tracking_reward_starts_after_start_hold: false
-  base_z_m: 0.45
-  sampled_start_height_m: 0.45
+  base_z_m: 0.7
+  sampled_start_height_m: 0.7

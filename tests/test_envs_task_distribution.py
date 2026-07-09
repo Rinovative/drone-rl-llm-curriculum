@@ -21,7 +21,7 @@ def _base_hover_task() -> dict[str, object]:
         "shape": "hover_stabilization",
         "duration_sec": 3.0,
         "sample_rate_hz": 10.0,
-        "position": [0.0, 0.0, 0.55],
+        "position": [0.0, 0.0, 0.8],
     }
 
 
@@ -35,8 +35,8 @@ def _base_line_task() -> dict[str, object]:
         "start_hold_enabled": True,
         "start_hold_sec": 1.2,
         "exclude_start_hold_from_tracking_metrics": True,
-        "start": [0.0, 0.0, 0.55],
-        "end": [0.5, 0.0, 0.55],
+        "start": [0.0, 0.0, 0.8],
+        "end": [0.5, 0.0, 0.8],
     }
 
 
@@ -56,7 +56,7 @@ def _settings(**overrides: object) -> envs.task_distribution.TaskDistributionSet
                 "start_xy_radius_m": 0.1,
                 "heading_jitter_deg": 20,
                 "length_range_m": [0.25, 0.7],
-                "z_range_m": [0.45, 0.75],
+                "z_range_m": [0.7, 0.95],
                 "duration_range_sec": [4.0, 7.0],
                 "start_hold_range_sec": [1.2, 1.2],
             }
@@ -224,12 +224,12 @@ def _initial_task_z(task: dict[str, object]) -> float | None:
 def _assert_lower_start_policy(task: dict[str, object]) -> None:
     """Assert a task exposes and follows the lower-start policy metadata."""
     assert task.get("lower_start_height_enabled") is True
-    assert task.get("start_height_policy") == "lower_active_reference_0p45_0p75m"
+    assert task.get("start_height_policy") == "adjusted_lower_reference_0p70_0p95m"
     assert task.get("start_hold_reward_policy") == "full_tracking_reward_active_during_short_lower_start_hold"
     assert task.get("tracking_reward_starts_after_start_hold") is False
     start_z = _initial_task_z(task)
     assert start_z is not None
-    assert 0.35 <= start_z <= 0.80
+    assert 0.65 <= start_z <= 1.0
 
 
 def test_active_training_distributions_use_reduced_start_hold_policy() -> None:

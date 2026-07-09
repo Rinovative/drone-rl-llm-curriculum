@@ -31,8 +31,8 @@ phases:
   type: vertical
   duration_sec: 3.0
   start_mode: previous_end
-  start_height: 0.55
-  end_height: 0.83
+  start_height: 0.8
+  end_height: 1.08
 - name: figure_eight_middle
   type: figure_eight
   duration_sec: 8.5
@@ -136,8 +136,8 @@ phases:
     - 0.12
     - 0.0
 lower_start_height_enabled: true
-start_height_policy: lower_active_reference_0p45_0p75m
-base_z_m: 0.55
-start_hold_policy: show_2p5s_after_lower_reference
+start_height_policy: adjusted_lower_reference_0p70_0p95m
+base_z_m: 0.8
+start_hold_policy: show_2p5s_after_adjusted_lower_reference
 start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
 tracking_reward_starts_after_start_hold: false

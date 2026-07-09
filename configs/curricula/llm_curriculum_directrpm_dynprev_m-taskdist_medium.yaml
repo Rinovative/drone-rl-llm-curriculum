@@ -42,12 +42,11 @@ bootstrap:
   stage_name: hover_stabilization
   task_shape: hover_stabilization
   stage_budget_profile: bootstrap
-  budget_rationale: Deterministic randomized hover-target bootstrap uses 1.0x the
-    reference medium budget before LLM adaptation.
+  budget_rationale: Deterministic randomized hover-target bootstrap uses 1.0x the reference medium budget before LLM adaptation.
   total_timesteps: 500000
   eval_steps: 240
-  notes: Fixed Stage 1 bootstrap samples a constant hover target per episode from
-    bounded x/y/z ranges; LLM proposals begin at Stage 2.
+  notes: Fixed Stage 1 bootstrap samples a constant hover target per episode from bounded x/y/z ranges; LLM proposals begin
+    at Stage 2.
   bootstrap_stage_source: deterministic_config
   bootstrap_task_shape: hover_stabilization
   bootstrap_target_sampling_bounds:
@@ -58,8 +57,8 @@ bootstrap:
     - -0.5
     - 0.5
     z:
-    - 0.45
-    - 0.75
+    - 0.7
+    - 0.95
   task_distribution_id: bootstrap_randomized_hover_target
   task_distribution_config_path: configs/tasks/task_distribution_hover_bootstrap_medium.yaml
   task:
@@ -73,15 +72,15 @@ bootstrap:
     position:
     - 0.0
     - 0.0
-    - 0.55
+    - 0.8
     lower_start_height_enabled: true
-    start_height_policy: lower_active_reference_0p45_0p75m
+    start_height_policy: adjusted_lower_reference_0p70_0p95m
     height_variation_enabled: true
-    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_policy: training_1p2s_after_adjusted_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false
-    base_z_m: 0.55
-    sampled_start_height_m: 0.55
+    base_z_m: 0.8
+    sampled_start_height_m: 0.8
 llm:
   provider: openai_compatible
   api_base: http://127.0.0.1:18080/v1

@@ -33,19 +33,19 @@ task_distribution:
     start:
     - 0.0
     - 0.0
-    - 0.55
+    - 0.8
     end:
     - 0.65
     - 0.0
-    - 0.55
+    - 0.8
     lower_start_height_enabled: true
-    start_height_policy: lower_active_reference_0p45_0p75m
+    start_height_policy: adjusted_lower_reference_0p70_0p95m
     height_variation_enabled: true
-    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_policy: training_1p2s_after_adjusted_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false
-    base_z_m: 0.55
-    sampled_start_height_m: 0.55
+    base_z_m: 0.8
+    sampled_start_height_m: 0.8
   family_weights:
     triangle: 1.0
   variations:
@@ -56,8 +56,8 @@ task_distribution:
       - 0.32
       - 0.58
       z_range_m:
-      - 0.45
-      - 0.75
+      - 0.7
+      - 0.95
       duration_range_sec:
       - 8.0
       - 12.0
@@ -68,30 +68,30 @@ task_distribution:
       - 0.75
       - 1.1
       base_z_range_m:
-      - 0.45
-      - 0.75
+      - 0.7
+      - 0.95
   metadata:
     lower_start_height_enabled: true
-    start_height_policy: lower_active_reference_0p45_0p75m
+    start_height_policy: adjusted_lower_reference_0p70_0p95m
     base_z_range_m:
-    - 0.45
-    - 0.75
+    - 0.7
+    - 0.95
     base_z_offset_range_m:
-    - -0.55
-    - -0.25
+    - -0.3
+    - -0.05
     height_variation_enabled: true
-    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_policy: training_1p2s_after_adjusted_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false
 lower_start_height_enabled: true
-start_height_policy: lower_active_reference_0p45_0p75m
+start_height_policy: adjusted_lower_reference_0p70_0p95m
 base_z_range_m:
-- 0.45
-- 0.75
+- 0.7
+- 0.95
 base_z_offset_range_m:
-- -0.55
-- -0.25
+- -0.3
+- -0.05
 height_variation_enabled: true
-start_hold_policy: training_1p2s_after_lower_reference
+start_hold_policy: training_1p2s_after_adjusted_lower_reference
 start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
 tracking_reward_starts_after_start_hold: false

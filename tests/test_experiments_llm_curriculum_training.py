@@ -35,7 +35,7 @@ EXPECTED_LLM_BUDGET_PROFILES = {
 }
 EXPECTED_LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recovery": 0.65, "extend": 0.8}
 EXPECTED_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml")
-EXPECTED_BOOTSTRAP_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.45, 0.75]}
+EXPECTED_BOOTSTRAP_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 0.95]}
 BUDGET_TEST_STAGE_COUNT = 4
 BUDGET_TEST_CAP = 110
 BUDGET_TEST_STAGE_BUDGETS = [30, 40, 20, 20]
@@ -882,3 +882,74 @@ def test_llm_context_summary_uses_trends_and_diagnostic_guidance() -> None:
     assert summary["skill_gap_counts"] == {"speed_control": 1, "altitude_control": 1}
     assert summary["latest_curriculum_feedback_summary"] is None
     assert guidance["accepted_concrete_tasks_are_materialized_as_bounded_distributions"] is True
+
+
+def test_context_overflow_fallback_prefers_focused_distribution_before_broad() -> None:
+    """Verify context-overflow fallback uses skill gaps and avoids early broad defaults."""
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_context_fallback_unit",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
+            "seed": 3,
+            "wandb_mode": "disabled",
+            "max_stages": 5,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "proposal_fallback": {
+                "enabled": True,
+                "task_distribution_id": "tracking_medium",
+                "default_stage_budget_profile": "short",
+                "ready_stage_budget_profile": "normal",
+            },
+            "llm": {"provider": "mock", "model": "mock", "mock_responses": ["{}"]},
+        }
+    )
+
+    fallback = llm_curriculum_training._fallback_proposal_from_failure(  # noqa: SLF001
+        settings=settings,
+        stage_index=2,
+        metrics_summary={"curriculum_primary_skill_gaps": ["altitude_control"], "failure_overall_status": "needs_recovery"},
+        failure_reason="request exceeds the available context size",
+        previous_stage_task_shape="line",
+        context_overflow=True,
+    )
+
+    assert fallback["task"]["task_distribution_id"] == "vertical_up_down_bootstrap"
+    assert fallback["task"]["task_distribution_id"] != "tracking_small"
+    assert fallback["task"]["task_distribution_id"] != "tracking_medium"
+    assert fallback["llm_request_failed_due_to_context_size"] is True
+    assert fallback["llm_context_fallback_used"] is True
+
+
+def test_context_overflow_fallback_avoids_immediate_duplicate_focused_family() -> None:
+    """Verify context-overflow fallback skips focused candidates that duplicate the previous stage."""
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_context_duplicate_unit",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
+            "seed": 4,
+            "wandb_mode": "disabled",
+            "max_stages": 5,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "proposal_fallback": {
+                "enabled": True,
+                "task_distribution_id": "tracking_medium",
+                "default_stage_budget_profile": "short",
+                "ready_stage_budget_profile": "normal",
+            },
+            "llm": {"provider": "mock", "model": "mock", "mock_responses": ["{}"]},
+        }
+    )
+
+    fallback = llm_curriculum_training._fallback_proposal_from_failure(  # noqa: SLF001
+        settings=settings,
+        stage_index=3,
+        metrics_summary={"curriculum_primary_skill_gaps": ["altitude_control"]},
+        failure_reason="request exceeds the available context size",
+        previous_stage_task_shape="vertical",
+        context_overflow=True,
+    )
+
+    assert fallback["task"]["task_distribution_id"] == "angled_vertical_bootstrap"
+    assert fallback["task"]["task_distribution_id"] != "tracking_medium"
