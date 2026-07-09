@@ -25,7 +25,7 @@ The core research question is:
 The animation below shows a qualitative hard-scenario rollout of a trained LLM-curriculum policy. It is intended as a visual showcase and stress-test, not as the main quantitative evaluation.
 
 <p align="center">
-  <img src=""
+  <img src="docs/media/hard_scenario_llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0_scenario_rollout.gif"
        alt="Hard scenario rollout of an LLM-curriculum drone policy"
        width="720">
 </p>
