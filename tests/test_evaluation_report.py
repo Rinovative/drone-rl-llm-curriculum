@@ -67,7 +67,7 @@ def test_real_experiment_matrix_loads_expected_submission_rows() -> None:
     """Verify the active planned experiment matrix still has the expected report shape."""
     rows = evaluation.report.load_experiment_matrix()
 
-    assert len(rows) == 18
+    assert len(rows) == 20
     assert {row["method"] for row in rows} == {"Direct PPO", "Manual curriculum", "LLM curriculum"}
     assert {row["action_interface"] for row in rows} == {"pid_position", "direct_rpm"}
     assert "direct_ppo_pid_dynprev_m-taskdist_medium_seed0" in evaluation.report.expected_run_names(rows)

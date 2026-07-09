@@ -15,6 +15,8 @@ experiment_kind() {
     direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0) echo "direct_ppo" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0) echo "direct_ppo" ;;
     direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0) echo "direct_ppo" ;;
+    direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0) echo "direct_ppo" ;;
+    direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0) echo "direct_ppo" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0) echo "direct_ppo" ;;
     direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0) echo "direct_ppo" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0) echo "direct_ppo" ;;
@@ -39,6 +41,8 @@ experiment_config() {
     direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0) echo "configs/training/ppo_tracking_directrpm_dynprev_net256_m-taskdist_medium.yaml" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0) echo "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium_low_lr.yaml" ;;
     direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0) echo "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium_low_lr.yaml" ;;
+    direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0) echo "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium_gamma095.yaml" ;;
+    direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0) echo "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium_gamma095.yaml" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0) echo "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium_ent005.yaml" ;;
     direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0) echo "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium_ent005.yaml" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0) echo "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium_clip010.yaml" ;;
@@ -74,6 +78,8 @@ experiment_priority() {
     direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0) echo "must-have" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0) echo "must-have" ;;
     direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0) echo "must-have" ;;
+    direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0) echo "must-have" ;;
+    direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0) echo "must-have" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0) echo "must-have" ;;
     direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0) echo "must-have" ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0) echo "must-have" ;;
@@ -98,6 +104,8 @@ experiment_notes() {
     direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0) echo "Direct-RPM dynprev tracking-medium net256 architecture comparison." ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0) echo "PID dynprev tracking-medium low learning-rate PPO profile, net128 default." ;;
     direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0) echo "Direct-RPM dynprev tracking-medium low learning-rate PPO profile, net128 default." ;;
+    direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0) echo "PID dynprev tracking-medium gamma 0.95 PPO profile, net128 default." ;;
+    direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0) echo "Direct-RPM dynprev tracking-medium gamma 0.95 PPO profile, net128 default." ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0) echo "PID dynprev tracking-medium entropy 0.005 PPO profile, net128 default." ;;
     direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0) echo "Direct-RPM dynprev tracking-medium entropy 0.005 PPO profile, net128 default." ;;
     direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0) echo "PID dynprev tracking-medium clip range 0.10 PPO profile, net128 default." ;;
@@ -114,8 +122,8 @@ lane_experiments() {
     2) echo "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_basic_show_seed0" ;;
     3) echo "llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_seed0" ;;
     4) echo "curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_seed0" ;;
-    5) echo "direct_ppo_pid_dynprev_net256_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0" ;;
-    6) echo "direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_clip010_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_targetkl015_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_targetkl015_seed0" ;;
+    5) echo "direct_ppo_pid_dynprev_net256_m-taskdist_medium_seed0 direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0" ;;
+    6) echo "direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_clip010_seed0 direct_ppo_pid_dynprev_m-taskdist_medium_targetkl015_seed0 direct_ppo_directrpm_dynprev_m-taskdist_medium_targetkl015_seed0" ;;
     *) return 1 ;;
   esac
 }

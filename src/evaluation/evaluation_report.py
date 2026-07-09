@@ -415,6 +415,8 @@ def infer_ppo_variant(run_name: str) -> str:
         return "net256"
     if "low_lr" in run_name:
         return "low_lr"
+    if "gamma095" in run_name:
+        return "gamma_0.95"
     if "ent005" in run_name:
         return "ent_coef_0.005"
     if "clip010" in run_name:

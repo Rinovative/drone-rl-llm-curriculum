@@ -64,6 +64,7 @@ _TIMESTEPS_PER_MILLION_LABEL = 1_000_000
 _MIN_TIMESTEPS_FOR_COMPACT_THOUSAND_LABEL = 10_000
 _ENT005_COEFFICIENT = 0.005
 _LOW_LR_LEARNING_RATE = 0.0001
+_GAMMA095_VALUE = 0.95
 _CLIP010_RANGE = 0.1
 _TARGETKL015_VALUE = 0.015
 VEC_MONITOR_ENABLED = True
@@ -1806,6 +1807,8 @@ def _ppo_profile(settings: PPOTrackingSmokeSettings) -> str:
         return "ent005"
     if settings.ppo_config.learning_rate == _LOW_LR_LEARNING_RATE:
         return "low_lr"
+    if settings.ppo_config.gamma == _GAMMA095_VALUE:
+        return "gamma095"
     return "default"
 
 

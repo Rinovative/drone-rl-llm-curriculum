@@ -401,8 +401,10 @@ def test_task_distribution_training_configs_load() -> None:
     for config_path in (
         "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
         "configs/training/ppo_tracking_pid_dynprev_net256_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium_gamma095.yaml",
         "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium.yaml",
         "configs/training/ppo_tracking_directrpm_dynprev_net256_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium_gamma095.yaml",
     ):
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)
         assert settings.task_distribution_settings is not None

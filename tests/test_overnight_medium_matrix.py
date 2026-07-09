@@ -19,12 +19,15 @@ from src.experiments.rendering import experiments_rendering_scenario as scenario
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 MATRIX_SCRIPT = Path("scripts/experiment_matrix.sh")
+MATRIX_TSV = Path("docs/experiments/overnight_lane_assignment.tsv")
 MANUAL_CURRICULUM_UNIT_COUNT = 5
 LLM_CURRICULUM_STAGE_COUNT = 10
 LLM_CURRICULUM_UNIT_COUNT = 5
 REFERENCE_MEDIUM_TIMESTEPS = 500000
 DIRECT_RPM_MIN_RELAXED_RECOVERY_STEPS = 20
 DEFAULT_PPO_LEARNING_RATE = 0.0003
+DEFAULT_PPO_GAMMA = 0.99
+GAMMA095_PPO_GAMMA = 0.95
 LOW_LR_PPO_LEARNING_RATE = 0.0001
 DEFAULT_PPO_ENT_COEF = 0.001
 ENT005_PPO_ENT_COEF = 0.005
@@ -65,7 +68,7 @@ LLM_BUDGET_PROFILE_TIMESTEPS = {
     "extend": 400000,
 }
 LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recovery": 0.65, "extend": 0.8}
-FINAL_DIRECT_PPO_COUNT = 14
+FINAL_DIRECT_PPO_COUNT = 16
 BASIC_TRAINING_SHOW_DIRECT_PPO_IDS = {
     "direct_ppo_pid_dynprev_basic_show_seed0",
     "direct_ppo_directrpm_dynprev_basic_show_seed0",
@@ -80,6 +83,8 @@ EXPECTED_EXPERIMENT_IDS = {
     "direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0",
+    "direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0",
@@ -181,10 +186,12 @@ def _assert_manual_medium_curriculum_stage_distributions(settings: manual_traini
 
 
 def test_lane_assignment_contains_exact_approved_matrix() -> None:
-    """Verify the lane TSV includes exactly the approved 18 experiments."""
+    """Verify the lane matrix includes exactly the approved 20 experiments."""
     rows = _assignment_rows()
 
     assert MATRIX_SCRIPT.is_file()
+    assert MATRIX_TSV.is_file()
+    assert evaluation.report.load_experiment_matrix(MATRIX_TSV) == rows
     assert {row["experiment_id"] for row in rows} == EXPECTED_EXPERIMENT_IDS
     assert {row["lane"] for row in rows} == {1, 2, 3, 4, 5, 6}
     assert all("final" not in row["config_path"] for row in rows)
@@ -199,6 +206,7 @@ def test_final_direct_ppo_variants_are_symmetric_and_minimal() -> None:
         "m-taskdist_medium",
         "net256_m-taskdist_medium",
         "m-taskdist_medium_low_lr",
+        "m-taskdist_medium_gamma095",
         "m-taskdist_medium_ent005",
         "m-taskdist_medium_clip010",
         "m-taskdist_medium_targetkl015",
@@ -212,7 +220,7 @@ def test_final_direct_ppo_variants_are_symmetric_and_minimal() -> None:
         assert f"direct_ppo_pid_dynprev_{suffix}_seed0" in direct_ids
         assert f"direct_ppo_directrpm_dynprev_{suffix}_seed0" in direct_ids
 
-    profile_suffixes = {"low_lr", "ent005", "clip010", "targetkl015"}
+    profile_suffixes = {"low_lr", "gamma095", "ent005", "clip010", "targetkl015"}
     for profile in profile_suffixes:
         assert f"direct_ppo_pid_dynprev_m-taskdist_medium_{profile}_seed0" in direct_ids
         assert f"direct_ppo_directrpm_dynprev_m-taskdist_medium_{profile}_seed0" in direct_ids
@@ -225,7 +233,41 @@ def test_lane_unit_counts_are_balanced() -> None:
         lane = int(row["lane"])
         totals[lane] = totals.get(lane, 0) + int(row["unit_count"])
 
-    assert totals == {1: 6, 2: 6, 3: 6, 4: 6, 5: 5, 6: 5}
+    assert totals == {1: 6, 2: 6, 3: 6, 4: 6, 5: 6, 6: 6}
+
+
+def _assert_direct_ppo_profile(settings: ppo_tracking.PPOTrackingSmokeSettings, experiment_id: str) -> None:
+    """Verify scheduled PPO variants change only their intended hyperparameter."""
+    if experiment_id.endswith("_low_lr_seed0"):
+        assert settings.ppo_config.learning_rate == LOW_LR_PPO_LEARNING_RATE
+        assert settings.ppo_config.gamma == DEFAULT_PPO_GAMMA
+        assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
+        assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
+        assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
+    elif experiment_id.endswith("_gamma095_seed0"):
+        assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
+        assert settings.ppo_config.gamma == GAMMA095_PPO_GAMMA
+        assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
+        assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
+        assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
+    elif experiment_id.endswith("_ent005_seed0"):
+        assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
+        assert settings.ppo_config.gamma == DEFAULT_PPO_GAMMA
+        assert settings.ppo_config.ent_coef == ENT005_PPO_ENT_COEF
+        assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
+        assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
+    elif experiment_id.endswith("_clip010_seed0"):
+        assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
+        assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
+        assert settings.ppo_config.gamma == DEFAULT_PPO_GAMMA
+        assert settings.ppo_config.clip_range == CLIP010_PPO_CLIP_RANGE
+        assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
+    elif experiment_id.endswith("_targetkl015_seed0"):
+        assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
+        assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
+        assert settings.ppo_config.gamma == DEFAULT_PPO_GAMMA
+        assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
+        assert settings.ppo_config.target_kl == TARGETKL015_PPO_TARGET_KL
 
 
 def test_all_listed_configs_exist_and_match_run_names() -> None:
@@ -248,30 +290,12 @@ def test_all_listed_configs_exist_and_match_run_names() -> None:
             assert settings.termination_limits.terminate_on_base_truncation is False
             assert settings.ppo_config.policy_kwargs is not None
             net_arch = settings.ppo_config.policy_kwargs["net_arch"]
-            if "net256" in row["experiment_id"]:
+            experiment_id = str(row["experiment_id"])
+            if "net256" in experiment_id:
                 assert net_arch == {"pi": [256, 256], "vf": [256, 256]}
             else:
                 assert net_arch == {"pi": [128, 128], "vf": [128, 128]}
-            if row["experiment_id"].endswith("_low_lr_seed0"):
-                assert settings.ppo_config.learning_rate == LOW_LR_PPO_LEARNING_RATE
-                assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
-                assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
-                assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
-            elif row["experiment_id"].endswith("_ent005_seed0"):
-                assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
-                assert settings.ppo_config.ent_coef == ENT005_PPO_ENT_COEF
-                assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
-                assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
-            elif row["experiment_id"].endswith("_clip010_seed0"):
-                assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
-                assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
-                assert settings.ppo_config.clip_range == CLIP010_PPO_CLIP_RANGE
-                assert settings.ppo_config.target_kl == DEFAULT_PPO_TARGET_KL
-            elif row["experiment_id"].endswith("_targetkl015_seed0"):
-                assert settings.ppo_config.learning_rate == DEFAULT_PPO_LEARNING_RATE
-                assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
-                assert settings.ppo_config.clip_range == DEFAULT_PPO_CLIP_RANGE
-                assert settings.ppo_config.target_kl == TARGETKL015_PPO_TARGET_KL
+            _assert_direct_ppo_profile(settings, experiment_id)
         elif row["kind"] == "manual_curriculum":
             settings = manual_training.load_manual_curriculum_settings(config_path)
             manual_training.validate_manual_curriculum(settings)
