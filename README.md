@@ -264,9 +264,6 @@ This project is released under the [MIT License](LICENSE).
 
 
 ## 🎞️ Evaluation Rollout Gallery
-
-The following GIFs show deterministic policy rollouts on fixed generalization tasks. They are qualitative artifacts in addition to the quantitative tracking-error metrics.
-
 <details>
 <summary><strong>Stabilization and altitude tasks</strong></summary>
 
