@@ -1,6 +1,6 @@
 evaluation_name: generalization
 seed: 0
-eval_steps: 360
+eval_steps: 420
 
 render:
   enabled: true
@@ -14,34 +14,17 @@ traces:
   enabled: true
 
 tasks:
-  - task_name: polyline_basic
-    task_shape: polyline
+  - task_name: hover_center
+    task_shape: hover_stabilization
     task:
       task_type: trajectory
-      shape: polyline
-      duration_sec: 6.0
+      shape: hover_stabilization
+      duration_sec: 3.0
       sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 1.0
-      exclude_start_hold_from_tracking_metrics: true
-      points:
-        - [0.0, 0.0, 1.0]
-        - [0.4, 0.0, 1.0]
-        - [0.4, 0.35, 1.0]
-  - task_name: circle_basic
-    task_shape: circle
-    task:
-      task_type: trajectory
-      shape: circle
-      duration_sec: 8.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 1.0
-      exclude_start_hold_from_tracking_metrics: true
-      radius: 0.5
-      height: 1.0
-      center: [0.0, 0.0]
-      clockwise: false
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
+      position: [0.0, 0.0, 1.0]
   - task_name: vertical_basic
     task_shape: vertical
     task:
@@ -52,20 +35,125 @@ tasks:
       start_hold_enabled: true
       start_hold_sec: 1.0
       exclude_start_hold_from_tracking_metrics: true
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
       xy: [0.25, -0.25]
       start_height: 0.8
       end_height: 1.4
-  - task_name: polyline_offset
+  - task_name: line_basic
+    task_shape: line
+    task:
+      task_type: trajectory
+      shape: line
+      duration_sec: 3.5
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
+      start: [0.0, 0.0, 1.0]
+      end: [0.65, 0.0, 1.0]
+  - task_name: diagonal_line_basic
+    task_shape: line
+    task:
+      task_type: trajectory
+      shape: line
+      duration_sec: 4.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
+      start: [0.0, 0.0, 1.0]
+      end: [0.55, 0.35, 1.1]
+  - task_name: short_line_start_hold
+    task_shape: start_hold_then_short_line
+    task:
+      task_type: trajectory
+      shape: start_hold_then_short_line
+      hold_duration_sec: 1.0
+      move_duration_sec: 3.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
+      start: [0.0, 0.0, 1.0]
+      end: [0.35, 0.0, 1.0]
+  - task_name: polyline_l_basic
     task_shape: polyline
     task:
       task_type: trajectory
       shape: polyline
+      duration_sec: 6.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
+      points:
+        - [0.0, 0.0, 1.0]
+        - [0.4, 0.0, 1.0]
+        - [0.4, 0.35, 1.0]
+  - task_name: circle_basic
+    task_shape: circle
+    task:
+      task_type: trajectory
+      shape: circle
       duration_sec: 7.0
       sample_rate_hz: 10.0
       start_hold_enabled: true
       start_hold_sec: 1.0
       exclude_start_hold_from_tracking_metrics: true
-      points:
-        - [0.0, 0.0, 1.0]
-        - [0.35, -0.2, 1.0]
-        - [0.7, 0.2, 1.1]
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
+      radius: 0.25
+      height: 1.0
+      center: [0.0, 0.0]
+      clockwise: false
+  - task_name: ellipse_basic
+    task_shape: ellipse
+    task:
+      task_type: trajectory
+      shape: ellipse
+      duration_sec: 8.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
+      radius_x: 0.35
+      radius_y: 0.2
+      height: 1.0
+      center: [0.0, 0.0]
+      clockwise: false
+  - task_name: figure_eight_basic
+    task_shape: figure_eight
+    task:
+      task_type: trajectory
+      shape: figure_eight
+      duration_sec: 10.0
+      sample_rate_hz: 10.0
+      start_hold_enabled: true
+      start_hold_sec: 1.0
+      exclude_start_hold_from_tracking_metrics: true
+      final_hold_enabled: true
+      final_hold_sec: 1.0
+      exclude_final_hold_from_tracking_metrics: true
+      radius_x: 0.3
+      radius_y: 0.18
+      height: 1.0
+      center: [0.0, 0.0]
+      clockwise: false

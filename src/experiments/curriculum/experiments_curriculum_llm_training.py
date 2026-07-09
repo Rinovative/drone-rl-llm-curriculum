@@ -25,6 +25,7 @@ Boundaries:
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -47,6 +48,8 @@ DEFAULT_LLM_STAGE_BUDGET_PROFILE = "normal"
 DEFAULT_PROPOSAL_FALLBACK_DISTRIBUTION_ID = "tracking_medium"
 DEFAULT_PROPOSAL_FALLBACK_PROFILE = "short"
 DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE = "normal"
+GENERATED_TASK_DISTRIBUTION_STRENGTH = 0.35
+RESOLVED_DISTRIBUTION_MAX_ATTEMPTS = 16
 
 
 @dataclass(frozen=True)
@@ -200,6 +203,18 @@ class LLMCurriculumStage:
         Resolved budget profile after fallback or clipping.
     budget_rationale
         Optional LLM rationale for the budget profile.
+    previous_stage_task_shape
+        Immediate previous accepted task shape used for duplicate prevention.
+    requested_stage_task_shape
+        Shape or single-family proxy requested by the accepted proposal.
+    accepted_stage_task_shape
+        Final concrete stage shape accepted after deterministic resolution.
+    duplicate_task_rejected
+        Whether this stage records a duplicate-repair path before acceptance.
+    duplicate_task_repair_reason
+        Human-readable duplicate repair reason, when one occurred.
+    fallback_task_shape
+        Concrete shape selected by fallback resolution, when fallback was used.
     proposal_type
         Accepted proposal type, either a concrete task or task distribution.
     original_proposal
@@ -245,6 +260,12 @@ class LLMCurriculumStage:
     requested_stage_budget_profile: str | None = None
     selected_stage_budget_profile: str | None = None
     budget_rationale: str | None = None
+    previous_stage_task_shape: str | None = None
+    requested_stage_task_shape: str | None = None
+    accepted_stage_task_shape: str | None = None
+    duplicate_task_rejected: bool = False
+    duplicate_task_repair_reason: str | None = None
+    fallback_task_shape: str | None = None
     proposal_type: str = llm.task_schema.PROPOSAL_KIND_TASK
     original_proposal: dict[str, Any] | None = None
     task_distribution_reference: dict[str, Any] | None = None
@@ -294,6 +315,9 @@ class LLMCurriculumStage:
             raise ValueError(message)
         if self.proposal_fallback_used and not self.proposal_failure_reason:
             message = "fallback stages must include proposal_failure_reason"
+            raise ValueError(message)
+        if self.accepted_stage_task_shape is not None and self.accepted_stage_task_shape != self.task_shape:
+            message = "accepted_stage_task_shape must match task_shape when provided"
             raise ValueError(message)
         if self.cumulative_llm_budget_timesteps < 0:
             message = "cumulative_llm_budget_timesteps must be nonnegative"
@@ -613,6 +637,7 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
 
     while len(stage_entries) < settings.max_stages:
         next_stage_index = len(stage_entries) + 1
+        previous_stage_task_shape = _previous_accepted_stage_shape(recent_accepted_tasks)
         context = llm.curriculum.ProposalContext(
             curriculum_name=settings.curriculum_name,
             stage_index=next_stage_index,
@@ -639,6 +664,7 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 stage_index=next_stage_index,
                 metrics_summary=latest_metrics_summary,
                 failure_reason=str(exc),
+                previous_stage_task_shape=previous_stage_task_shape,
             )
             stage = _stage_from_proposal(
                 settings=settings,
@@ -649,6 +675,7 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 budget_rationale=fallback_proposal["budget_rationale"],
                 proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
                 original_proposal=fallback_proposal["original_proposal"],
+                previous_stage_task_shape=previous_stage_task_shape,
                 proposal_fallback_used=True,
                 proposal_failure_reason=str(exc),
             )
@@ -673,6 +700,7 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 budget_rationale=proposal.budget_rationale,
                 proposal_type=proposal.proposal_type,
                 original_proposal=proposal.original_proposal,
+                previous_stage_task_shape=previous_stage_task_shape,
                 proposal_fallback_used=False,
                 proposal_failure_reason=None,
             )
@@ -902,6 +930,9 @@ def _stage_summary_entry(
     }
     for key in manual_curriculum.SUMMARY_METRIC_KEYS:
         entry[key] = metrics.get(key)
+    entry["task_distribution_config_path"] = None if stage.task_distribution_config_path is None else str(stage.task_distribution_config_path)
+    entry["task_distribution_id"] = stage.task_distribution_id
+    entry["task_distribution_reference"] = stage.task_distribution_reference
     return entry
 
 
@@ -1323,6 +1354,8 @@ def _stage_from_mapping(raw_stage: Mapping[str, Any], default_total_timesteps: i
         budget_rationale=str(raw_stage[llm.task_schema.BUDGET_RATIONALE_FIELD])
         if raw_stage.get(llm.task_schema.BUDGET_RATIONALE_FIELD) is not None
         else None,
+        requested_stage_task_shape=task_shape,
+        accepted_stage_task_shape=task_shape,
         bootstrap_stage_source=str(raw_stage["bootstrap_stage_source"]) if raw_stage.get("bootstrap_stage_source") is not None else None,
         bootstrap_task_shape=str(raw_stage["bootstrap_task_shape"]) if raw_stage.get("bootstrap_task_shape") is not None else None,
         bootstrap_target_sampling_bounds=_optional_json_mapping(raw_stage.get("bootstrap_target_sampling_bounds")),
@@ -1338,6 +1371,7 @@ def _stage_from_proposal(
     budget_rationale: str | None,
     proposal_type: str | None,
     original_proposal: dict[str, Any] | None,
+    previous_stage_task_shape: str | None,
     proposal_fallback_used: bool,
     proposal_failure_reason: str | None,
 ) -> LLMCurriculumStage:
@@ -1345,7 +1379,12 @@ def _stage_from_proposal(
     active_proposal_type = proposal_type or str(task.get(llm.task_schema.PROPOSAL_KIND_FIELD, llm.task_schema.PROPOSAL_KIND_TASK))
     original = _json_mapping_copy(original_proposal) or dict(task)
     if active_proposal_type == llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION:
-        resolved = _resolve_task_distribution_stage_task(settings=settings, task=task, stage_index=stage_index)
+        resolved = _resolve_task_distribution_stage_task(
+            settings=settings,
+            task=task,
+            stage_index=stage_index,
+            previous_stage_task_shape=previous_stage_task_shape,
+        )
         stage_name = _stage_display_name(
             resolved_task=resolved["resolved_task"],
             task_distribution_metadata=resolved["resolved_task_sample_metadata"],
@@ -1362,6 +1401,10 @@ def _stage_from_proposal(
             task_distribution_id=resolved["task_distribution_id"],
             requested_stage_budget_profile=stage_budget_profile,
             budget_rationale=budget_rationale,
+            previous_stage_task_shape=previous_stage_task_shape,
+            requested_stage_task_shape=_proposal_requested_stage_task_shape(task),
+            accepted_stage_task_shape=resolved["resolved_task_shape"],
+            fallback_task_shape=resolved["resolved_task_shape"] if proposal_fallback_used else None,
             proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
             original_proposal=original,
             task_distribution_reference=resolved["task_distribution_reference"],
@@ -1374,6 +1417,12 @@ def _stage_from_proposal(
     task_payload = dict(task)
     task_shape = str(task_payload.get(validation.contracts.FIELD_SHAPE) or "")
     stage_name = _stage_display_name(resolved_task=task_payload, task_distribution_metadata=None, fallback=task_shape)
+    generated_distribution = _materialize_concrete_task_distribution(
+        settings=settings,
+        stage_index=stage_index,
+        stage_name=stage_name,
+        task=task_payload,
+    )
     return LLMCurriculumStage(
         stage_name=stage_name,
         task_shape=task_shape,
@@ -1381,12 +1430,19 @@ def _stage_from_proposal(
         total_timesteps=settings.stage_total_timesteps,
         eval_steps=settings.stage_eval_steps,
         task_reason=task_reason,
+        task_distribution_config_path=generated_distribution["task_distribution_config_path"],
+        task_distribution_id=generated_distribution["task_distribution_id"],
         requested_stage_budget_profile=stage_budget_profile,
         budget_rationale=budget_rationale,
+        previous_stage_task_shape=previous_stage_task_shape,
+        requested_stage_task_shape=task_shape,
+        accepted_stage_task_shape=task_shape,
         proposal_type=llm.task_schema.PROPOSAL_KIND_TASK,
         original_proposal=original,
+        task_distribution_reference=generated_distribution["task_distribution_reference"],
         resolved_task=dict(task_payload),
         resolved_task_shape=task_shape,
+        resolved_task_sample_metadata=generated_distribution["resolved_task_sample_metadata"],
         proposal_fallback_used=proposal_fallback_used,
         proposal_failure_reason=proposal_failure_reason,
     )
@@ -1397,6 +1453,7 @@ def _resolve_task_distribution_stage_task(
     settings: LLMCurriculumSettings,
     task: Mapping[str, Any],
     stage_index: int,
+    previous_stage_task_shape: str | None,
 ) -> dict[str, Any]:
     """Resolve a constrained distribution reference into one concrete valid stage task."""
     config_path = Path(str(task[llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD]))
@@ -1405,13 +1462,22 @@ def _resolve_task_distribution_stage_task(
     stage_seed = _stage_task_distribution_seed(settings=settings, distribution_settings=distribution_settings, stage_index=stage_index)
     sampler_settings = replace(distribution_settings, seed=stage_seed)
     sampler = envs.task_distribution.TaskDistributionSampler(sampler_settings, env_rank=0)
-    resolved_task = sampler.sample_task()
-    validation_result = validation.tasks.validate_task(resolved_task, limits=sampler_settings.validation_limits)
-    if not validation_result.is_valid:
-        details = "; ".join(validation_result.messages)
-        message = f"resolved task-distribution proposal {distribution_id!r} produced an invalid task: {details}"
+    duplicate_shapes: list[str] = []
+    for _ in range(RESOLVED_DISTRIBUTION_MAX_ATTEMPTS):
+        resolved_task = sampler.sample_task()
+        validation_result = validation.tasks.validate_task(resolved_task, limits=sampler_settings.validation_limits)
+        if not validation_result.is_valid:
+            details = "; ".join(validation_result.messages)
+            message = f"resolved task-distribution proposal {distribution_id!r} produced an invalid task: {details}"
+            raise ValueError(message)
+        resolved_task_shape = str(resolved_task.get(validation.contracts.FIELD_SHAPE) or "")
+        if not _is_consecutive_duplicate_stage_shape(previous_stage_task_shape, resolved_task_shape):
+            break
+        duplicate_shapes.append(resolved_task_shape)
+    else:
+        details = ", ".join(duplicate_shapes[-3:]) or str(previous_stage_task_shape)
+        message = f"resolved task-distribution proposal {distribution_id!r} only produced duplicate consecutive shape(s): {details}"
         raise ValueError(message)
-    resolved_task_shape = str(resolved_task.get(validation.contracts.FIELD_SHAPE) or "")
     return {
         "task_distribution_config_path": config_path,
         "task_distribution_id": distribution_id,
@@ -1423,6 +1489,248 @@ def _resolve_task_distribution_stage_task(
         "resolved_task_shape": resolved_task_shape,
         "resolved_task_sample_metadata": sampler.sample_metadata(),
     }
+
+
+def _materialize_concrete_task_distribution(
+    *,
+    settings: LLMCurriculumSettings,
+    stage_index: int,
+    stage_name: str,
+    task: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write a run-scoped bounded distribution config for one concrete LLM task."""
+    task_payload = dict(task)
+    curriculum_run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
+    config_dir = utils.artifacts.get_run_config_dir(curriculum_run_name)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    distribution_id = f"generated_stage{stage_index:02d}_{stage_name}_bounded"
+    config_path = config_dir / f"stage{stage_index:02d}_{stage_name}_task_distribution.yaml"
+    fixed_settings = envs.task_distribution.normalize_fixed_task_to_distribution(
+        task_payload,
+        seed=_stage_task_distribution_seed(
+            settings=settings,
+            distribution_settings=envs.task_distribution.normalize_fixed_task_to_distribution(task_payload),
+            stage_index=stage_index,
+        ),
+        name=distribution_id,
+        config_path=config_path,
+    )
+    family = next(iter(fixed_settings.family_weights))
+    payload = {
+        envs.task_distribution.DISTRIBUTION_CONFIG_KEY: {
+            "name": distribution_id,
+            "enabled": True,
+            "mode": envs.task_distribution.MODE_RANDOMIZED,
+            "seed": fixed_settings.seed,
+            "strength": GENERATED_TASK_DISTRIBUTION_STRENGTH,
+            "sample_on_reset": True,
+            "base_task": task_payload,
+            "family_weights": {family: 1.0},
+            "variations": {family: _bounded_variation_for_concrete_task(family=family, task=task_payload)},
+        }
+    }
+    config_path.write_text(_to_yaml(payload), encoding="utf-8")
+    distribution_settings = envs.task_distribution.load_task_distribution_settings(config_path)
+    return {
+        "task_distribution_config_path": config_path,
+        "task_distribution_id": distribution_id,
+        "task_distribution_reference": {
+            llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
+            llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: str(config_path),
+            "generated_from_concrete_task": True,
+        },
+        "resolved_task_sample_metadata": distribution_settings.to_metadata(),
+    }
+
+
+def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]) -> dict[str, Any]:
+    """Return conservative variation bounds around one validated concrete task."""
+    duration = _task_duration_sec(task)
+    variation: dict[str, Any] = {
+        "duration_range_sec": _positive_range(duration, max(0.5, duration * 0.2), lower=1.0, upper=20.0),
+        "final_hold_range_sec": [0.75, 1.0],
+    }
+    z_anchor = _task_z_anchor(task)
+    if z_anchor is not None:
+        variation["z_range_m"] = _bounded_range(z_anchor, 0.12, lower=0.3, upper=1.8)
+    if family == envs.task_distribution.FAMILY_HOVER:
+        variation.update({"xy_radius_m": 0.12})
+    elif family == envs.task_distribution.FAMILY_TAKEOFF:
+        start_height = float(task.get(validation.contracts.FIELD_START_HEIGHT, 0.4))
+        end_height = float(task.get(validation.contracts.FIELD_END_HEIGHT, z_anchor or 1.0))
+        variation.update(
+            {
+                "xy_radius_m": 0.08,
+                "start_z_range_m": _bounded_range(start_height, 0.08, lower=0.25, upper=1.6),
+                "z_range_m": _bounded_range(end_height, 0.12, lower=0.4, upper=1.8),
+            }
+        )
+    elif family in {envs.task_distribution.FAMILY_LINE, envs.task_distribution.FAMILY_START_HOLD_LINE}:
+        length = _task_line_length(task, default=0.4)
+        variation.update(
+            {
+                "start_xy_radius_m": 0.08,
+                "length_range_m": _positive_range(length, max(0.08, length * 0.25), lower=0.15, upper=0.9),
+                "heading_jitter_deg": 12.0,
+                "start_hold_range_sec": [0.75, 1.0],
+            }
+        )
+    elif family in {
+        envs.task_distribution.FAMILY_POLYLINE,
+        envs.task_distribution.FAMILY_L_SHAPE,
+        envs.task_distribution.FAMILY_RECTANGLE,
+        envs.task_distribution.FAMILY_SQUARE,
+    }:
+        length = _task_line_length(task, default=0.5)
+        variation.update(
+            {
+                "start_xy_radius_m": 0.08,
+                "length_range_m": _positive_range(length, max(0.1, length * 0.25), lower=0.2, upper=1.0),
+                "heading_jitter_deg": 15.0,
+            }
+        )
+    elif family == envs.task_distribution.FAMILY_CIRCLE:
+        radius = float(task.get(validation.contracts.FIELD_RADIUS, 0.3))
+        variation.update({"center_xy_radius_m": 0.06, "radius_range_m": _positive_range(radius, 0.06, lower=0.12, upper=0.6)})
+    elif family in {envs.task_distribution.FAMILY_ELLIPSE, envs.task_distribution.FAMILY_FIGURE_EIGHT}:
+        radius_x = float(task.get(validation.contracts.FIELD_RADIUS_X, 0.3))
+        radius_y = float(task.get(validation.contracts.FIELD_RADIUS_Y, 0.18))
+        variation.update(
+            {
+                "center_xy_radius_m": 0.06,
+                "radius_x_range_m": _positive_range(radius_x, 0.06, lower=0.12, upper=0.6),
+                "radius_y_range_m": _positive_range(radius_y, 0.04, lower=0.08, upper=0.45),
+            }
+        )
+    return variation
+
+
+def _task_duration_sec(task: Mapping[str, Any]) -> float:
+    """Return the representative duration for a task mapping."""
+    if validation.contracts.FIELD_DURATION_SEC in task:
+        return float(task[validation.contracts.FIELD_DURATION_SEC])
+    if validation.contracts.FIELD_MOVE_DURATION_SEC in task:
+        return float(task[validation.contracts.FIELD_MOVE_DURATION_SEC])
+    return 3.0
+
+
+def _task_z_anchor(task: Mapping[str, Any]) -> float | None:
+    """Return a representative task height for variation bounds."""
+    if validation.contracts.FIELD_POSITION in task:
+        return float(task[validation.contracts.FIELD_POSITION][2])
+    if validation.contracts.FIELD_START in task:
+        return float(task[validation.contracts.FIELD_START][2])
+    if validation.contracts.FIELD_POINTS in task:
+        return float(task[validation.contracts.FIELD_POINTS][0][2])
+    if validation.contracts.FIELD_END_HEIGHT in task:
+        return float(task[validation.contracts.FIELD_END_HEIGHT])
+    if validation.contracts.FIELD_HEIGHT in task:
+        return float(task[validation.contracts.FIELD_HEIGHT])
+    return None
+
+
+def _task_line_length(task: Mapping[str, Any], *, default: float) -> float:
+    """Return the XY distance between the representative start and end points."""
+    if validation.contracts.FIELD_START in task and validation.contracts.FIELD_END in task:
+        start = task[validation.contracts.FIELD_START]
+        end = task[validation.contracts.FIELD_END]
+    elif validation.contracts.FIELD_POINTS in task:
+        points = task[validation.contracts.FIELD_POINTS]
+        start = points[0]
+        end = points[-1]
+    else:
+        return float(default)
+    return max(float(default), math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1])))
+
+
+def _positive_range(value: float, radius: float, *, lower: float, upper: float) -> list[float]:
+    """Return a rounded positive numeric range around a value."""
+    return _bounded_range(value, radius, lower=lower, upper=upper)
+
+
+def _bounded_range(value: float, radius: float, *, lower: float, upper: float) -> list[float]:
+    """Return a rounded numeric range clipped to finite safety bounds."""
+    center = float(value)
+    low = max(float(lower), center - float(radius))
+    high = min(float(upper), center + float(radius))
+    high = max(high, low)
+    return [float(round(low, 6)), float(round(high, 6))]
+
+
+def _proposal_requested_stage_task_shape(task: Mapping[str, Any]) -> str | None:
+    """Return requested shape metadata for a proposal task or distribution reference."""
+    if task.get(llm.task_schema.PROPOSAL_KIND_FIELD) == llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION:
+        try:
+            distribution_settings = envs.task_distribution.load_task_distribution_settings(
+                str(task[llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD])
+            )
+        except (KeyError, OSError, TypeError, ValueError):
+            return str(task.get(llm.task_schema.TASK_DISTRIBUTION_ID_FIELD) or "task_distribution")
+        if len(distribution_settings.family_weights) == 1:
+            family = next(iter(distribution_settings.family_weights))
+            return _shape_from_distribution_family(family)
+        return str(task.get(llm.task_schema.TASK_DISTRIBUTION_ID_FIELD) or distribution_settings.name or "task_distribution")
+    shape = task.get(validation.contracts.FIELD_SHAPE)
+    return str(shape) if shape is not None else None
+
+
+def _shape_from_distribution_family(family: str) -> str:
+    """Return representative task shape for a task-distribution family."""
+    family_to_shape = {
+        envs.task_distribution.FAMILY_HOVER: validation.contracts.SHAPE_HOVER_STABILIZATION,
+        envs.task_distribution.FAMILY_TAKEOFF: validation.contracts.SHAPE_VERTICAL,
+        envs.task_distribution.FAMILY_LINE: validation.contracts.SHAPE_LINE,
+        envs.task_distribution.FAMILY_START_HOLD_LINE: validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
+        envs.task_distribution.FAMILY_POLYLINE: validation.contracts.SHAPE_POLYLINE,
+        envs.task_distribution.FAMILY_L_SHAPE: validation.contracts.SHAPE_POLYLINE,
+        envs.task_distribution.FAMILY_RECTANGLE: validation.contracts.SHAPE_POLYLINE,
+        envs.task_distribution.FAMILY_SQUARE: validation.contracts.SHAPE_POLYLINE,
+        envs.task_distribution.FAMILY_CIRCLE: validation.contracts.SHAPE_CIRCLE,
+        envs.task_distribution.FAMILY_ELLIPSE: validation.contracts.SHAPE_ELLIPSE,
+        envs.task_distribution.FAMILY_FIGURE_EIGHT: validation.contracts.SHAPE_FIGURE_EIGHT,
+    }
+    return family_to_shape.get(family, family)
+
+
+def _is_consecutive_duplicate_stage_shape(previous_shape: str | None, next_shape: str | None) -> bool:
+    """Return whether two stage shapes belong to the same duplicate-prevention family."""
+    if previous_shape is None or next_shape is None:
+        return False
+    return _canonical_stage_task_family(previous_shape) == _canonical_stage_task_family(next_shape)
+
+
+def _canonical_stage_task_family(shape: str) -> str:
+    """Return the duplicate-prevention family for a stage task shape."""
+    if shape in {
+        validation.contracts.SHAPE_HOVER,
+        validation.contracts.SHAPE_HOVER_STABILIZATION,
+        validation.contracts.SHAPE_NEARBY_TARGET_HOVER,
+    }:
+        return validation.contracts.SHAPE_HOVER_STABILIZATION
+    if shape in {
+        validation.contracts.SHAPE_LINE,
+        validation.contracts.SHAPE_SHORT_SLOW_LINE,
+        validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
+    }:
+        return validation.contracts.SHAPE_LINE
+    return shape
+
+
+def _previous_accepted_stage_shape(recent_accepted_tasks: Sequence[Mapping[str, Any]]) -> str | None:
+    """Return the most recent accepted concrete stage shape."""
+    if not recent_accepted_tasks:
+        return None
+    latest = dict(recent_accepted_tasks[-1])
+    for key in ("accepted_stage_task_shape", "resolved_task_shape", "task_shape"):
+        value = latest.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    task = latest.get("resolved_task") or latest.get("task")
+    if isinstance(task, Mapping):
+        shape = task.get(validation.contracts.FIELD_SHAPE)
+        if shape is not None and str(shape).strip():
+            return str(shape)
+    return None
 
 
 def _stage_task_distribution_seed(
@@ -1626,9 +1934,10 @@ def _fallback_proposal_from_failure(
     stage_index: int,
     metrics_summary: Mapping[str, Any],
     failure_reason: str,
+    previous_stage_task_shape: str | None,
 ) -> dict[str, Any]:
     """Build a deterministic safe proposal after exhausted LLM repair attempts."""
-    distribution_id = settings.proposal_fallback.task_distribution_id
+    distribution_id = _fallback_distribution_id(settings=settings, previous_stage_task_shape=previous_stage_task_shape)
     config_path = llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[distribution_id]
     stage_budget_profile = _fallback_stage_budget_profile(settings=settings, metrics_summary=metrics_summary)
     readiness = metrics_summary.get("curriculum_readiness_level")
@@ -1656,6 +1965,34 @@ def _fallback_proposal_from_failure(
         "original_proposal": original_proposal,
         "proposal_failure_reason": failure_reason,
     }
+
+
+def _fallback_distribution_id(*, settings: LLMCurriculumSettings, previous_stage_task_shape: str | None) -> str:
+    """Return a safe fallback distribution that avoids the immediate previous family when possible."""
+    configured_id = settings.proposal_fallback.task_distribution_id
+    if previous_stage_task_shape is None:
+        return configured_id
+    previous_family = _canonical_stage_task_family(previous_stage_task_shape)
+    candidate_ids = (
+        "short_line_bootstrap",
+        "vertical_bootstrap",
+        "polyline_bootstrap",
+        "hover_bootstrap",
+        configured_id,
+    )
+    for distribution_id in candidate_ids:
+        if distribution_id not in llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS:
+            continue
+        proposal_shape = _proposal_requested_stage_task_shape(
+            {
+                llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+                llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
+                llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[distribution_id],
+            }
+        )
+        if proposal_shape is None or _canonical_stage_task_family(proposal_shape) != previous_family:
+            return distribution_id
+    return configured_id
 
 
 def _fallback_stage_budget_profile(*, settings: LLMCurriculumSettings, metrics_summary: Mapping[str, Any]) -> str:
@@ -1784,6 +2121,12 @@ def _stage_proposal_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
         "resolved_task_sample_metadata": stage.resolved_task_sample_metadata,
         "proposal_fallback_used": stage.proposal_fallback_used,
         "proposal_failure_reason": stage.proposal_failure_reason,
+        "previous_stage_task_shape": stage.previous_stage_task_shape,
+        "requested_stage_task_shape": stage.requested_stage_task_shape,
+        "accepted_stage_task_shape": stage.accepted_stage_task_shape,
+        "duplicate_task_rejected": stage.duplicate_task_rejected,
+        "duplicate_task_repair_reason": stage.duplicate_task_repair_reason,
+        "fallback_task_shape": stage.fallback_task_shape,
     }
 
 
@@ -1877,6 +2220,12 @@ def _accepted_task_context(entry: Mapping[str, Any]) -> dict[str, Any]:
         "proposal_type": entry.get("proposal_type"),
         "task_distribution_reference": entry.get("task_distribution_reference"),
         "resolved_task_shape": entry.get("resolved_task_shape"),
+        "previous_stage_task_shape": entry.get("previous_stage_task_shape"),
+        "requested_stage_task_shape": entry.get("requested_stage_task_shape"),
+        "accepted_stage_task_shape": entry.get("accepted_stage_task_shape"),
+        "duplicate_task_rejected": entry.get("duplicate_task_rejected"),
+        "duplicate_task_repair_reason": entry.get("duplicate_task_repair_reason"),
+        "fallback_task_shape": entry.get("fallback_task_shape"),
         "proposal_fallback_used": entry.get("proposal_fallback_used"),
         "selected_stage_budget_profile": entry.get("selected_stage_budget_profile"),
         "stage_total_timesteps": entry.get("stage_total_timesteps"),
@@ -1938,6 +2287,12 @@ def _metrics_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_task_shape",
         "proposal_fallback_used",
         "proposal_failure_reason",
+        "previous_stage_task_shape",
+        "requested_stage_task_shape",
+        "accepted_stage_task_shape",
+        "duplicate_task_rejected",
+        "duplicate_task_repair_reason",
+        "fallback_task_shape",
         "task_distribution_mode",
         "task_distribution_strength",
         "selected_stage_budget_profile",
@@ -2030,6 +2385,12 @@ def _stage_proposal_metadata_keys() -> tuple[str, ...]:
         "resolved_task_sample_metadata",
         "proposal_fallback_used",
         "proposal_failure_reason",
+        "previous_stage_task_shape",
+        "requested_stage_task_shape",
+        "accepted_stage_task_shape",
+        "duplicate_task_rejected",
+        "duplicate_task_repair_reason",
+        "fallback_task_shape",
     )
 
 

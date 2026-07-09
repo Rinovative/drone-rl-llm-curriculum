@@ -60,6 +60,7 @@ EXPECTED_PPO_CONFIG = {
     "vf_coef": 0.5,
     "max_grad_norm": 0.5,
     "target_kl": 0.03,
+    "policy_kwargs": ppo_config.default_policy_kwargs(),
 }
 
 
@@ -280,7 +281,7 @@ def test_ppo_tracking_dynamics_smoke_config_loads() -> None:
     assert settings.action_interface == "pid_position"
     assert settings.include_dynamics_observation is True
     assert settings.include_previous_action is True
-    assert settings.ppo_config.policy_kwargs is None
+    assert settings.ppo_config.policy_kwargs == ppo_config.default_policy_kwargs()
     assert settings.wandb_mode == "disabled"
     assert settings.num_envs == 1
 
@@ -402,7 +403,7 @@ def test_direct_ppo_wandb_naming_uses_run_name_group_and_identity_tags() -> None
     assert "observation:dynamics" in wandb_settings.tags
     assert "observation:previous_action" in wandb_settings.tags
     assert "task_distribution:tracking_medium" in wandb_settings.tags
-    assert "net:default" in wandb_settings.tags
+    assert "net:net128_default" in wandb_settings.tags
     assert "ppo_profile:default" in wandb_settings.tags
     assert "seed:0" in wandb_settings.tags
 

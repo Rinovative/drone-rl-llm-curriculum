@@ -22,6 +22,7 @@ Boundaries:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -34,6 +35,7 @@ MIN_TRAJECTORY_SAMPLES = 2
 POSITION_ARRAY_NDIM = 2
 XYZ_DIMENSIONS = 3
 DEFAULT_START_HOLD_SEC = 1.0
+DEFAULT_FINAL_HOLD_SEC = 1.0
 START_HOLD_DEFAULT_SHAPES = (
     validation.contracts.SHAPE_CIRCLE,
     validation.contracts.SHAPE_ELLIPSE,
@@ -43,6 +45,9 @@ START_HOLD_DEFAULT_SHAPES = (
     validation.contracts.SHAPE_SHORT_SLOW_LINE,
     validation.contracts.SHAPE_VERTICAL,
 )
+FINAL_HOLD_DEFAULT_SHAPES = (*validation.contracts.SUPPORTED_TRAJECTORY_SHAPES, validation.contracts.SHAPE_BASIC_TRAINING_SHOW)
+BASIC_SHOW_FINAL_HOLD_SHAPE = "final_hold"
+BASIC_SHOW_CONTINUITY_TOLERANCE_M = 1.0e-6
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,16 @@ class ValidationResult:
         First reference row considered part of moving tracking.
     tracking_phase_start_time_sec
         Reference time in seconds for ``tracking_phase_start_step``.
+    final_hold_enabled
+        Whether a stationary final-hold phase is active for this task.
+    final_hold_sec
+        Effective final-hold duration in seconds after sample-grid alignment.
+    exclude_final_hold_from_tracking_metrics
+        Whether tracking-only metrics should omit final-hold samples.
+    tracking_phase_end_step
+        Exclusive reference row where moving tracking ends.
+    tracking_phase_end_time_sec
+        Reference time in seconds at the end of moving tracking.
 
     """
 
@@ -112,9 +127,14 @@ class ValidationResult:
     exclude_start_hold_from_tracking_metrics: bool = False
     tracking_phase_start_step: int = 0
     tracking_phase_start_time_sec: float = 0.0
+    final_hold_enabled: bool = False
+    final_hold_sec: float = 0.0
+    exclude_final_hold_from_tracking_metrics: bool = False
+    tracking_phase_end_step: int = 0
+    tracking_phase_end_time_sec: float = 0.0
 
 
-def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = None) -> ValidationResult:
+def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = None) -> ValidationResult:  # noqa: PLR0911
     """
     Validate a minimal trajectory task dictionary.
 
@@ -142,6 +162,8 @@ def validate_task(task: Mapping[str, Any], limits: ValidationLimits | None = Non
         validation.contracts.SHAPE_NEARBY_TARGET_HOVER,
     }:
         return _validate_built_task(_build_hover_trajectory(task), active_limits, task)
+    if shape == validation.contracts.SHAPE_BASIC_TRAINING_SHOW:
+        return _validate_built_task(_build_basic_training_show_trajectory(task), active_limits, task)
     if shape == validation.contracts.SHAPE_CIRCLE:
         return _validate_built_task(_build_circle_trajectory(task), active_limits, task)
     if shape == validation.contracts.SHAPE_ELLIPSE:
@@ -215,6 +237,7 @@ def _validate_built_task(
         return ValidationResult(is_valid=False, messages=build_messages)
     try:
         trajectory, start_hold_metadata = _apply_task_start_hold(task=task, trajectory=trajectory)
+        trajectory, final_hold_metadata = _apply_task_final_hold(task=task, trajectory=trajectory)
     except (TypeError, ValueError) as exc:
         return ValidationResult(is_valid=False, messages=(str(exc),))
     result = validate_trajectory(trajectory=trajectory, limits=limits)
@@ -227,7 +250,274 @@ def _validate_built_task(
         exclude_start_hold_from_tracking_metrics=bool(start_hold_metadata["exclude_start_hold_from_tracking_metrics"]),
         tracking_phase_start_step=int(start_hold_metadata["tracking_phase_start_step"]),
         tracking_phase_start_time_sec=float(start_hold_metadata["tracking_phase_start_time_sec"]),
+        final_hold_enabled=bool(final_hold_metadata["final_hold_enabled"]),
+        final_hold_sec=float(final_hold_metadata["final_hold_sec"]),
+        exclude_final_hold_from_tracking_metrics=bool(final_hold_metadata["exclude_final_hold_from_tracking_metrics"]),
+        tracking_phase_end_step=int(final_hold_metadata["tracking_phase_end_step"]),
+        tracking_phase_end_time_sec=float(final_hold_metadata["tracking_phase_end_time_sec"]),
     )
+
+
+def _build_basic_training_show_trajectory(
+    task: Mapping[str, Any],
+) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
+    """Build a continuous composed basic-training-show trajectory."""
+    try:
+        sample_rate_hz = _require_float(task, validation.contracts.FIELD_SAMPLE_RATE_HZ)
+        segments = _require_show_segments(task)
+        combined_times: list[np.ndarray] = []
+        combined_positions: list[np.ndarray] = []
+        previous_end: np.ndarray | None = None
+        current_time_end = 0.0
+        built_segment_count = 0
+        for segment_index, segment in enumerate(segments):
+            shape = _show_segment_shape(segment)
+            if shape == BASIC_SHOW_FINAL_HOLD_SHAPE:
+                if segment_index != len(segments) - 1:
+                    _raise_basic_show_final_hold_not_last()
+                _validate_basic_show_final_hold_segment(segment=segment, previous_end=previous_end)
+                continue
+
+            trajectory = _build_basic_show_segment(segment=segment, sample_rate_hz=sample_rate_hz)
+            local_times = np.asarray(trajectory.times, dtype=float) - float(trajectory.times[0])
+            local_positions = np.asarray(trajectory.positions, dtype=float)
+            if previous_end is not None:
+                gap = float(np.linalg.norm(local_positions[0] - previous_end))
+                if gap > BASIC_SHOW_CONTINUITY_TOLERANCE_M:
+                    _raise_basic_show_discontinuity(segment_index=segment_index, gap=gap)
+
+            adjusted_times = _basic_show_adjusted_times(
+                local_times=local_times,
+                current_time_end=current_time_end,
+                is_first_segment=built_segment_count == 0,
+            )
+            combined_times.append(adjusted_times)
+            combined_positions.append(local_positions)
+            previous_end = np.array(local_positions[-1], dtype=float, copy=True)
+            current_time_end = float(adjusted_times[-1])
+            built_segment_count += 1
+
+        if not combined_times:
+            _raise_basic_show_no_motion_segments()
+        return (
+            trajectories.primitives.Trajectory(
+                times=np.concatenate(combined_times),
+                positions=np.vstack(combined_positions),
+            ),
+            (),
+        )
+    except (TypeError, ValueError) as exc:
+        return None, (str(exc),)
+
+
+def _raise_basic_show_final_hold_not_last() -> None:
+    """Raise for misplaced final-hold metadata segments."""
+    message = "basic_training_show final_hold segment must be last"
+    raise ValueError(message)
+
+
+def _raise_basic_show_discontinuity(segment_index: int, gap: float) -> None:
+    """Raise for discontinuous adjacent basic-show segments."""
+    message = f"basic_training_show segment {segment_index - 1}->{segment_index} is discontinuous by {gap:.6g} m"
+    raise ValueError(message)
+
+
+def _raise_basic_show_no_motion_segments() -> None:
+    """Raise when a basic show contains no generated motion or hold segment."""
+    message = "basic_training_show must contain at least one non-final-hold segment"
+    raise ValueError(message)
+
+
+def _build_basic_show_segment(segment: Mapping[str, Any], sample_rate_hz: float) -> trajectories.primitives.Trajectory:
+    """Build one absolute-position segment for a basic training show."""
+    shape = _show_segment_shape(segment)
+    duration_sec = _show_segment_duration(segment)
+    if shape in {"hover", "hover_stabilization", "hold"}:
+        position = _show_segment_xyz(segment, validation.contracts.FIELD_SEGMENT_START)
+        _validate_declared_segment_end(segment=segment, actual_end=position)
+        return trajectories.primitives.make_hover_trajectory(
+            position=position.tolist(),
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+    if shape in {"line", "horizontal_line", "diagonal_line", "slanted_line", "vertical"}:
+        start = _show_segment_xyz(segment, validation.contracts.FIELD_SEGMENT_START)
+        end = _show_segment_xyz(segment, validation.contracts.FIELD_SEGMENT_END)
+        return trajectories.primitives.make_line_trajectory(
+            start=start.tolist(),
+            end=end.tolist(),
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+    if shape in {"polyline", "l_shape", "zigzag"}:
+        points = _show_segment_points(segment)
+        _validate_declared_segment_start(segment=segment, actual_start=points[0])
+        _validate_declared_segment_end(segment=segment, actual_end=points[-1])
+        return trajectories.primitives.make_polyline_trajectory(
+            points=points.tolist(),
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+    if shape == "ellipse":
+        start = _show_segment_xyz(segment, validation.contracts.FIELD_SEGMENT_START)
+        radius_x = _show_segment_float(segment, "radius_x_m")
+        radius_y = _show_segment_float(segment, "radius_y_m")
+        phase_rad = math.radians(float(segment.get("phase_deg", segment.get("start_angle_deg", 180.0))))
+        clockwise = _show_segment_bool(segment, validation.contracts.FIELD_CLOCKWISE, default=False)
+        center = np.asarray(segment.get(validation.contracts.FIELD_CENTER), dtype=float) if validation.contracts.FIELD_CENTER in segment else None
+        if center is None:
+            center = np.array(
+                [start[0] - radius_x * math.cos(phase_rad), start[1] - radius_y * math.sin(phase_rad)],
+                dtype=float,
+            )
+        if center.shape != (2,) or not np.all(np.isfinite(center)):
+            message = "ellipse segment center must contain two finite values"
+            raise ValueError(message)
+        trajectory = trajectories.primitives.make_ellipse_trajectory(
+            radius_x=radius_x,
+            radius_y=radius_y,
+            height=float(start[2]),
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+            center=center.tolist(),
+            clockwise=clockwise,
+            phase_rad=phase_rad,
+        )
+        _validate_declared_segment_start(segment=segment, actual_start=trajectory.positions[0])
+        _validate_declared_segment_end(segment=segment, actual_end=trajectory.positions[-1])
+        return trajectory
+    message = f"unsupported basic_training_show segment_shape: {shape}"
+    raise ValueError(message)
+
+
+def _require_show_segments(task: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    """Return validated basic-show segment mappings."""
+    raw_segments = task.get(validation.contracts.FIELD_SEGMENTS)
+    if isinstance(raw_segments, str) or not isinstance(raw_segments, Sequence):
+        message = f"{validation.contracts.FIELD_SEGMENTS} must be a non-empty sequence"
+        raise TypeError(message)
+    if not raw_segments:
+        message = f"{validation.contracts.FIELD_SEGMENTS} must be non-empty"
+        raise ValueError(message)
+    segments: list[Mapping[str, Any]] = []
+    for index, segment in enumerate(raw_segments):
+        if not isinstance(segment, Mapping):
+            message = f"basic_training_show segment {index} must be a mapping"
+            raise TypeError(message)
+        segments.append(segment)
+    return tuple(segments)
+
+
+def _show_segment_shape(segment: Mapping[str, Any]) -> str:
+    """Return a normalized segment shape."""
+    value = segment.get(validation.contracts.FIELD_SEGMENT_SHAPE, segment.get(validation.contracts.FIELD_SHAPE))
+    if value is None or not str(value).strip():
+        message = f"basic_training_show segment requires {validation.contracts.FIELD_SEGMENT_SHAPE}"
+        raise ValueError(message)
+    return str(value).strip().lower()
+
+
+def _show_segment_duration(segment: Mapping[str, Any]) -> float:
+    """Return a positive segment duration."""
+    key = validation.contracts.FIELD_SEGMENT_DURATION_SEC
+    if key not in segment:
+        key = validation.contracts.FIELD_DURATION_SEC
+    return _show_segment_float(segment, key)
+
+
+def _show_segment_float(segment: Mapping[str, Any], key: str) -> float:
+    """Read a finite positive segment float."""
+    if key not in segment:
+        message = f"basic_training_show segment requires {key}"
+        raise ValueError(message)
+    value = float(segment[key])
+    if not np.isfinite(value) or value <= 0.0:
+        message = f"basic_training_show segment {key} must be finite and positive"
+        raise ValueError(message)
+    return value
+
+
+def _show_segment_xyz(segment: Mapping[str, Any], key: str) -> np.ndarray:
+    """Read one finite XYZ segment vector."""
+    if key not in segment:
+        message = f"basic_training_show segment requires {key}"
+        raise ValueError(message)
+    array = np.asarray(segment[key], dtype=float)
+    if array.shape != (XYZ_DIMENSIONS,) or not np.all(np.isfinite(array)):
+        message = f"basic_training_show segment {key} must contain three finite values"
+        raise ValueError(message)
+    return array
+
+
+def _show_segment_points(segment: Mapping[str, Any]) -> np.ndarray:
+    """Read finite XYZ waypoints from a composed-show segment."""
+    key = validation.contracts.FIELD_SEGMENT_POINTS if validation.contracts.FIELD_SEGMENT_POINTS in segment else validation.contracts.FIELD_POINTS
+    if key not in segment:
+        message = f"basic_training_show polyline-like segment requires {validation.contracts.FIELD_SEGMENT_POINTS}"
+        raise ValueError(message)
+    points = np.asarray(segment[key], dtype=float)
+    if points.ndim != POSITION_ARRAY_NDIM or points.shape[1:] != (XYZ_DIMENSIONS,) or points.shape[0] < MIN_TRAJECTORY_SAMPLES:
+        message = f"basic_training_show segment {key} must have shape (num_points, 3) with at least two points"
+        raise ValueError(message)
+    if not np.all(np.isfinite(points)):
+        message = f"basic_training_show segment {key} must contain only finite values"
+        raise ValueError(message)
+    return points
+
+
+def _show_segment_bool(segment: Mapping[str, Any], key: str, default: bool) -> bool:
+    """Read an optional segment boolean."""
+    if key not in segment:
+        return default
+    value = segment[key]
+    if not isinstance(value, bool):
+        message = f"basic_training_show segment {key} must be a boolean"
+        raise TypeError(message)
+    return value
+
+
+def _validate_declared_segment_start(segment: Mapping[str, Any], actual_start: np.ndarray) -> None:
+    """Validate an optional declared segment start against generated geometry."""
+    if validation.contracts.FIELD_SEGMENT_START not in segment:
+        return
+    declared = _show_segment_xyz(segment, validation.contracts.FIELD_SEGMENT_START)
+    gap = float(np.linalg.norm(declared - np.asarray(actual_start, dtype=float)))
+    if gap > BASIC_SHOW_CONTINUITY_TOLERANCE_M:
+        message = f"basic_training_show declared segment_start differs from generated start by {gap:.6g} m"
+        raise ValueError(message)
+
+
+def _validate_declared_segment_end(segment: Mapping[str, Any], actual_end: np.ndarray) -> None:
+    """Validate an optional declared segment end against generated geometry."""
+    if validation.contracts.FIELD_SEGMENT_END not in segment:
+        return
+    declared = _show_segment_xyz(segment, validation.contracts.FIELD_SEGMENT_END)
+    gap = float(np.linalg.norm(declared - np.asarray(actual_end, dtype=float)))
+    if gap > BASIC_SHOW_CONTINUITY_TOLERANCE_M:
+        message = f"basic_training_show declared segment_end differs from generated end by {gap:.6g} m"
+        raise ValueError(message)
+
+
+def _validate_basic_show_final_hold_segment(segment: Mapping[str, Any], previous_end: np.ndarray | None) -> None:
+    """Validate final-hold metadata against the previous segment endpoint."""
+    if previous_end is None:
+        message = "basic_training_show final_hold segment requires a previous endpoint"
+        raise ValueError(message)
+    start = _show_segment_xyz(segment, validation.contracts.FIELD_SEGMENT_START)
+    end = _show_segment_xyz(segment, validation.contracts.FIELD_SEGMENT_END)
+    start_gap = float(np.linalg.norm(start - previous_end))
+    hold_gap = float(np.linalg.norm(end - previous_end))
+    if start_gap > BASIC_SHOW_CONTINUITY_TOLERANCE_M or hold_gap > BASIC_SHOW_CONTINUITY_TOLERANCE_M:
+        message = "basic_training_show final_hold must hold the final segment endpoint"
+        raise ValueError(message)
+
+
+def _basic_show_adjusted_times(local_times: np.ndarray, current_time_end: float, is_first_segment: bool) -> np.ndarray:
+    """Shift local segment times into one strictly increasing show timeline."""
+    if is_first_segment:
+        return np.array(local_times, dtype=float, copy=True)
+    sample_interval = _sample_interval_sec(local_times)
+    return np.array(float(current_time_end) + sample_interval + local_times, dtype=float, copy=True)
 
 
 def _build_hover_trajectory(task: Mapping[str, Any]) -> tuple[trajectories.primitives.Trajectory | None, tuple[str, ...]]:
@@ -472,11 +762,86 @@ def _start_hold_seconds(task: Mapping[str, Any], enabled: bool) -> float:
     return DEFAULT_START_HOLD_SEC
 
 
+def _apply_task_final_hold(
+    task: Mapping[str, Any],
+    trajectory: trajectories.primitives.Trajectory,
+) -> tuple[trajectories.primitives.Trajectory, dict[str, Any]]:
+    """Append a stationary final-hold segment when the task contract requests it."""
+    enabled = _final_hold_enabled(task)
+    requested_sec = _final_hold_seconds(task, enabled=enabled)
+    exclude_from_tracking = _optional_bool(
+        task,
+        validation.contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS,
+        default=enabled,
+    )
+    times = np.asarray(trajectory.times, dtype=float)
+    if not enabled:
+        return trajectory, _final_hold_metadata(
+            enabled=False,
+            final_hold_sec=0.0,
+            exclude_from_tracking=False,
+            tracking_phase_end_step=int(times.shape[0]),
+            tracking_phase_end_time_sec=float(times[-1]),
+        )
+    if requested_sec <= 0.0:
+        message = f"{validation.contracts.FIELD_FINAL_HOLD_SEC} must be positive when final hold is enabled"
+        raise ValueError(message)
+
+    positions = np.asarray(trajectory.positions, dtype=float)
+    sample_interval = _sample_interval_sec(times)
+    hold_steps = max(1, round(requested_sec / sample_interval))
+    effective_hold_sec = float(hold_steps * sample_interval)
+    hold_times = times[-1] + sample_interval * np.arange(1, hold_steps + 1, dtype=float)
+    hold_positions = np.repeat(positions[-1].reshape(1, XYZ_DIMENSIONS), repeats=hold_steps, axis=0)
+    held_trajectory = trajectories.primitives.Trajectory(
+        times=np.concatenate((times, hold_times)),
+        positions=np.vstack((positions, hold_positions)),
+    )
+    return held_trajectory, _final_hold_metadata(
+        enabled=True,
+        final_hold_sec=effective_hold_sec,
+        exclude_from_tracking=exclude_from_tracking,
+        tracking_phase_end_step=int(times.shape[0]),
+        tracking_phase_end_time_sec=float(times[-1]),
+    )
+
+
+def _final_hold_metadata(
+    enabled: bool,
+    final_hold_sec: float,
+    exclude_from_tracking: bool,
+    tracking_phase_end_step: int,
+    tracking_phase_end_time_sec: float,
+) -> dict[str, Any]:
+    """Return JSON-ready final-hold metadata for validation consumers."""
+    return {
+        "final_hold_enabled": bool(enabled),
+        "final_hold_sec": float(final_hold_sec),
+        "exclude_final_hold_from_tracking_metrics": bool(exclude_from_tracking),
+        "tracking_phase_end_step": int(tracking_phase_end_step),
+        "tracking_phase_end_time_sec": float(tracking_phase_end_time_sec),
+    }
+
+
+def _final_hold_enabled(task: Mapping[str, Any]) -> bool:
+    """Return whether final-hold is enabled for a task."""
+    shape = str(task.get(validation.contracts.FIELD_SHAPE, ""))
+    default_enabled = shape in FINAL_HOLD_DEFAULT_SHAPES
+    return _optional_bool(task, validation.contracts.FIELD_FINAL_HOLD_ENABLED, default=default_enabled)
+
+
+def _final_hold_seconds(task: Mapping[str, Any], enabled: bool) -> float:
+    """Return configured or default final-hold seconds for a task."""
+    if not enabled:
+        return 0.0
+    return _optional_float(task, validation.contracts.FIELD_FINAL_HOLD_SEC, default=DEFAULT_FINAL_HOLD_SEC)
+
+
 def _sample_interval_sec(times: np.ndarray) -> float:
     """Return a representative positive sample interval from built trajectory times."""
     diffs = np.diff(times)
     if diffs.size == 0 or np.any(diffs <= 0.0):
-        message = "trajectory times must be strictly increasing before start-hold can be applied"
+        message = "trajectory times must be strictly increasing before hold metadata can be applied"
         raise ValueError(message)
     sample_interval = float(np.median(diffs))
     if not np.isfinite(sample_interval) or sample_interval <= 0.0:

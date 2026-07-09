@@ -1,5 +1,5 @@
-name: ppo_tracking_production_tasks
-seed: 0
+name: basic_training_show
+notes: Bounded per-episode variation around the foundational composed Direct-PPO training show.
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -8,78 +8,20 @@ validation_limits:
   max_acceleration_m_s2: 5.0
   min_duration_sec: 1.0
   max_step_distance_m: 0.5
-tasks:
-  - task_name: line_basic
-    task_type: trajectory
-    shape: line
-    duration_sec: 3.0
-    sample_rate_hz: 10.0
-    start_hold_enabled: true
-    start_hold_sec: 1.0
-    exclude_start_hold_from_tracking_metrics: true
-    start: [0.0, 0.0, 1.0]
-    end: [1.0, 0.0, 1.0]
-  - task_name: line_long_final
-    task_type: trajectory
-    shape: line
-    duration_sec: 5.0
-    sample_rate_hz: 10.0
-    start_hold_enabled: true
-    start_hold_sec: 1.0
-    exclude_start_hold_from_tracking_metrics: true
-    start: [0.0, 0.0, 1.0]
-    end: [1.5, 0.0, 1.0]
-  - task_name: line_diagonal_validation
-    task_type: trajectory
-    shape: line
-    duration_sec: 4.0
-    sample_rate_hz: 10.0
-    start_hold_enabled: true
-    start_hold_sec: 1.0
-    exclude_start_hold_from_tracking_metrics: true
-    start: [0.0, 0.0, 1.0]
-    end: [0.8, 0.6, 1.0]
-  - task_name: basic_training_show
+task_distribution:
+  enabled: true
+  mode: randomized
+  seed: 0
+  strength: 0.65
+  sample_on_reset: true
+  base_task:
     task_type: trajectory
     shape: basic_training_show
-    training_task_kind: basic_training_show
-    task_is_distribution: false
-    task_is_show: true
-    show_name: basic_training_show
-    difficulty_level: basic
     duration_sec: 18.2
     sample_rate_hz: 10.0
-    start_hold_enabled: false
     final_hold_enabled: true
     final_hold_sec: 1.1
     exclude_final_hold_from_tracking_metrics: true
-    segment_count: 8
-    meaningful_figure_count: 8
-    segment_shapes: [hover_stabilization, vertical, horizontal_line, diagonal_line, ellipse, l_shape, zigzag, final_hold]
-    show_is_continuous: true
-    continuity_tolerance: 0.000001
-    sampled_per_episode: false
-    constant_within_episode: true
-    variation_enabled: false
-    variation_mode: fixed
-    duration_range_sec: [18.2, 18.2]
-    move_duration_range_sec: [17.1, 17.1]
-    segment_duration_range_sec: [1.1, 3.5]
-    path_length_range_m: [2.17, 2.17]
-    approx_reference_speed_range_mps: [0.16, 0.22]
-    segment_speed_bounds:
-      min_mps: 0.16
-      max_mps: 0.22
-    own_task_eval_path: evaluations/own_task
-    generalization_eval_path: evaluations/generalization
-    scenario_eval_path: evaluations/scenarios
-    requested_task_family: basic_training_show
-    accepted_task_family: basic_training_show
-    variation_strength: 0.0
-    proposed_sampling_bounds: {}
-    accepted_sampling_bounds: {}
-    repair_was_applied: false
-    repair_reason: null
     segments:
       - segment_name: hover_start
         segment_shape: hover_stabilization
@@ -134,3 +76,15 @@ tasks:
         segment_end: [1.61, 0.58, 1.10]
         segment_duration_sec: 1.1
         segment_final_hold_sec: 1.1
+  family_weights:
+    basic_training_show: 1.0
+  variations:
+    basic_training_show:
+      x_offset_range_m: [-0.12, 0.12]
+      y_offset_range_m: [-0.12, 0.12]
+      z_offset_range_m: [-0.05, 0.08]
+      length_scale_range: [0.90, 1.10]
+      duration_scale_range: [0.92, 1.10]
+      heading_jitter_deg: 18.0
+      ellipse_scale_range: [0.85, 1.15]
+      final_hold_range_sec: [0.9, 1.3]

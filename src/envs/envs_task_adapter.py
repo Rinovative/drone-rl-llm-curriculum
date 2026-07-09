@@ -61,6 +61,16 @@ class EnvironmentTaskReference:
         First reference row considered part of moving tracking.
     tracking_phase_start_time_sec
         Reference time in seconds for ``tracking_phase_start_step``.
+    final_hold_enabled
+        Whether the reference includes an appended stationary final-hold phase.
+    final_hold_sec
+        Effective final-hold duration in seconds.
+    exclude_final_hold_from_tracking_metrics
+        Whether tracking-only metrics should omit final-hold rows.
+    tracking_phase_end_step
+        Exclusive reference row where moving tracking ends.
+    tracking_phase_end_time_sec
+        Reference time in seconds at the end of moving tracking.
 
     """
 
@@ -74,6 +84,11 @@ class EnvironmentTaskReference:
     exclude_start_hold_from_tracking_metrics: bool = False
     tracking_phase_start_step: int = 0
     tracking_phase_start_time_sec: float = 0.0
+    final_hold_enabled: bool = False
+    final_hold_sec: float = 0.0
+    exclude_final_hold_from_tracking_metrics: bool = False
+    tracking_phase_end_step: int = 0
+    tracking_phase_end_time_sec: float = 0.0
 
 
 def make_task_reference(
@@ -118,6 +133,12 @@ def make_task_reference(
         validation.contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
         result.exclude_start_hold_from_tracking_metrics,
     )
+    task_copy.setdefault(validation.contracts.FIELD_FINAL_HOLD_ENABLED, result.final_hold_enabled)
+    task_copy.setdefault(validation.contracts.FIELD_FINAL_HOLD_SEC, result.final_hold_sec)
+    task_copy.setdefault(
+        validation.contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS,
+        result.exclude_final_hold_from_tracking_metrics,
+    )
     return EnvironmentTaskReference(
         task=MappingProxyType(task_copy),
         shape=str(shape),
@@ -129,6 +150,11 @@ def make_task_reference(
         exclude_start_hold_from_tracking_metrics=result.exclude_start_hold_from_tracking_metrics,
         tracking_phase_start_step=result.tracking_phase_start_step,
         tracking_phase_start_time_sec=result.tracking_phase_start_time_sec,
+        final_hold_enabled=result.final_hold_enabled,
+        final_hold_sec=result.final_hold_sec,
+        exclude_final_hold_from_tracking_metrics=result.exclude_final_hold_from_tracking_metrics,
+        tracking_phase_end_step=result.tracking_phase_end_step,
+        tracking_phase_end_time_sec=result.tracking_phase_end_time_sec,
     )
 
 

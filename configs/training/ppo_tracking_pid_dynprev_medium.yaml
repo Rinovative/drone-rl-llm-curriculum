@@ -1,5 +1,6 @@
 task_config_path: configs/training/ppo_tracking_tasks.yaml
-task_index: 0
+task_index: 3
+task_distribution_config_path: configs/tasks/task_distribution_basic_training_show.yaml
 run_name: direct_ppo_pid_dynprev_medium_seed0
 num_envs: 4
 total_timesteps: 500000
@@ -36,7 +37,8 @@ wandb_name: direct_ppo_pid_dynprev_medium_seed0
 wandb_tags:
 - medium
 - direct_ppo
-- fixed_task
+- basic_training_show
+- composed_show
 - pid_position
 - dynamics_observation
 - previous_action

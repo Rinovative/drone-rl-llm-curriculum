@@ -536,8 +536,16 @@ def _make_trace_record(
         "exclude_start_hold_from_tracking_metrics": bool(info.get("exclude_start_hold_from_tracking_metrics", False)),
         "tracking_phase_start_step": _int(info.get("tracking_phase_start_step")),
         "tracking_phase_start_time_sec": _float(info.get("tracking_phase_start_time_sec")),
+        "final_hold_enabled": bool(info.get("final_hold_enabled", False)),
+        "final_hold_sec": _float(info.get("final_hold_sec")),
+        "exclude_final_hold_from_tracking_metrics": bool(info.get("exclude_final_hold_from_tracking_metrics", False)),
+        "tracking_phase_end_step": _int(info.get("tracking_phase_end_step")),
+        "tracking_phase_end_time_sec": _float(info.get("tracking_phase_end_time_sec")),
         "is_start_hold": bool(info.get("is_start_hold", False)),
-        "is_tracking_phase": bool(info.get("is_tracking_phase", not bool(info.get("is_start_hold", False)))),
+        "is_final_hold": bool(info.get("is_final_hold", False)),
+        "is_tracking_phase": bool(
+            info.get("is_tracking_phase", not bool(info.get("is_start_hold", False)) and not bool(info.get("is_final_hold", False)))
+        ),
         "base_terminated": bool(info.get("base_terminated", False)),
         "base_truncated": bool(info.get("base_truncated", False)),
         "base_truncation_effective": bool(info.get("base_truncation_effective", info.get("base_truncated", False))),
@@ -973,9 +981,12 @@ def _trace_position_row(record: Mapping[str, Any], primary_key: str, fallback_ke
 
 def _tracking_metric_records(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     """Return records used for tracking-only metrics."""
-    if not any(bool(record.get("exclude_start_hold_from_tracking_metrics", False)) for record in records):
+    if not any(
+        bool(record.get("exclude_start_hold_from_tracking_metrics", False)) or bool(record.get("exclude_final_hold_from_tracking_metrics", False))
+        for record in records
+    ):
         return list(records)
-    filtered = [record for record in records if not bool(record.get("is_start_hold", False))]
+    filtered = [record for record in records if bool(record.get("is_tracking_phase", True))]
     return filtered or list(records)
 
 
@@ -988,6 +999,11 @@ def _start_hold_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "exclude_start_hold_from_tracking_metrics": bool(first.get("exclude_start_hold_from_tracking_metrics", False)),
         "tracking_phase_start_step": _int(first.get("tracking_phase_start_step")),
         "tracking_phase_start_time_sec": _float(first.get("tracking_phase_start_time_sec")),
+        "final_hold_enabled": bool(first.get("final_hold_enabled", False)),
+        "final_hold_sec": _float(first.get("final_hold_sec")),
+        "exclude_final_hold_from_tracking_metrics": bool(first.get("exclude_final_hold_from_tracking_metrics", False)),
+        "tracking_phase_end_step": _int(first.get("tracking_phase_end_step")),
+        "tracking_phase_end_time_sec": _float(first.get("tracking_phase_end_time_sec")),
     }
 
 

@@ -1,0 +1,57 @@
+scenario_name: show_easy
+task_config_path: configs/smoke/trajectory_validation.yaml
+
+controller: scripted_reference
+max_steps: 280
+seed: 0
+final_hold_sec: 1.0
+
+camera:
+  mode: follow_external
+  distance: 1.15
+  yaw: 35
+  pitch: -22
+
+phases:
+  - name: hover_start
+    type: hover
+    duration_sec: 1.5
+    start_mode: initial
+    hold_current_position: true
+
+  - name: vertical_settle
+    type: vertical
+    duration_sec: 2.0
+    start_mode: previous_end
+    start_height: 1.0
+    end_height: 1.2
+
+  - name: horizontal_exit
+    type: line
+    duration_sec: 2.5
+    start_mode: previous_end
+    delta_position: [0.35, 0.0, 0.0]
+
+  - name: diagonal_drift
+    type: line
+    duration_sec: 2.5
+    start_mode: previous_end
+    delta_position: [0.25, 0.18, 0.0]
+
+  - name: gentle_ellipse
+    type: ellipse
+    duration_sec: 5.0
+    start_mode: previous_end
+    radius_x_m: 0.16
+    radius_y_m: 0.10
+    start_angle_deg: 180.0
+    revolutions: 1.0
+
+  - name: easy_l_shape
+    type: polyline
+    duration_sec: 4.0
+    start_mode: previous_end
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [0.25, 0.0, 0.0]
+      - [0.25, 0.25, 0.0]

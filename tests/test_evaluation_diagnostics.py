@@ -68,7 +68,13 @@ def _record(
         "exclude_start_hold_from_tracking_metrics": False,
         "tracking_phase_start_step": 0,
         "tracking_phase_start_time_sec": 0.0,
+        "final_hold_enabled": False,
+        "final_hold_sec": 0.0,
+        "exclude_final_hold_from_tracking_metrics": False,
+        "tracking_phase_end_step": 0,
+        "tracking_phase_end_time_sec": 0.0,
         "is_start_hold": False,
+        "is_final_hold": False,
         "is_tracking_phase": True,
         "base_terminated": False,
         "base_truncated": False,
@@ -313,6 +319,43 @@ def test_tracking_only_metrics_exclude_start_hold_rows() -> None:
     assert diagnostics.metrics["mean_position_error_tracking_m"] == pytest.approx(0.0)
     assert diagnostics.metrics["tracking_phase_start_step"] == tracking_phase_start_step
     assert diagnostics.metrics["tracking_phase_start_time_sec"] == pytest.approx(tracking_phase_start_time_sec)
+
+
+def test_tracking_only_metrics_exclude_final_hold_rows() -> None:
+    """Verify tracking-only metrics omit configured final-hold rows."""
+    records = [
+        _record(0, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
+        _record(1, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
+        _record(2, current_x=1.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
+        _record(3, current_x=1.0, reference_x=0.0, action=[0.0, 0.0, 0.0]),
+    ]
+    tracking_phase_end_step = 2
+    tracking_phase_end_time_sec = 1.0
+
+    for index, record in enumerate(records):
+        record["final_hold_enabled"] = True
+        record["final_hold_sec"] = 1.0
+        record["exclude_final_hold_from_tracking_metrics"] = True
+        record["tracking_phase_end_step"] = tracking_phase_end_step
+        record["tracking_phase_end_time_sec"] = tracking_phase_end_time_sec
+        record["is_final_hold"] = index >= tracking_phase_end_step
+        record["is_tracking_phase"] = index < tracking_phase_end_step
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="final_hold",
+        task_shape="line",
+        total_timesteps=64,
+        eval_steps=4,
+        seed=0,
+    )
+
+    assert diagnostics.metrics["mean_position_error_m"] == pytest.approx(0.5)
+    assert diagnostics.metrics["mean_position_error_tracking_m"] == pytest.approx(0.0)
+    assert diagnostics.metrics["final_hold_enabled"] is True
+    assert diagnostics.metrics["tracking_phase_end_step"] == tracking_phase_end_step
+    assert diagnostics.metrics["tracking_phase_end_time_sec"] == pytest.approx(tracking_phase_end_time_sec)
 
 
 def test_diagnostics_report_no_failure_for_accurate_hover() -> None:

@@ -24,23 +24,22 @@ Boundaries:
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sys
 import warnings as py_warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import numpy as np
 
-from src import envs, evaluation, utils
+from src import envs, evaluation, utils, validation
 from src.experiments import experiments_config as config_loader
 
 from . import experiments_training_ppo_config as ppo_config
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking_smoke.yaml")
 DEFAULT_TASK_CONFIG_PATH = Path("configs/training/ppo_tracking_tasks.yaml")
@@ -840,6 +839,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "task_config_snapshot_path_relative": config_snapshots.get("task_config_snapshot_path_relative"),
             "task_source": task_source,
             "task_shape_requested": active_settings.task_shape,
+            **_task_show_metadata(task),
             **task_distribution_metadata,
             "total_timesteps": active_settings.total_timesteps,
             "num_envs": active_settings.num_envs,
@@ -860,6 +860,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "effective_rollout_steps": effective_rollout_steps,
             "ppo_config": active_settings.ppo_config.to_dict(),
             "policy_kwargs": active_settings.ppo_config.to_dict().get("policy_kwargs"),
+            **_net_arch_metadata(active_settings),
             "ppo_profile": _ppo_profile(active_settings),
             "timesteps_label": timesteps_label,
             "eval_steps": active_settings.eval_steps,
@@ -1157,6 +1158,63 @@ def _resolved_task_distribution_settings(
         return None
 
 
+_TASK_SHOW_METADATA_KEYS = (
+    "training_task_kind",
+    "task_is_distribution",
+    "task_is_show",
+    "show_name",
+    "scenario_name",
+    "segment_count",
+    "meaningful_figure_count",
+    "segment_shapes",
+    "show_is_continuous",
+    "continuity_tolerance",
+    "difficulty_level",
+    "duration_range_sec",
+    "move_duration_range_sec",
+    "segment_duration_range_sec",
+    "path_length_range_m",
+    "approx_reference_speed_range_mps",
+    "segment_speed_bounds",
+    "sampled_per_episode",
+    "constant_within_episode",
+    "variation_enabled",
+    "variation_mode",
+    "final_hold_enabled",
+    "final_hold_sec",
+    "own_task_eval_path",
+    "generalization_eval_path",
+    "scenario_eval_path",
+    "requested_task_family",
+    "accepted_task_family",
+    "variation_strength",
+    "proposed_sampling_bounds",
+    "accepted_sampling_bounds",
+    "repair_was_applied",
+    "repair_reason",
+)
+
+
+def _task_show_metadata(task: Mapping[str, Any]) -> dict[str, Any]:
+    """Select compact composed-show metadata from a training task."""
+    metadata = {key: copy.deepcopy(task[key]) for key in _TASK_SHOW_METADATA_KEYS if key in task}
+    segments = task.get(validation.contracts.FIELD_SEGMENTS)
+    if isinstance(segments, list):
+        metadata[validation.contracts.FIELD_SEGMENTS] = copy.deepcopy(segments)
+        metadata.setdefault("segment_count", len(segments))
+        metadata.setdefault(
+            "segment_shapes",
+            [str(segment.get(validation.contracts.FIELD_SEGMENT_SHAPE, "unknown")) for segment in segments if isinstance(segment, Mapping)],
+        )
+    return metadata
+
+
+def _task_show_manifest_fields(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """Select compact task-show fields for manifests and run indexes."""
+    keys = (*_TASK_SHOW_METADATA_KEYS, validation.contracts.FIELD_SEGMENTS)
+    return {key: copy.deepcopy(metrics[key]) for key in keys if key in metrics}
+
+
 def _task_distribution_metadata(settings: envs.task_distribution.TaskDistributionSettings | None) -> dict[str, Any]:
     """Return compact metadata for task distribution settings."""
     if settings is None:
@@ -1437,13 +1495,38 @@ def _task_distribution_tag_value(task_distribution_metadata: Mapping[str, Any] |
 
 def _net_arch_label(settings: PPOTrackingSmokeSettings) -> str:
     """Return a compact network-architecture tag label."""
-    policy_kwargs = settings.ppo_config.policy_kwargs or {}
-    net_arch = policy_kwargs.get("net_arch")
+    net_arch = _policy_net_arch(settings)
     net128_flat_arch = [128, 128]
     net128_policy_arch = {"pi": net128_flat_arch, "vf": net128_flat_arch}
+    net256_flat_arch = [256, 256]
+    net256_policy_arch = {"pi": net256_flat_arch, "vf": net256_flat_arch}
     if net_arch in (net128_flat_arch, net128_policy_arch):
-        return "net128"
-    return "default"
+        return "net128_default"
+    if net_arch in (net256_flat_arch, net256_policy_arch):
+        return "net256_large"
+    return "custom"
+
+
+def _policy_net_arch(settings: PPOTrackingSmokeSettings) -> Any:
+    """Return a JSON-ready copy of the resolved PPO net architecture."""
+    policy_kwargs = settings.ppo_config.policy_kwargs or {}
+    net_arch = policy_kwargs.get("net_arch")
+    if isinstance(net_arch, dict):
+        return {key: list(value) for key, value in net_arch.items()}
+    if isinstance(net_arch, list):
+        return list(net_arch)
+    return net_arch
+
+
+def _net_arch_metadata(settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
+    """Return network-architecture metadata for metrics, manifests, and W&B config."""
+    label = _net_arch_label(settings)
+    return {
+        "net_arch_label": label,
+        "policy_net_arch": _policy_net_arch(settings),
+        "uses_default_net128_arch": label == "net128_default",
+        "uses_large_net_variant": label == "net256_large",
+    }
 
 
 def _ppo_profile(settings: PPOTrackingSmokeSettings) -> str:
@@ -1556,6 +1639,8 @@ def _build_manifest(
         "task_shape": str(task.get("shape", "unknown")),
         "training_task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": settings.task_shape,
+        **_task_show_metadata(task),
+        **_task_show_manifest_fields(metrics),
         **_task_distribution_manifest_fields(metrics),
         "total_timesteps": settings.total_timesteps,
         "num_envs": metrics.get("num_envs", settings.num_envs),
@@ -1585,6 +1670,10 @@ def _build_manifest(
         ),
         "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
         "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
+        "net_arch_label": metrics.get("net_arch_label", _net_arch_label(settings)),
+        "policy_net_arch": metrics.get("policy_net_arch", _policy_net_arch(settings)),
+        "uses_default_net128_arch": metrics.get("uses_default_net128_arch", _net_arch_label(settings) == "net128_default"),
+        "uses_large_net_variant": metrics.get("uses_large_net_variant", _net_arch_label(settings) == "net256_large"),
         "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,
@@ -1669,9 +1758,14 @@ def _build_run_manifest(
             "task_shape_requested": settings.task_shape,
             "task_index": training_manifest["task_index"],
             "task_source": training_manifest["task_source"],
+            **_task_show_manifest_fields(metrics),
             **_task_distribution_manifest_fields(metrics),
             "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
             "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
+            "net_arch_label": metrics.get("net_arch_label", _net_arch_label(settings)),
+            "policy_net_arch": metrics.get("policy_net_arch", _policy_net_arch(settings)),
+            "uses_default_net128_arch": metrics.get("uses_default_net128_arch", _net_arch_label(settings) == "net128_default"),
+            "uses_large_net_variant": metrics.get("uses_large_net_variant", _net_arch_label(settings) == "net256_large"),
             "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
             "num_envs": metrics.get("num_envs", settings.num_envs),
             "action_interface": metrics.get("action_interface", settings.action_interface),
@@ -1702,6 +1796,10 @@ def _build_run_manifest(
         **_task_distribution_manifest_fields(metrics),
         "total_timesteps": settings.total_timesteps,
         "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
+        "net_arch_label": metrics.get("net_arch_label", _net_arch_label(settings)),
+        "policy_net_arch": metrics.get("policy_net_arch", _policy_net_arch(settings)),
+        "uses_default_net128_arch": metrics.get("uses_default_net128_arch", _net_arch_label(settings) == "net128_default"),
+        "uses_large_net_variant": metrics.get("uses_large_net_variant", _net_arch_label(settings) == "net256_large"),
         "ppo_profile": metrics.get("ppo_profile", _ppo_profile(settings)),
         "num_envs": metrics.get("num_envs", settings.num_envs),
         "action_interface": metrics.get("action_interface", settings.action_interface),
@@ -2052,6 +2150,7 @@ def _wandb_config(
         "task_index": selected_task_index,
         "task_shape": str(task.get("shape", "unknown")),
         "task_shape_requested": settings.task_shape,
+        **_task_show_metadata(task),
         **dict(task_distribution_metadata or {}),
         "total_timesteps": settings.total_timesteps,
         "num_envs": settings.num_envs,
@@ -2075,6 +2174,7 @@ def _wandb_config(
         "effective_rollout_steps": settings.ppo_config.effective_rollout_steps(settings.num_envs),
         "ppo": settings.ppo_config.to_dict(),
         "policy_kwargs": settings.ppo_config.to_dict().get("policy_kwargs"),
+        **_net_arch_metadata(settings),
         "ppo_profile": _ppo_profile(settings),
         "eval_steps": settings.eval_steps,
         "seed": settings.seed,

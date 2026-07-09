@@ -54,6 +54,12 @@ def test_field_constants_match_task_dictionary_keys() -> None:
         "FIELD_POINTS": "points",
         "FIELD_HOLD_DURATION_SEC": "hold_duration_sec",
         "FIELD_MOVE_DURATION_SEC": "move_duration_sec",
+        "FIELD_START_HOLD_ENABLED": "start_hold_enabled",
+        "FIELD_START_HOLD_SEC": "start_hold_sec",
+        "FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS": "exclude_start_hold_from_tracking_metrics",
+        "FIELD_FINAL_HOLD_ENABLED": "final_hold_enabled",
+        "FIELD_FINAL_HOLD_SEC": "final_hold_sec",
+        "FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS": "exclude_final_hold_from_tracking_metrics",
     }
 
     for constant_name, expected_value in expected_fields.items():

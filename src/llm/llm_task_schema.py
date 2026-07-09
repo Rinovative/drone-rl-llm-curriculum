@@ -40,6 +40,11 @@ TASK_FIELD = "task"
 TASK_DISTRIBUTION_ID_FIELD = "task_distribution_id"
 TASK_DISTRIBUTION_CONFIG_PATH_FIELD = "task_distribution_config_path"
 KNOWN_TASK_DISTRIBUTION_CONFIGS = {
+    "bootstrap_randomized_hover_target": "configs/tasks/task_distribution_hover_bootstrap_medium.yaml",
+    "hover_bootstrap": "configs/tasks/task_distribution_hover_bootstrap_medium.yaml",
+    "short_line_bootstrap": "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml",
+    "vertical_bootstrap": "configs/tasks/task_distribution_vertical_bootstrap_medium.yaml",
+    "polyline_bootstrap": "configs/tasks/task_distribution_polyline_bootstrap_medium.yaml",
     "tracking_small": "configs/tasks/task_distribution_tracking_small.yaml",
     "tracking_medium": "configs/tasks/task_distribution_tracking_medium.yaml",
     "tracking_broad": "configs/tasks/task_distribution_tracking_broad.yaml",
@@ -51,6 +56,11 @@ _FORBIDDEN_EXAMPLE_FIELDS = (
     "shell",
     "imports",
 )
+
+
+def _llm_supported_task_distribution_families() -> tuple[str, ...]:
+    """Return focused task-distribution families exposed to the LLM curriculum designer."""
+    return tuple(family for family in envs.task_distribution.supported_task_families() if family != "basic_training_show")
 
 
 def build_task_schema() -> dict[str, object]:
@@ -73,7 +83,7 @@ def build_task_schema() -> dict[str, object]:
         "proposal_kinds": [PROPOSAL_KIND_TASK, PROPOSAL_KIND_TASK_DISTRIBUTION],
         "task_distribution_reference_fields": [TASK_DISTRIBUTION_ID_FIELD, TASK_DISTRIBUTION_CONFIG_PATH_FIELD],
         "known_task_distribution_ids": dict(KNOWN_TASK_DISTRIBUTION_CONFIGS),
-        "supported_task_distribution_families": list(envs.task_distribution.supported_task_families()),
+        "supported_task_distribution_families": list(_llm_supported_task_distribution_families()),
         "unsupported_task_distribution_families": list(envs.task_distribution.unsupported_requested_task_families()),
         "optional_metadata_fields": [REASON_FIELD, PROPOSAL_KIND_FIELD, STAGE_BUDGET_PROFILE_FIELD, BUDGET_RATIONALE_FIELD],
         "nested_task_wrapper_field": TASK_FIELD,
@@ -102,7 +112,7 @@ def build_task_prompt_contract() -> str:
     optional_by_shape = json.dumps(_shape_optional_fields(), sort_keys=True, separators=(",", ":"))
     distribution_ids = json.dumps(KNOWN_TASK_DISTRIBUTION_CONFIGS, sort_keys=True, separators=(",", ":"))
     budget_profiles = ", ".join(DEFAULT_STAGE_BUDGET_PROFILES)
-    supported_families = ", ".join(envs.task_distribution.supported_task_families())
+    supported_families = ", ".join(_llm_supported_task_distribution_families())
     unsupported_families = ", ".join(envs.task_distribution.unsupported_requested_task_families()) or "none"
     return (
         "Return exactly one JSON object and no prose. "
@@ -115,6 +125,9 @@ def build_task_prompt_contract() -> str:
         f"Required keys by shape: {required_by_shape}. "
         f"Optional keys by shape: {optional_by_shape}. "
         "Fixed tasks are degenerate task distributions; randomized distributions sample bounded valid tasks across supported families. "
+        "For stages after stage 1, do not repeat the immediately previous task family or shape; "
+        "choose a controlled variation or a different focused distribution. "
+        "Concrete tasks may leave final_hold_enabled implicit or set final_hold_sec near 1.0 with final-hold metrics excluded. "
         f"Known task distribution ids and paths: {distribution_ids}. "
         f"Supported task-distribution families: {supported_families}. "
         f"Unsupported broad families for now: {unsupported_families}. "
@@ -428,15 +441,18 @@ def _shape_required_fields() -> dict[str, list[str]]:
 def _shape_optional_fields() -> dict[str, list[str]]:
     """Return shape-specific optional fields supported by deterministic validation."""
     contracts = validation.contracts
-    start_hold_fields = [
+    hold_fields = [
         contracts.FIELD_START_HOLD_ENABLED,
         contracts.FIELD_START_HOLD_SEC,
         contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
+        contracts.FIELD_FINAL_HOLD_ENABLED,
+        contracts.FIELD_FINAL_HOLD_SEC,
+        contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS,
     ]
-    optional_fields = {shape: list(start_hold_fields) for shape in contracts.SUPPORTED_TRAJECTORY_SHAPES}
-    optional_fields[contracts.SHAPE_CIRCLE] = [contracts.FIELD_CENTER, contracts.FIELD_CLOCKWISE, *start_hold_fields]
-    optional_fields[contracts.SHAPE_ELLIPSE] = [contracts.FIELD_CENTER, contracts.FIELD_CLOCKWISE, *start_hold_fields]
-    optional_fields[contracts.SHAPE_FIGURE_EIGHT] = [contracts.FIELD_CENTER, contracts.FIELD_CLOCKWISE, *start_hold_fields]
+    optional_fields = {shape: list(hold_fields) for shape in contracts.SUPPORTED_TRAJECTORY_SHAPES}
+    optional_fields[contracts.SHAPE_CIRCLE] = [contracts.FIELD_CENTER, contracts.FIELD_CLOCKWISE, *hold_fields]
+    optional_fields[contracts.SHAPE_ELLIPSE] = [contracts.FIELD_CENTER, contracts.FIELD_CLOCKWISE, *hold_fields]
+    optional_fields[contracts.SHAPE_FIGURE_EIGHT] = [contracts.FIELD_CENTER, contracts.FIELD_CLOCKWISE, *hold_fields]
     return optional_fields
 
 
@@ -466,6 +482,9 @@ def _known_task_fields() -> tuple[str, ...]:
         contracts.FIELD_START_HOLD_ENABLED,
         contracts.FIELD_START_HOLD_SEC,
         contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
+        contracts.FIELD_FINAL_HOLD_ENABLED,
+        contracts.FIELD_FINAL_HOLD_SEC,
+        contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS,
     )
 
 

@@ -14,8 +14,29 @@ stages:
   task_shape: hover_stabilization
   total_timesteps: 500000
   eval_steps: 240
-  notes: Stabilize around nominal hover before varied tracking.
+  notes: Sample bounded hover targets before varied tracking.
+  stage_task_distribution_config_path: configs/tasks/task_distribution_hover_bootstrap_medium.yaml
+  training_task_distribution_config_path: configs/tasks/task_distribution_hover_bootstrap_medium.yaml
+  sampled_task_family: hover_stabilization
+  sampled_task_shape: hover_stabilization
+  bootstrap_stage_source: deterministic_config
+  bootstrap_task_shape: hover_stabilization
+  bootstrap_target_sampling_bounds:
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [0.7, 1.4]
+  stage_sampling_bounds:
+    target_position:
+      x: [-0.5, 0.5]
+      y: [-0.5, 0.5]
+      z: [0.7, 1.4]
   task:
+    task_type: trajectory
+    shape: hover_stabilization
+    duration_sec: 3.0
+    sample_rate_hz: 10.0
+    position: [0.0, 0.0, 1.0]
+  evaluation_task:
     task_type: trajectory
     shape: hover_stabilization
     duration_sec: 3.0
@@ -25,8 +46,31 @@ stages:
   task_shape: vertical
   total_timesteps: 500000
   eval_steps: 240
-  notes: Practice low-to-high altitude correction before horizontal movement.
+  notes: Sample low-to-high altitude corrections in a small XY neighborhood.
+  stage_task_distribution_config_path: configs/tasks/task_distribution_vertical_bootstrap_medium.yaml
+  training_task_distribution_config_path: configs/tasks/task_distribution_vertical_bootstrap_medium.yaml
+  sampled_task_family: takeoff_stabilization
+  sampled_task_shape: vertical
+  stage_sampling_bounds:
+    xy_radius_m: 0.2
+    x: [-0.2, 0.2]
+    y: [-0.2, 0.2]
+    start_height: [0.65, 0.9]
+    end_height: [1.1, 1.4]
+    duration_sec: [3.5, 5.0]
+    start_hold_sec: [1.0, 1.0]
   task:
+    task_type: trajectory
+    shape: vertical
+    duration_sec: 4.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    xy: [0.1, 0.0]
+    start_height: 0.75
+    end_height: 1.25
+  evaluation_task:
     task_type: trajectory
     shape: vertical
     duration_sec: 4.0
@@ -41,8 +85,32 @@ stages:
   task_shape: start_hold_then_short_line
   total_timesteps: 500000
   eval_steps: 240
-  notes: Hold the start briefly, then move along a short horizontal segment.
+  notes: Sample a start hold followed by a short bounded horizontal move.
+  stage_task_distribution_config_path: configs/tasks/task_distribution_short_line_bootstrap_medium.yaml
+  training_task_distribution_config_path: configs/tasks/task_distribution_short_line_bootstrap_medium.yaml
+  sampled_task_family: start_hold_then_line
+  sampled_task_shape: start_hold_then_short_line
+  stage_sampling_bounds:
+    start_xy_radius_m: 0.15
+    start_x: [-0.15, 0.15]
+    start_y: [-0.15, 0.15]
+    z: [0.85, 1.2]
+    line_length_m: [0.25, 0.55]
+    direction_angle_deg: [-45.0, 45.0]
+    hold_duration_sec: [1.0, 1.0]
+    move_duration_sec: [3.0, 4.5]
   task:
+    task_type: trajectory
+    shape: start_hold_then_short_line
+    hold_duration_sec: 1.0
+    move_duration_sec: 3.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [0.35, 0.0, 1.0]
+  evaluation_task:
     task_type: trajectory
     shape: start_hold_then_short_line
     hold_duration_sec: 1.0
@@ -57,7 +125,21 @@ stages:
   task_shape: polyline
   total_timesteps: 500000
   eval_steps: 240
-  notes: Track a gentle L-shaped polyline before broader randomized tracking.
+  notes: Sample gentle L-shape polylines before broader randomized tracking.
+  stage_task_distribution_config_path: configs/tasks/task_distribution_polyline_bootstrap_medium.yaml
+  training_task_distribution_config_path: configs/tasks/task_distribution_polyline_bootstrap_medium.yaml
+  sampled_task_family: l_shape
+  sampled_task_shape: polyline
+  stage_sampling_bounds:
+    start_xy_radius_m: 0.15
+    heading_jitter_deg: 30.0
+    first_segment_length_m: [0.3, 0.6]
+    second_segment_length_m: [0.25, 0.5]
+    z: [0.9, 1.2]
+    final_height_offset_m: [-0.1, 0.1]
+    turn_direction: [left, right]
+    duration_sec: [6.5, 8.5]
+    start_hold_sec: [1.0, 1.0]
   task:
     task_type: trajectory
     shape: polyline
@@ -70,12 +152,54 @@ stages:
     - [0.0, 0.0, 1.0]
     - [0.45, 0.0, 1.0]
     - [0.45, 0.35, 1.05]
-- stage_name: medium_tracking_distribution
+  evaluation_task:
+    task_type: trajectory
+    shape: polyline
+    duration_sec: 7.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    points:
+    - [0.0, 0.0, 1.0]
+    - [0.45, 0.0, 1.0]
+    - [0.45, 0.35, 1.05]
+- stage_name: medium_tracking
   task_shape: line
   total_timesteps: 500000
   eval_steps: 240
-  notes: Finish with the medium task-distribution base task while PPO samples the full medium distribution.
+  notes: Sample the full medium tracking task distribution while evaluating a representative line.
+  stage_task_distribution_config_path: configs/tasks/task_distribution_tracking_medium.yaml
+  training_task_distribution_config_path: configs/tasks/task_distribution_tracking_medium.yaml
+  sampled_task_family: tracking_medium
+  sampled_task_shape: mixed
+  stage_sampling_bounds:
+    source_config_path: configs/tasks/task_distribution_tracking_medium.yaml
+    strength: 0.45
+    base_task_shape: line
+    family_weights:
+      hover_stabilization: 0.20
+      takeoff_stabilization: 0.10
+      line: 0.35
+      start_hold_then_line: 0.15
+      polyline: 0.08
+      l_shape: 0.07
+      rectangle: 0.04
+      square: 0.03
+      circle: 0.05
+      ellipse: 0.03
+      figure_eight: 0.02
   task:
+    task_type: trajectory
+    shape: line
+    duration_sec: 4.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    start: [0.0, 0.0, 1.0]
+    end: [0.6, 0.0, 1.0]
+  evaluation_task:
     task_type: trajectory
     shape: line
     duration_sec: 4.0

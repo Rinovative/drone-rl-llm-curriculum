@@ -15,6 +15,7 @@ from src import envs, validation
 from src.experiments.curriculum import experiments_curriculum_llm_training as llm_training
 from src.experiments.curriculum import experiments_curriculum_training as manual_training
 from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
+from src.experiments.rendering import experiments_rendering_scenario as scenario_render
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 LANE_ASSIGNMENT = Path("docs/experiments/overnight_lane_assignment.tsv")
@@ -26,7 +27,28 @@ DIRECT_RPM_MIN_RELAXED_RECOVERY_STEPS = 20
 MANUAL_TOTAL_BUDGET_TIMESTEPS = MANUAL_CURRICULUM_UNIT_COUNT * REFERENCE_MEDIUM_TIMESTEPS
 LLM_TOTAL_BUDGET_TIMESTEPS = MANUAL_TOTAL_BUDGET_TIMESTEPS
 BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml")
+VERTICAL_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_vertical_bootstrap_medium.yaml")
+SHORT_LINE_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_short_line_bootstrap_medium.yaml")
+POLYLINE_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_polyline_bootstrap_medium.yaml")
+TRACKING_MEDIUM_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_tracking_medium.yaml")
+BASIC_TRAINING_SHOW_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_basic_training_show.yaml")
+BASIC_TRAINING_SHOW_TASK_INDEX = 3
 BOOTSTRAP_HOVER_TARGET_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 1.4]}
+MANUAL_STAGE_DISTRIBUTION_CONFIGS = (
+    BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG,
+    VERTICAL_BOOTSTRAP_DISTRIBUTION_CONFIG,
+    SHORT_LINE_BOOTSTRAP_DISTRIBUTION_CONFIG,
+    POLYLINE_BOOTSTRAP_DISTRIBUTION_CONFIG,
+    TRACKING_MEDIUM_DISTRIBUTION_CONFIG,
+)
+MANUAL_STAGE_SAMPLED_FAMILIES = (
+    "hover_stabilization",
+    "takeoff_stabilization",
+    "start_hold_then_line",
+    "l_shape",
+    "tracking_medium",
+)
+MANUAL_STAGE_SAMPLED_SHAPES = ("hover_stabilization", "vertical", "start_hold_then_short_line", "polyline", "mixed")
 LLM_BUDGET_PROFILE_TIMESTEPS = {
     "bootstrap": 500000,
     "short": 175000,
@@ -35,19 +57,26 @@ LLM_BUDGET_PROFILE_TIMESTEPS = {
     "extend": 400000,
 }
 LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recovery": 0.65, "extend": 0.8}
+BASIC_TRAINING_SHOW_DIRECT_PPO_IDS = {
+    "direct_ppo_pid_baseline_medium_seed0",
+    "direct_ppo_pid_dynprev_medium_seed0",
+    "direct_ppo_pid_dynprev_net256_medium_seed0",
+    "direct_ppo_directrpm_dynprev_medium_seed0",
+}
+
 EXPECTED_EXPERIMENT_IDS = {
     "direct_ppo_pid_baseline_medium_seed0",
     "direct_ppo_pid_dynprev_medium_seed0",
-    "direct_ppo_pid_dynprev_net128_medium_seed0",
+    "direct_ppo_pid_dynprev_net256_medium_seed0",
     "direct_ppo_directrpm_dynprev_medium_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_seed0",
-    "direct_ppo_pid_dynprev_net128_m-taskdist_medium_seed0",
+    "direct_ppo_pid_dynprev_net256_m-taskdist_medium_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_seed0",
-    "direct_ppo_directrpm_dynprev_net128_m-taskdist_medium_seed0",
+    "direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0",
-    "direct_ppo_pid_dynprev_net128_m-taskdist_medium_low_lr_seed0",
-    "direct_ppo_pid_dynprev_net128_m-taskdist_medium_ent005_seed0",
+    "direct_ppo_pid_dynprev_net256_m-taskdist_medium_low_lr_seed0",
+    "direct_ppo_pid_dynprev_net256_m-taskdist_medium_ent005_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0",
     "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0",
@@ -60,6 +89,51 @@ EXPECTED_EXPERIMENT_IDS = {
 def _assignment_rows() -> list[dict[str, str]]:
     """Return parsed lane assignment rows."""
     return list(csv.DictReader(LANE_ASSIGNMENT.read_text(encoding="utf-8").splitlines(), delimiter="	"))
+
+
+def _assert_randomized_distribution_config(config_path: Path) -> envs.task_distribution.TaskDistributionSettings:
+    """Verify a distribution config loads, samples per reset, and emits valid tasks."""
+    settings = envs.task_distribution.load_task_distribution_settings(config_path)
+    assert settings.mode == envs.task_distribution.MODE_RANDOMIZED
+    assert settings.sample_on_reset is True
+    assert settings.strength > 0.0
+    sampled = envs.task_distribution.sample_task(settings)
+    assert validation.tasks.validate_task(sampled, limits=settings.validation_limits).is_valid
+    return settings
+
+
+def _assert_manual_medium_curriculum_stage_distributions(settings: manual_training.ManualCurriculumSettings) -> None:
+    """Verify the scheduled manual medium curriculum trains on bounded distributions."""
+    assert [stage.training_task_distribution_config_path for stage in settings.stages] == list(MANUAL_STAGE_DISTRIBUTION_CONFIGS)
+    assert [stage.stage_task_distribution_config_path for stage in settings.stages] == list(MANUAL_STAGE_DISTRIBUTION_CONFIGS)
+    assert [stage.task_distribution_config_path for stage in settings.stages] == list(MANUAL_STAGE_DISTRIBUTION_CONFIGS)
+    assert [stage.sampled_task_family for stage in settings.stages] == list(MANUAL_STAGE_SAMPLED_FAMILIES)
+    assert [stage.sampled_task_shape for stage in settings.stages] == list(MANUAL_STAGE_SAMPLED_SHAPES)
+    assert all(stage.evaluation_task == stage.task for stage in settings.stages)
+
+    for _stage, config_path, sampled_shape in zip(settings.stages, MANUAL_STAGE_DISTRIBUTION_CONFIGS, MANUAL_STAGE_SAMPLED_SHAPES, strict=True):
+        distribution_settings = _assert_randomized_distribution_config(config_path)
+        if sampled_shape != "mixed":
+            assert envs.task_distribution.sample_task(distribution_settings)["shape"] == sampled_shape
+
+    stage1, stage2, stage3, stage4, stage5 = settings.stages
+    assert stage1.bootstrap_stage_source == "deterministic_config"
+    assert stage1.bootstrap_task_shape == "hover_stabilization"
+    assert stage1.bootstrap_target_sampling_bounds == BOOTSTRAP_HOVER_TARGET_BOUNDS
+    assert stage1.stage_sampling_bounds == {"target_position": BOOTSTRAP_HOVER_TARGET_BOUNDS}
+    assert stage2.stage_sampling_bounds["start_height"] == [0.65, 0.9]
+    assert stage2.stage_sampling_bounds["end_height"] == [1.1, 1.4]
+    assert stage3.stage_sampling_bounds["line_length_m"] == [0.25, 0.55]
+    assert stage3.stage_sampling_bounds["direction_angle_deg"] == [-45.0, 45.0]
+    assert stage4.stage_sampling_bounds["first_segment_length_m"] == [0.3, 0.6]
+    assert stage4.stage_sampling_bounds["second_segment_length_m"] == [0.25, 0.5]
+    assert stage4.stage_sampling_bounds["final_height_offset_m"] == [-0.1, 0.1]
+
+    medium_settings = envs.task_distribution.load_task_distribution_settings(stage5.training_task_distribution_config_path)
+    assert medium_settings.base_task_shape == "line"
+    assert len(medium_settings.family_weights) > 1
+    assert set(medium_settings.family_weights).issubset(set(envs.task_distribution.supported_task_families()))
+    assert "basic_training_show" not in medium_settings.family_weights
 
 
 def test_lane_assignment_contains_exact_approved_matrix() -> None:
@@ -118,6 +192,7 @@ def test_all_listed_configs_exist_and_match_run_names() -> None:
             assert settings.manual_stage_count == MANUAL_CURRICULUM_UNIT_COUNT
             assert settings.manual_total_budget_timesteps == MANUAL_TOTAL_BUDGET_TIMESTEPS
             assert [stage.total_timesteps for stage in settings.stages] == [REFERENCE_MEDIUM_TIMESTEPS] * MANUAL_CURRICULUM_UNIT_COUNT
+            _assert_manual_medium_curriculum_stage_distributions(settings)
             assert row["expected_run_name"] == f"curriculum_manual_{settings.curriculum_name.removeprefix('curriculum_manual_')}_seed{settings.seed}"
         elif row["kind"] == "llm_curriculum":
             settings = llm_training.load_llm_curriculum_settings(config_path)
@@ -171,14 +246,23 @@ def test_medium_matrix_future_names_do_not_contain_duplicate_medium() -> None:
     assert "medium_medium" not in LANE_ASSIGNMENT.read_text(encoding="utf-8")
 
 
-def test_task_distribution_training_configs_use_medium_distribution_only() -> None:
-    """Verify scheduled task-distribution training configs point at the medium config."""
+def test_direct_ppo_training_configs_use_intended_task_distribution() -> None:
+    """Verify Direct-PPO single-runs use basic_training_show and taskdist variants stay medium."""
     for row in _assignment_rows():
         if row["kind"] != "direct_ppo":
             continue
         settings = ppo_tracking.load_ppo_tracking_settings(row["config_path"])
         if "taskdist" in row["experiment_id"]:
-            assert settings.task_distribution_config_path == Path("configs/tasks/task_distribution_tracking_medium.yaml")
+            assert settings.task_distribution_config_path == TRACKING_MEDIUM_DISTRIBUTION_CONFIG
+            assert settings.task_index == 0
+        elif row["experiment_id"] in BASIC_TRAINING_SHOW_DIRECT_PPO_IDS:
+            assert settings.task_distribution_config_path == BASIC_TRAINING_SHOW_DISTRIBUTION_CONFIG
+            assert settings.task_index == BASIC_TRAINING_SHOW_TASK_INDEX
+            task_config = yaml.safe_load(settings.task_config_path.read_text(encoding="utf-8"))
+            task = task_config["tasks"][settings.task_index]
+            assert task["shape"] == validation.contracts.SHAPE_BASIC_TRAINING_SHOW
+            assert task["show_name"] == "basic_training_show"
+            assert task["task_is_show"] is True
         else:
             assert settings.task_distribution_config_path is None
 
@@ -191,6 +275,10 @@ def test_task_distribution_configs_and_families_validate() -> None:
         "configs/tasks/task_distribution_tracking_small.yaml",
         "configs/tasks/task_distribution_tracking_medium.yaml",
         "configs/tasks/task_distribution_hover_bootstrap_medium.yaml",
+        "configs/tasks/task_distribution_vertical_bootstrap_medium.yaml",
+        "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml",
+        "configs/tasks/task_distribution_polyline_bootstrap_medium.yaml",
+        "configs/tasks/task_distribution_basic_training_show.yaml",
         "configs/tasks/task_distribution_tracking_broad.yaml",
     ):
         settings = envs.task_distribution.load_task_distribution_settings(config_path)
@@ -229,14 +317,59 @@ def test_bootstrap_hover_distribution_uses_fixed_medium_bounds() -> None:
     assert hover_variation["z_range_m"] == BOOTSTRAP_HOVER_TARGET_BOUNDS["z"]
 
 
-def test_evaluation_suites_validate_and_include_supported_broad_tasks() -> None:
-    """Verify fixed deterministic evaluation suites load through the suite parser."""
-    variation = evaluation_suites.load_evaluation_suite("configs/evaluation/evaluation_task_suite_variation.yaml")
-    broad = evaluation_suites.load_evaluation_suite("configs/evaluation/evaluation_task_suite_broad.yaml")
+def test_manual_and_llm_stage_one_share_randomized_hover_bootstrap() -> None:
+    """Verify manual and LLM curricula share the same randomized hover bootstrap."""
+    manual_configs = (
+        "configs/curricula/curriculum_pid_dynprev_m-taskdist_medium.yaml",
+        "configs/curricula/curriculum_directrpm_dynprev_m-taskdist_medium.yaml",
+    )
+    llm_configs = (
+        "configs/curricula/llm_curriculum_pid_dynprev_m-taskdist_medium.yaml",
+        "configs/curricula/llm_curriculum_directrpm_dynprev_m-taskdist_medium.yaml",
+    )
 
-    assert variation.task_names[:6] == ["hover_center", "hover_low", "hover_high", "hover_offset_x", "hover_offset_y", "hover_offset_xy"]
-    for task_name in ("polyline_l_shape", "square_slow", "circle_slow", "ellipse_slow", "figure_eight_slow"):
-        assert task_name in broad.task_names
+    manual_stage1_paths = {
+        manual_training.load_manual_curriculum_settings(config).stages[0].training_task_distribution_config_path for config in manual_configs
+    }
+    llm_stage1_paths = {llm_training.load_llm_curriculum_settings(config).bootstrap_stage.task_distribution_config_path for config in llm_configs}
+
+    assert manual_stage1_paths == {BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG}
+    assert llm_stage1_paths == {BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG}
+    for config in manual_configs:
+        stage1 = manual_training.load_manual_curriculum_settings(config).stages[0]
+        assert stage1.bootstrap_target_sampling_bounds == BOOTSTRAP_HOVER_TARGET_BOUNDS
+        assert stage1.total_timesteps == REFERENCE_MEDIUM_TIMESTEPS
+    for config in llm_configs:
+        bootstrap = llm_training.load_llm_curriculum_settings(config).bootstrap_stage
+        assert bootstrap.bootstrap_target_sampling_bounds == BOOTSTRAP_HOVER_TARGET_BOUNDS
+        assert bootstrap.total_timesteps == REFERENCE_MEDIUM_TIMESTEPS
+
+
+def test_generalization_suite_and_standard_scenarios_validate() -> None:
+    """Verify simplified deterministic evaluation assets load through their parsers."""
+    generalization = evaluation_suites.load_evaluation_suite("configs/evaluation/generalization_eval_suite.yaml")
+
+    assert generalization.task_names == [
+        "hover_center",
+        "vertical_basic",
+        "line_basic",
+        "diagonal_line_basic",
+        "short_line_start_hold",
+        "polyline_l_basic",
+        "circle_basic",
+        "ellipse_basic",
+        "figure_eight_basic",
+    ]
+    durations = []
+    for config_path in (
+        "configs/evaluation/scenarios/show_easy.yaml",
+        "configs/evaluation/scenarios/show_medium.yaml",
+        "configs/evaluation/scenarios/show_hard.yaml",
+    ):
+        composition = scenario_render.compose_scenario_reference(scenario_render.load_scenario_render_settings(config_path))
+        durations.append(composition.scenario_duration_sec)
+        assert composition.final_hold_steps > 0
+    assert durations == sorted(durations)
 
 
 def test_runner_and_helper_scripts_have_valid_bash_syntax() -> None:
@@ -280,8 +413,8 @@ def test_no_source_controlled_output_dirs_in_matrix_configs() -> None:
                 assert not value.startswith(forbidden_prefixes)
 
 
-def test_runner_preserves_wandb_and_evaluation_phase_order() -> None:
-    """Verify runners do not force W&B off and still run standard, variation, broad, render phases."""
+def test_runner_preserves_wandb_and_simplified_evaluation_phase_order() -> None:
+    """Verify runners do not force W&B off and run only standard evaluation plus render status."""
     runner = Path("scripts/experiment_runner_common.sh").read_text(encoding="utf-8")
 
     assert "WANDB_MODE_OVERRIDE=disabled" not in runner
@@ -289,9 +422,11 @@ def test_runner_preserves_wandb_and_evaluation_phase_order() -> None:
     assert "experiments_cli_evaluate_policy" in runner
     assert "experiments_cli_evaluate_curriculum" in runner
     assert "--model-scope final-stage" in runner
-    assert "evaluate_variation_suite.sh" in runner
+    assert "evaluate_variation_suite.sh" not in runner
+    assert "variation_eval" not in runner
+    assert "broad_eval" not in runner
     assert "render_run_gifs.sh" in runner
-    assert runner.index(".eval.log") < runner.index(".variation_eval.log") < runner.index(".broad_eval.log") < runner.index(".render.log")
+    assert runner.index(".eval.log") < runner.index(".render.log")
 
 
 def test_lane_assignment_uses_updated_curriculum_unit_counts() -> None:

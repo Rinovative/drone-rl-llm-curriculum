@@ -1,0 +1,40 @@
+name: polyline_bootstrap_medium
+validation_limits:
+  arena_xy_limit: 2.0
+  min_height: 0.2
+  max_height: 2.0
+  max_speed_m_s: 2.0
+  max_acceleration_m_s2: 5.0
+  min_duration_sec: 1.0
+  max_step_distance_m: 0.5
+task_distribution:
+  name: polyline_bootstrap_medium
+  enabled: true
+  mode: randomized
+  seed: 0
+  strength: 1.0
+  sample_on_reset: true
+  base_task:
+    task_type: trajectory
+    shape: polyline
+    duration_sec: 7.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.0
+    exclude_start_hold_from_tracking_metrics: true
+    points:
+    - [0.0, 0.0, 1.0]
+    - [0.45, 0.0, 1.0]
+    - [0.45, 0.35, 1.05]
+  family_weights:
+    l_shape: 1.0
+  variations:
+    l_shape:
+      start_xy_radius_m: 0.15
+      heading_jitter_deg: 30
+      leg1_range_m: [0.3, 0.6]
+      leg2_range_m: [0.25, 0.5]
+      z_range_m: [0.9, 1.2]
+      final_z_offset_range_m: [-0.1, 0.1]
+      duration_range_sec: [6.5, 8.5]
+      start_hold_range_sec: [1.0, 1.0]

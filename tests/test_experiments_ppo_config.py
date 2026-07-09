@@ -37,20 +37,21 @@ VALID_PPO_CONFIG = {
 
 
 def test_ppo_config_loads_nested_config_values() -> None:
-    """Verify nested ppo config values are resolved without hidden defaults."""
+    """Verify nested ppo config values include the project default net128 architecture."""
     config = ppo_config.load_ppo_config_from_mapping({"ppo": VALID_PPO_CONFIG})
+    expected = {**VALID_PPO_CONFIG, "policy_kwargs": ppo_config.default_policy_kwargs()}
 
-    assert config.to_dict() == VALID_PPO_CONFIG
-    assert config.to_sb3_kwargs() == VALID_PPO_CONFIG
+    assert config.to_dict() == expected
+    assert config.to_sb3_kwargs() == expected
 
 
-def test_ppo_config_omits_policy_kwargs_by_default() -> None:
-    """Verify omitted policy kwargs preserve the default SB3 policy architecture."""
+def test_ppo_config_uses_net128_policy_kwargs_by_default() -> None:
+    """Verify omitted policy kwargs use the project net128 pi/vf architecture."""
     config = ppo_config.PPOConfig()
 
-    assert config.policy_kwargs is None
-    assert "policy_kwargs" not in config.to_dict()
-    assert "policy_kwargs" not in config.to_sb3_kwargs()
+    assert config.policy_kwargs == ppo_config.default_policy_kwargs()
+    assert config.to_dict()["policy_kwargs"] == ppo_config.default_policy_kwargs()
+    assert config.to_sb3_kwargs()["policy_kwargs"] == ppo_config.default_policy_kwargs()
 
 
 def test_ppo_config_accepts_list_net_arch_policy_kwargs() -> None:

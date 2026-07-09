@@ -122,7 +122,7 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
         assert settings.action_interface == values["action_interface"]
         assert settings.include_dynamics_observation is False
         assert settings.include_previous_action is False
-        assert settings.ppo_config.to_dict() == config["ppo"]
+        assert settings.ppo_config.to_dict() == {**config["ppo"], "policy_kwargs": ppo_config.default_policy_kwargs()}
 
 
 def test_direct_rpm_smoke_config_is_explicit_and_safe() -> None:
@@ -161,7 +161,7 @@ def test_dynamics_smoke_config_is_explicit_and_safe() -> None:
     assert settings.action_interface == "pid_position"
     assert settings.include_dynamics_observation is True
     assert settings.include_previous_action is True
-    assert settings.ppo_config.policy_kwargs is None
+    assert settings.ppo_config.policy_kwargs == ppo_config.default_policy_kwargs()
 
 
 def test_dynamics_medium_net_smoke_config_is_explicit_and_safe() -> None:
@@ -190,6 +190,7 @@ def test_real_direct_ppo_task_source_validates_and_final_uses_hard_line() -> Non
         "line_basic",
         "line_long_final",
         "line_diagonal_validation",
+        "basic_training_show",
     ]
     for task in task_config["tasks"]:
         result = validation.tasks.validate_task(task, limits=limits)

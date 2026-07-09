@@ -68,9 +68,20 @@ START_MODE_PREVIOUS_END = "previous_end"
 SUPPORTED_START_MODES = (START_MODE_INITIAL, START_MODE_PREVIOUS_END)
 PHASE_TYPE_HOVER = "hover"
 PHASE_TYPE_LINE = "line"
+PHASE_TYPE_VERTICAL = "vertical"
 PHASE_TYPE_CIRCLE = "circle"
+PHASE_TYPE_ELLIPSE = "ellipse"
+PHASE_TYPE_FIGURE_EIGHT = "figure_eight"
 PHASE_TYPE_POLYLINE = "polyline"
-SUPPORTED_PHASE_TYPES = (PHASE_TYPE_HOVER, PHASE_TYPE_LINE, PHASE_TYPE_CIRCLE, PHASE_TYPE_POLYLINE)
+SUPPORTED_PHASE_TYPES = (
+    PHASE_TYPE_HOVER,
+    PHASE_TYPE_LINE,
+    PHASE_TYPE_VERTICAL,
+    PHASE_TYPE_CIRCLE,
+    PHASE_TYPE_ELLIPSE,
+    PHASE_TYPE_FIGURE_EIGHT,
+    PHASE_TYPE_POLYLINE,
+)
 SCENARIO_TASK_SHAPE = "scenario"
 SCENARIO_EVALUATION_TYPE = "scenario"
 XYZ_DIMENSIONS = 3
@@ -89,7 +100,7 @@ class ScenarioPhase:
     name
         Stable phase name used in traces and manifests.
     phase_type
-        Concrete primitive type: ``hover``, ``line``, ``circle``, or ``polyline``.
+        Concrete primitive type: ``hover``, ``line``, ``vertical``, ``circle``, ``ellipse``, ``figure_eight``, or ``polyline``.
     task_shape
         Alias for ``phase_type`` used by existing task-shape-oriented callers.
     duration_sec
@@ -190,7 +201,9 @@ class ScenarioRenderSettings:
     controller
         ``ppo`` or ``scripted_reference`` controller for the rollout.
     model_run_name
-        Training run name used to load PPO models from storage/runs/<run_name>/training/models.
+        Optional training run name used for metadata and the default PPO model lookup.
+    model_path
+        Optional explicit PPO zip path. When provided, it overrides the model-run-name lookup.
     run_name
         Optional evaluation run name. Derived from controller and scenario when omitted.
     output_dir
@@ -228,6 +241,7 @@ class ScenarioRenderSettings:
     phases: tuple[ScenarioPhase, ...] = ()
     controller: str = policy_render.SCRIPTED_REFERENCE_CONTROLLER
     model_run_name: str | None = None
+    model_path: Path | None = None
     run_name: str | None = None
     output_dir: Path | None = None
     max_steps: int | None = DEFAULT_MAX_STEPS
@@ -251,11 +265,13 @@ class ScenarioRenderSettings:
         if self.controller not in policy_render.SUPPORTED_CONTROLLERS:
             message = f"controller must be one of: {', '.join(policy_render.SUPPORTED_CONTROLLERS)}"
             raise ValueError(message)
-        if self.controller == policy_render.PPO_CONTROLLER and not self.model_run_name:
-            message = "PPO scenario rendering requires model_run_name"
+        if self.controller == policy_render.PPO_CONTROLLER and not self.model_run_name and self.model_path is None:
+            message = "PPO scenario rendering requires model_run_name or model_path"
             raise ValueError(message)
         if self.model_run_name is not None:
             utils.artifacts.get_run_dir(self.model_run_name)
+        if self.model_path is not None:
+            self.model_path.expanduser().resolve(strict=False)
         if self.run_name is not None:
             utils.artifacts.get_run_evaluation_dir(self.run_name, "scenario")
         if self.max_steps is not None and self.max_steps <= 0:
@@ -713,12 +729,19 @@ def compose_scenario_reference(settings: ScenarioRenderSettings) -> ScenarioComp
         "sample_rate_hz": _nominal_sample_rate(times),
         "final_hold_sec": float(settings.final_hold_sec),
     }
+    final_hold_start_step = positions.shape[0] if final_hold_step_range is None else int(final_hold_step_range["start"])
+    final_hold_end_time = float(times[-1] if final_hold_step_range is None else times[max(final_hold_start_step - 1, 0)])
     reference = envs.task_adapter.EnvironmentTaskReference(
         task=MappingProxyType(dict(scenario_task)),
         shape=SCENARIO_TASK_SHAPE,
         times=np.array(times, dtype=float, copy=True),
         positions=np.array(positions, dtype=float, copy=True),
         validation_messages=("scenario reference composed from validated local phase geometry",),
+        final_hold_enabled=bool(settings.final_hold_sec > 0.0),
+        final_hold_sec=float(settings.final_hold_sec),
+        exclude_final_hold_from_tracking_metrics=bool(settings.final_hold_sec > 0.0),
+        tracking_phase_end_step=int(final_hold_start_step),
+        tracking_phase_end_time_sec=final_hold_end_time,
     )
     return ScenarioComposition(
         reference=reference,
@@ -862,10 +885,16 @@ def _build_phase_reference(
         result = _build_line_phase(phase=phase, catalog_task=catalog_task)
     elif phase.phase_type == PHASE_TYPE_HOVER:
         result = _build_hover_phase(phase=phase, catalog_task=catalog_task)
+    elif phase.phase_type == PHASE_TYPE_VERTICAL:
+        result = _build_vertical_phase(phase=phase, catalog_task=catalog_task)
     elif phase.phase_type == PHASE_TYPE_POLYLINE:
         result = _build_polyline_phase(phase=phase, catalog_task=catalog_task)
     elif phase.phase_type == PHASE_TYPE_CIRCLE:
         result = _build_circle_phase(phase=phase, catalog_task=catalog_task)
+    elif phase.phase_type == PHASE_TYPE_ELLIPSE:
+        result = _build_ellipse_phase(phase=phase, catalog_task=catalog_task)
+    elif phase.phase_type == PHASE_TYPE_FIGURE_EIGHT:
+        result = _build_figure_eight_phase(phase=phase, catalog_task=catalog_task)
     else:
         message = f"unsupported phase type: {phase.phase_type}"
         raise ValueError(message)
@@ -941,6 +970,47 @@ def _build_hover_phase(phase: ScenarioPhase, catalog_task: dict[str, Any] | None
         extra={"hold_current_position": hold_current_position, "position_offset": _array_to_floats(offset)},
     )
     return _PhaseBuildResult(trajectory=trajectory, task=task, geometry=geometry, waypoint_positions=(position,))
+
+
+def _build_vertical_phase(phase: ScenarioPhase, catalog_task: dict[str, Any] | None) -> _PhaseBuildResult:
+    """Build a local vertical phase with configurable start and end heights."""
+    duration_sec = _phase_duration(phase=phase, catalog_task=catalog_task)
+    sample_rate_hz = _phase_sample_rate(phase=phase, catalog_task=catalog_task)
+    z = _phase_z(phase=phase, catalog_task=catalog_task)
+    start_height = float(phase.geometry.get("start_height", phase.geometry.get("start_z", z)))
+    end_height = float(phase.geometry.get("end_height", phase.geometry.get("end_z", start_height + float(phase.geometry.get("delta_z", 0.35)))))
+    if not np.isfinite(start_height) or not np.isfinite(end_height):
+        message = "vertical start and end heights must be finite"
+        raise ValueError(message)
+    xy_offset = _optional_xy(phase.geometry, "xy_offset")
+    start = np.array([xy_offset[0], xy_offset[1], start_height], dtype=float)
+    end = np.array([xy_offset[0], xy_offset[1], end_height], dtype=float)
+    trajectory = trajectories.primitives.make_vertical_trajectory(
+        xy=xy_offset.tolist(),
+        start_height=start_height,
+        end_height=end_height,
+        duration_sec=duration_sec,
+        sample_rate_hz=sample_rate_hz,
+    )
+    task = {
+        "task_type": "trajectory",
+        "shape": PHASE_TYPE_VERTICAL,
+        "duration_sec": duration_sec,
+        "sample_rate_hz": sample_rate_hz,
+        "xy": _array_to_floats(xy_offset),
+        "start_height": float(start_height),
+        "end_height": float(end_height),
+    }
+    geometry = _phase_geometry_payload(
+        phase=phase,
+        duration_sec=duration_sec,
+        sample_rate_hz=sample_rate_hz,
+        z=z,
+        local_start=start,
+        local_end=end,
+        extra={"xy_offset": _array_to_floats(xy_offset), "delta_z": float(end_height - start_height)},
+    )
+    return _PhaseBuildResult(trajectory=trajectory, task=task, geometry=geometry, waypoint_positions=(start, end))
 
 
 def _build_polyline_phase(phase: ScenarioPhase, catalog_task: dict[str, Any] | None) -> _PhaseBuildResult:
@@ -1050,6 +1120,129 @@ def _build_circle_phase(phase: ScenarioPhase, catalog_task: dict[str, Any] | Non
     )
 
 
+def _build_ellipse_phase(phase: ScenarioPhase, catalog_task: dict[str, Any] | None) -> _PhaseBuildResult:
+    """Build a local XY ellipse phase with configurable radii and center."""
+    duration_sec = _phase_duration(phase=phase, catalog_task=catalog_task)
+    sample_rate_hz = _phase_sample_rate(phase=phase, catalog_task=catalog_task)
+    z = _phase_z(phase=phase, catalog_task=catalog_task)
+    radius_x = _positive_float(phase.geometry.get("radius_x_m", _catalog_float(catalog_task, "radius_x", None)), "radius_x_m")
+    radius_y = _positive_float(phase.geometry.get("radius_y_m", _catalog_float(catalog_task, "radius_y", None)), "radius_y_m")
+    direction = str(phase.geometry.get("direction", "ccw")).lower()
+    if direction not in {"cw", "ccw"}:
+        message = "ellipse direction must be cw or ccw"
+        raise ValueError(message)
+    revolutions = _positive_float(phase.geometry.get("revolutions", 1.0), "revolutions")
+    start_angle_deg = float(phase.geometry.get("start_angle_deg", 0.0))
+    if not np.isfinite(start_angle_deg):
+        message = "start_angle_deg must be finite"
+        raise ValueError(message)
+    default_center_offset = [-radius_x * math.cos(math.radians(start_angle_deg)), -radius_y * math.sin(math.radians(start_angle_deg)), 0.0]
+    center_offset = _optional_xyz(phase.geometry, "center_offset", default=default_center_offset)
+    center = np.array([center_offset[0], center_offset[1], z + center_offset[2]], dtype=float)
+    trajectory = _make_ellipse_phase_trajectory(
+        radius_x=radius_x,
+        radius_y=radius_y,
+        center=center,
+        duration_sec=duration_sec,
+        sample_rate_hz=sample_rate_hz,
+        direction=direction,
+        revolutions=revolutions,
+        start_angle_deg=start_angle_deg,
+    )
+    task = {
+        "task_type": "trajectory",
+        "shape": PHASE_TYPE_ELLIPSE,
+        "duration_sec": duration_sec,
+        "sample_rate_hz": sample_rate_hz,
+        "radius_x": float(radius_x),
+        "radius_y": float(radius_y),
+        "height": float(center[2]),
+        "center": _array_to_floats(center[:2]),
+        "clockwise": direction == "cw",
+    }
+    anchor_indices = np.linspace(0, trajectory.positions.shape[0] - 1, num=5, dtype=int)
+    geometry = _phase_geometry_payload(
+        phase=phase,
+        duration_sec=duration_sec,
+        sample_rate_hz=sample_rate_hz,
+        z=z,
+        local_start=trajectory.positions[0],
+        local_end=trajectory.positions[-1],
+        extra={
+            "radius_x_m": float(radius_x),
+            "radius_y_m": float(radius_y),
+            "center_offset": _array_to_floats(center_offset),
+            "direction": direction,
+            "revolutions": float(revolutions),
+            "start_angle_deg": float(start_angle_deg),
+        },
+    )
+    return _PhaseBuildResult(
+        trajectory=trajectory,
+        task=task,
+        geometry=geometry,
+        waypoint_positions=tuple(np.array(trajectory.positions[index], dtype=float, copy=True) for index in anchor_indices),
+    )
+
+
+def _build_figure_eight_phase(phase: ScenarioPhase, catalog_task: dict[str, Any] | None) -> _PhaseBuildResult:
+    """Build a local XY figure-eight phase with configurable radii and center."""
+    duration_sec = _phase_duration(phase=phase, catalog_task=catalog_task)
+    sample_rate_hz = _phase_sample_rate(phase=phase, catalog_task=catalog_task)
+    z = _phase_z(phase=phase, catalog_task=catalog_task)
+    radius_x = _positive_float(phase.geometry.get("radius_x_m", _catalog_float(catalog_task, "radius_x", None)), "radius_x_m")
+    radius_y = _positive_float(phase.geometry.get("radius_y_m", _catalog_float(catalog_task, "radius_y", None)), "radius_y_m")
+    direction = str(phase.geometry.get("direction", "ccw")).lower()
+    if direction not in {"cw", "ccw"}:
+        message = "figure_eight direction must be cw or ccw"
+        raise ValueError(message)
+    revolutions = _positive_float(phase.geometry.get("revolutions", 1.0), "revolutions")
+    center_offset = _optional_xyz(phase.geometry, "center_offset")
+    center = np.array([center_offset[0], center_offset[1], z + center_offset[2]], dtype=float)
+    trajectory = _make_figure_eight_phase_trajectory(
+        radius_x=radius_x,
+        radius_y=radius_y,
+        center=center,
+        duration_sec=duration_sec,
+        sample_rate_hz=sample_rate_hz,
+        direction=direction,
+        revolutions=revolutions,
+    )
+    task = {
+        "task_type": "trajectory",
+        "shape": PHASE_TYPE_FIGURE_EIGHT,
+        "duration_sec": duration_sec,
+        "sample_rate_hz": sample_rate_hz,
+        "radius_x": float(radius_x),
+        "radius_y": float(radius_y),
+        "height": float(center[2]),
+        "center": _array_to_floats(center[:2]),
+        "clockwise": direction == "cw",
+    }
+    anchor_indices = np.linspace(0, trajectory.positions.shape[0] - 1, num=9, dtype=int)
+    geometry = _phase_geometry_payload(
+        phase=phase,
+        duration_sec=duration_sec,
+        sample_rate_hz=sample_rate_hz,
+        z=z,
+        local_start=trajectory.positions[0],
+        local_end=trajectory.positions[-1],
+        extra={
+            "radius_x_m": float(radius_x),
+            "radius_y_m": float(radius_y),
+            "center_offset": _array_to_floats(center_offset),
+            "direction": direction,
+            "revolutions": float(revolutions),
+        },
+    )
+    return _PhaseBuildResult(
+        trajectory=trajectory,
+        task=task,
+        geometry=geometry,
+        waypoint_positions=tuple(np.array(trajectory.positions[index], dtype=float, copy=True) for index in anchor_indices),
+    )
+
+
 def _make_circle_phase_trajectory(
     radius: float,
     center: np.ndarray,
@@ -1068,6 +1261,54 @@ def _make_circle_phase_trajectory(
         (
             center[0] + radius * np.cos(angles),
             center[1] + radius * np.sin(angles),
+            np.full(times.shape, center[2], dtype=float),
+        )
+    )
+    return trajectories.primitives.Trajectory(times=times, positions=positions)
+
+
+def _make_ellipse_phase_trajectory(
+    radius_x: float,
+    radius_y: float,
+    center: np.ndarray,
+    duration_sec: float,
+    sample_rate_hz: float,
+    direction: str,
+    revolutions: float,
+    start_angle_deg: float,
+) -> trajectories.primitives.Trajectory:
+    """Generate a local XY ellipse trajectory supporting fractional revolutions."""
+    times = _make_times(duration_sec=duration_sec, sample_rate_hz=sample_rate_hz)
+    sign = -1.0 if direction == "cw" else 1.0
+    start_angle_rad = math.radians(start_angle_deg)
+    angles = start_angle_rad + sign * 2.0 * math.pi * revolutions * times / duration_sec
+    positions = np.column_stack(
+        (
+            center[0] + radius_x * np.cos(angles),
+            center[1] + radius_y * np.sin(angles),
+            np.full(times.shape, center[2], dtype=float),
+        )
+    )
+    return trajectories.primitives.Trajectory(times=times, positions=positions)
+
+
+def _make_figure_eight_phase_trajectory(
+    radius_x: float,
+    radius_y: float,
+    center: np.ndarray,
+    duration_sec: float,
+    sample_rate_hz: float,
+    direction: str,
+    revolutions: float,
+) -> trajectories.primitives.Trajectory:
+    """Generate a local XY Gerono figure-eight trajectory."""
+    times = _make_times(duration_sec=duration_sec, sample_rate_hz=sample_rate_hz)
+    sign = -1.0 if direction == "cw" else 1.0
+    theta = sign * 2.0 * math.pi * revolutions * times / duration_sec
+    positions = np.column_stack(
+        (
+            center[0] + radius_x * np.sin(theta),
+            center[1] + radius_y * np.sin(theta) * np.cos(theta),
             np.full(times.shape, center[2], dtype=float),
         )
     )
@@ -1161,6 +1402,19 @@ def _line_delta(geometry: Mapping[str, Any]) -> np.ndarray:
         return _xyz(geometry["end_offset"], name="end_offset")
     message = "line phase requires delta_position or end_offset"
     raise ValueError(message)
+
+
+def _optional_xy(geometry: Mapping[str, Any], key: str, default: Sequence[float] = (0.0, 0.0)) -> np.ndarray:
+    """Return an optional finite XY vector from geometry."""
+    value = geometry.get(key, default)
+    array = np.asarray(value, dtype=float)
+    if array.shape != (XY_DIMENSIONS,):
+        message = f"{key} must have shape (2,)"
+        raise ValueError(message)
+    if not np.all(np.isfinite(array)):
+        message = f"{key} must contain only finite values"
+        raise ValueError(message)
+    return array
 
 
 def _optional_xyz(geometry: Mapping[str, Any], key: str, default: Sequence[float] = (0.0, 0.0, 0.0)) -> np.ndarray:
@@ -1456,8 +1710,10 @@ def _resolve_model_path(settings: ScenarioRenderSettings) -> Path | None:
     """Resolve the PPO model path from storage/runs/<model_run_name>/training/models."""
     if settings.controller != policy_render.PPO_CONTROLLER:
         return None
+    if settings.model_path is not None:
+        return settings.model_path.expanduser().resolve(strict=False)
     if settings.model_run_name is None:
-        message = "PPO scenario rendering requires model_run_name"
+        message = "PPO scenario rendering requires model_run_name or model_path"
         raise ValueError(message)
     model_dir = utils.artifacts.get_run_training_models_dir(settings.model_run_name).expanduser().resolve(strict=False)
     preferred = model_dir / f"{settings.model_run_name}.zip"
@@ -1610,6 +1866,7 @@ def _build_scenario_metrics(
         "controller_type": settings.controller,
         "model_run_name": settings.model_run_name,
         "model_path": None if model_path is None else str(model_path),
+        "configured_model_path": None if settings.model_path is None else str(settings.model_path),
         "policy_predict_used": bool(policy_predict_used),
         "training_task_shape": training_task_shape,
         "steps": len(rewards),
@@ -1671,6 +1928,7 @@ def _build_scenario_manifest(
         "controller_type": settings.controller,
         "model_run_name": settings.model_run_name,
         "model_path": None if model_path is None else str(model_path),
+        "configured_model_path": None if settings.model_path is None else str(settings.model_path),
         "policy_predict_used": bool(policy_predict_used),
         "true_simulator_rendering": bool(true_simulator_rendering),
         "training_task_shape": training_task_shape,

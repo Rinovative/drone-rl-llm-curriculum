@@ -103,7 +103,12 @@ def test_tracking_env_steps_once_with_sampled_action_and_diagnostics() -> None:
         assert "start_hold_enabled" in info
         assert "tracking_phase_start_step" in info
         assert "tracking_phase_start_time_sec" in info
+        assert "final_hold_enabled" in info
+        assert "final_hold_sec" in info
+        assert "tracking_phase_end_step" in info
+        assert "tracking_phase_end_time_sec" in info
         assert "is_start_hold" in info
+        assert "is_final_hold" in info
         assert "is_tracking_phase" in info
         assert "base_reward" in info
         assert info["base_action_shape"] == action.shape
@@ -116,6 +121,8 @@ def test_tracking_env_steps_once_with_sampled_action_and_diagnostics() -> None:
         assert info["base_reason_fields"] == {}
         assert isinstance(info["termination_reason"], str)
         assert info["task_shape"] == validation.contracts.SHAPE_HOVER
+        assert info["final_hold_enabled"] is True
+        assert info["final_hold_sec"] == pytest.approx(1.0)
         assert np.asarray(info["reference_position"]).shape == (3,)
         assert np.asarray(info["current_position"]).shape == (3,)
         assert np.asarray(info["roll_pitch_yaw"]).shape == (3,)

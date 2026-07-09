@@ -1,0 +1,75 @@
+scenario_name: show_medium
+task_config_path: configs/smoke/trajectory_validation.yaml
+
+controller: scripted_reference
+max_steps: 420
+seed: 0
+final_hold_sec: 1.25
+
+camera:
+  mode: follow_external
+  distance: 1.25
+  yaw: 42
+  pitch: -24
+
+phases:
+  - name: line_entry
+    type: line
+    duration_sec: 3.5
+    start_mode: initial
+    delta_position: [0.45, 0.0, 0.0]
+
+  - name: vertical_rise
+    type: vertical
+    duration_sec: 2.5
+    start_mode: previous_end
+    start_height: 1.0
+    end_height: 1.22
+
+  - name: diagonal_cross
+    type: line
+    duration_sec: 3.0
+    start_mode: previous_end
+    delta_position: [0.28, 0.24, 0.0]
+
+  - name: medium_ellipse
+    type: ellipse
+    duration_sec: 6.0
+    start_mode: previous_end
+    radius_x_m: 0.24
+    radius_y_m: 0.14
+    start_angle_deg: 180.0
+    revolutions: 1.0
+
+  - name: slalom_polyline
+    type: polyline
+    duration_sec: 5.5
+    start_mode: previous_end
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [0.22, 0.18, 0.0]
+      - [0.44, -0.10, 0.0]
+      - [0.66, 0.12, 0.0]
+
+  - name: small_circle
+    type: circle
+    duration_sec: 6.0
+    start_mode: previous_end
+    radius_m: 0.18
+    start_angle_deg: 180.0
+    revolutions: 1.0
+
+  - name: altitude_line_exit
+    type: line
+    duration_sec: 3.5
+    start_mode: previous_end
+    delta_position: [0.30, 0.12, -0.12]
+
+  - name: final_polyline_settle
+    type: polyline
+    duration_sec: 4.0
+    start_mode: previous_end
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [-0.18, -0.12, 0.0]
+      - [-0.34, -0.12, 0.08]

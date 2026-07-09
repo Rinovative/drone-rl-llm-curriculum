@@ -1,0 +1,106 @@
+scenario_name: show_hard
+task_config_path: configs/smoke/trajectory_validation.yaml
+
+controller: scripted_reference
+max_steps: 640
+seed: 0
+final_hold_sec: 1.5
+
+camera:
+  mode: follow_external
+  distance: 1.35
+  yaw: 45
+  pitch: -25
+
+phases:
+  - name: vertical_entry
+    type: vertical
+    duration_sec: 3.0
+    start_mode: initial
+    start_height: 0.85
+    end_height: 1.18
+
+  - name: fast_horizontal
+    type: line
+    duration_sec: 3.0
+    start_mode: previous_end
+    delta_position: [0.42, 0.0, 0.0]
+
+  - name: diagonal_climb
+    type: line
+    duration_sec: 3.2
+    start_mode: previous_end
+    delta_position: [0.30, 0.24, 0.14]
+
+  - name: figure_eight_middle
+    type: figure_eight
+    duration_sec: 8.5
+    start_mode: previous_end
+    radius_x_m: 0.24
+    radius_y_m: 0.15
+    revolutions: 1.0
+
+  - name: ellipse_offset
+    type: ellipse
+    duration_sec: 7.0
+    start_mode: previous_end
+    radius_x_m: 0.28
+    radius_y_m: 0.16
+    start_angle_deg: 180.0
+    revolutions: 1.0
+
+  - name: slalom_drop
+    type: polyline
+    duration_sec: 6.0
+    start_mode: previous_end
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [0.18, -0.18, -0.05]
+      - [0.36, 0.16, -0.12]
+      - [0.54, -0.10, -0.08]
+
+  - name: tight_circle
+    type: circle
+    duration_sec: 6.0
+    start_mode: previous_end
+    radius_m: 0.20
+    start_angle_deg: 180.0
+    revolutions: 1.0
+    direction: cw
+
+  - name: multi_height_polyline
+    type: polyline
+    duration_sec: 6.5
+    start_mode: previous_end
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [0.15, 0.12, 0.12]
+      - [0.30, 0.28, -0.08]
+      - [0.45, 0.10, 0.06]
+
+  - name: rectangle_like_turns
+    type: polyline
+    duration_sec: 6.0
+    start_mode: previous_end
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [0.24, 0.0, 0.0]
+      - [0.24, -0.28, 0.0]
+      - [-0.10, -0.28, -0.08]
+      - [-0.10, -0.02, -0.08]
+
+  - name: diagonal_exit
+    type: line
+    duration_sec: 3.5
+    start_mode: previous_end
+    delta_position: [-0.28, 0.20, -0.10]
+
+  - name: hard_final_zigzag
+    type: polyline
+    duration_sec: 5.5
+    start_mode: previous_end
+    waypoints:
+      - [0.0, 0.0, 0.0]
+      - [0.14, 0.16, 0.0]
+      - [0.28, -0.14, 0.08]
+      - [0.42, 0.10, 0.0]

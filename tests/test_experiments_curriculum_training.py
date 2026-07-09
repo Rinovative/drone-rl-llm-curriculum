@@ -22,6 +22,7 @@ EXPECTED_CURRICULUM_EFFECTIVE_ROLLOUT_STEPS = 256
 EXPECTED_PID_ACTION_DIM = 3
 EXPECTED_BASE_OBSERVATION_DIM = 10
 EXPECTED_TRAINING_TOTAL_TIMESTEPS = 16
+HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml")
 
 EXPECTED_STAGE_COUNT = 5
 
@@ -122,6 +123,70 @@ def test_manual_curriculum_invalid_stage_fails_clearly() -> None:
 
     with pytest.raises(ValueError, match="invalid curriculum stage 'bad_line'"):
         curriculum_training.validate_manual_curriculum(settings)
+
+
+def test_manual_curriculum_stage_distribution_path_is_passed_to_ppo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify manual stage training uses its configured distribution path."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    representative_task = {
+        "task_type": "trajectory",
+        "shape": "hover_stabilization",
+        "duration_sec": 3.0,
+        "sample_rate_hz": 10.0,
+        "position": [0.0, 0.0, 1.0],
+    }
+    settings = curriculum_training.manual_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_manual_distribution_unit",
+            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "seed": 0,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "stages": [
+                {
+                    "stage_name": "hover_stabilization",
+                    "task_shape": "hover_stabilization",
+                    "total_timesteps": 8,
+                    "eval_steps": 4,
+                    "stage_task_distribution_config_path": str(HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG),
+                    "training_task_distribution_config_path": str(HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG),
+                    "sampled_task_family": "hover_stabilization",
+                    "sampled_task_shape": "hover_stabilization",
+                    "stage_sampling_bounds": {"target_position": {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 1.4]}},
+                    "task": representative_task,
+                    "evaluation_task": representative_task,
+                }
+            ],
+        }
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run(**kwargs: object) -> ppo_tracking.PPOTrackingSmokeResult:
+        run_name = str(kwargs["run_name"])
+        calls.append(dict(kwargs))
+        return ppo_tracking.PPOTrackingSmokeResult(
+            model_path=str(tmp_path / f"{run_name}.zip"),
+            metrics_path=str(tmp_path / f"{run_name}_metrics.json"),
+            manifest_path=str(tmp_path / f"{run_name}_manifest.json"),
+            metrics={"seed": kwargs["seed"], "diagnostics_dir": str(tmp_path / run_name / "diagnostics")},
+            last_model_path=str(tmp_path / f"{run_name}.zip"),
+        )
+
+    monkeypatch.setattr(ppo_tracking, "run_ppo_tracking_smoke_from_config", fake_run)
+
+    result = curriculum_training.run_manual_curriculum_training(settings)
+    summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+
+    assert calls[0]["task_distribution_config_path"] == HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG
+    assert calls[0]["run_metadata"]["training_task_distribution_config_path"] == str(HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG)
+    assert calls[0]["run_metadata"]["stage_task_distribution_config_path"] == str(HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG)
+    assert summary["stage_count"] == 1
+    stage_summary = summary["stages"][0]
+    assert stage_summary["task_distribution_config_path"] == str(HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG)
+    assert stage_summary["training_task_distribution_config_path"] == str(HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG)
+    assert stage_summary["stage_task_distribution_config_path"] == str(HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG)
+    assert stage_summary["evaluation_task"] == representative_task
+    assert stage_summary["task"] == representative_task
 
 
 def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

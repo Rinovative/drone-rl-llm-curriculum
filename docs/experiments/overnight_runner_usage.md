@@ -38,14 +38,14 @@ WANDB_MODE_OVERRIDE=disabled bash scripts/run_lane_1.sh
 
 The lane scripts do not disable W&B internally; they use config-level W&B settings unless `WANDB_MODE_OVERRIDE` is set by the operator.
 
-Logs and markers are written under `storage/logs/overnight_lanes/<LANE_RUN_ID>/lane_<N>/`. Each experiment gets train, standard evaluation, variation evaluation, broad evaluation, and render logs. Lane summaries are `lane_summary.tsv` and `lane_summary.md` in the same lane log directory.
+Logs and markers are written under `storage/logs/overnight_lanes/<LANE_RUN_ID>/lane_<N>/`. Each experiment gets train, simplified standard evaluation, and render-status logs. Lane summaries are `lane_summary.tsv` and `lane_summary.md` in the same lane log directory.
 
 If a run manifest already exists at `storage/runs/<run_name>/run_manifest.json`, training is skipped and evaluation/render phases still run unless their marker files already exist. Re-run a lane with the same `LANE_RUN_ID` to resume from markers.
 
 LLM curriculum lanes do not start a local LLM server. They preflight the configured OpenAI-compatible `/models` endpoint and mark only that LLM experiment as skipped if it is unreachable.
 
-Standard evaluation uses `src.experiments.cli.experiments_cli_evaluate_policy` for direct PPO and `src.experiments.cli.experiments_cli_evaluate_curriculum --model-scope final-stage` for curricula. Evaluation prefers a recorded best model when a manifest exposes one and otherwise falls back to the last saved model. Variation and broad suites use `scripts/evaluate_variation_suite.sh` with `configs/evaluation/evaluation_task_suite_variation.yaml` and `configs/evaluation/evaluation_task_suite_broad.yaml`. Render status is reported by `scripts/render_run_gifs.sh`; GIFs are produced by evaluation suites when simulator rendering succeeds.
+Standard evaluation uses `src.experiments.cli.experiments_cli_evaluate_policy` for direct PPO and `src.experiments.cli.experiments_cli_evaluate_curriculum --model-scope final-stage` for curricula. Evaluation prefers a recorded best model when a manifest exposes one and otherwise falls back to the last saved model. The active profile writes `evaluations/own_task`, `evaluations/generalization`, and `evaluations/scenarios/{easy,medium,hard}`. Render status is reported by `scripts/render_run_gifs.sh` under `evaluations/render_status`; GIFs are produced by evaluation suites and scenarios when simulator rendering succeeds.
 
-Curricula are evaluated only once after the full curriculum completes, using the final-stage best model when available and the final-stage last model otherwise. Full variation, broad, and render phases are not run for every individual LLM stage.
+Curricula are evaluated only once after the full curriculum completes, using the final-stage best model when available and the final-stage last model otherwise. Scenario/show evaluation uses that final-stage model; per-stage scenario renders are not launched by the lane runner.
 
 Task-distribution training lanes use only `configs/tasks/task_distribution_tracking_medium.yaml`. Small and broad task-distribution configs remain for debugging/evaluation/future work, but they are not scheduled tonight.

@@ -2,11 +2,11 @@
 ===============================================================================
 experiments_curriculum_training.py
 ===============================================================================
-Train PPO trajectory tracking through a fixed manual curriculum.
+Train PPO trajectory tracking through a manually designed curriculum.
 
 Responsibilities:
   - Load and validate manual curriculum training configurations
-  - Materialize explicit per-stage task configs for existing PPO training helpers
+  - Materialize representative evaluation tasks and stage distribution configs for PPO helpers
   - Run PPO stages sequentially with optional model transfer
   - Write compact curriculum summaries and manifests without duplicating traces
 
@@ -32,12 +32,17 @@ from typing import Any
 
 import yaml
 
-from src import utils, validation
+from src import envs, utils, validation
 from src.experiments import experiments_config as config_loader
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
 DEFAULT_CURRICULUM_CONFIG_PATH = Path("configs/curricula/curriculum_manual_line_smoke.yaml")
 MANUAL_CURRICULUM_KIND = "manual"
+STAGE_DISTRIBUTION_CONFIG_PATH_FIELDS = (
+    "task_distribution_config_path",
+    "stage_task_distribution_config_path",
+    "training_task_distribution_config_path",
+)
 SUMMARY_METRIC_KEYS = (
     "num_envs",
     "action_interface",
@@ -70,6 +75,11 @@ SUMMARY_METRIC_KEYS = (
     "exclude_start_hold_from_tracking_metrics",
     "tracking_phase_start_step",
     "tracking_phase_start_time_sec",
+    "final_hold_enabled",
+    "final_hold_sec",
+    "exclude_final_hold_from_tracking_metrics",
+    "tracking_phase_end_step",
+    "tracking_phase_end_time_sec",
     "mean_position_error_m",
     "mean_position_error_tracking_m",
     "final_position_error_m",
@@ -117,6 +127,26 @@ class ManualCurriculumStage:
         Deterministic evaluation steps after this stage trains.
     notes
         Optional rationale or operator notes copied into summaries.
+    task_distribution_config_path
+        Optional stage training distribution config passed to PPO.
+    stage_task_distribution_config_path
+        Explicit stage-level alias for the training task distribution config.
+    training_task_distribution_config_path
+        Explicit PPO training task distribution config sampled on environment resets.
+    evaluation_task
+        Representative deterministic task used by stage evaluation.
+    sampled_task_family
+        Human-readable distribution family metadata for this stage.
+    sampled_task_shape
+        Expected sampled task shape metadata for this stage.
+    stage_sampling_bounds
+        JSON-ready sampling bounds documented for auditability.
+    bootstrap_stage_source
+        Source of a deterministic bootstrap stage, when applicable.
+    bootstrap_task_shape
+        Expected bootstrap task shape copied into manifests for auditability.
+    bootstrap_target_sampling_bounds
+        Optional per-axis hover target sampling bounds used by bootstrap distribution.
 
     """
 
@@ -126,6 +156,16 @@ class ManualCurriculumStage:
     total_timesteps: int
     eval_steps: int
     notes: str | None = None
+    task_distribution_config_path: Path | None = None
+    stage_task_distribution_config_path: Path | None = None
+    training_task_distribution_config_path: Path | None = None
+    evaluation_task: dict[str, Any] | None = None
+    sampled_task_family: str | None = None
+    sampled_task_shape: str | None = None
+    stage_sampling_bounds: dict[str, Any] | None = None
+    bootstrap_stage_source: str | None = None
+    bootstrap_task_shape: str | None = None
+    bootstrap_target_sampling_bounds: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Validate stage metadata that does not require trajectory sampling."""
@@ -143,6 +183,21 @@ class ManualCurriculumStage:
             raise ValueError(message)
         if self.task.get(validation.contracts.FIELD_SHAPE) != self.task_shape:
             message = f"stage {self.stage_name!r} task shape must match task_shape {self.task_shape!r}"
+            raise ValueError(message)
+        if self.evaluation_task is not None and self.evaluation_task.get(validation.contracts.FIELD_SHAPE) != self.task_shape:
+            message = f"stage {self.stage_name!r} evaluation_task shape must match task_shape {self.task_shape!r}"
+            raise ValueError(message)
+        paths = [
+            path
+            for path in (
+                self.task_distribution_config_path,
+                self.stage_task_distribution_config_path,
+                self.training_task_distribution_config_path,
+            )
+            if path is not None
+        ]
+        if len({str(path) for path in paths}) > 1:
+            message = f"stage {self.stage_name!r} task distribution path aliases must match"
             raise ValueError(message)
 
 
@@ -346,10 +401,28 @@ def validate_manual_curriculum(settings: ManualCurriculumSettings) -> None:
 
     """
     for stage in settings.stages:
-        result = validation.tasks.validate_task(stage.task)
+        evaluation_task = _stage_evaluation_task(stage)
+        result = validation.tasks.validate_task(evaluation_task)
         if not result.is_valid:
             details = "; ".join(result.messages)
             message = f"invalid curriculum stage {stage.stage_name!r}: {details}"
+            raise ValueError(message)
+        distribution_path = _stage_training_task_distribution_config_path(stage)
+        if distribution_path is None:
+            continue
+        distribution_settings = envs.task_distribution.load_task_distribution_settings(distribution_path)
+        if (
+            distribution_settings.mode != envs.task_distribution.MODE_RANDOMIZED
+            or not distribution_settings.sample_on_reset
+            or distribution_settings.strength <= 0.0
+        ):
+            message = f"manual curriculum stage {stage.stage_name!r} must use a randomized per-reset task distribution"
+            raise ValueError(message)
+        sampled_task = envs.task_distribution.sample_task(distribution_settings)
+        sampled_result = validation.tasks.validate_task(sampled_task, limits=distribution_settings.validation_limits)
+        if not sampled_result.is_valid:
+            details = "; ".join(sampled_result.messages)
+            message = f"invalid sampled task for curriculum stage {stage.stage_name!r}: {details}"
             raise ValueError(message)
 
 
@@ -421,6 +494,7 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
             seed=settings.seed,
             wandb_mode=settings.wandb_mode,
             normalize_actions=settings.normalize_actions,
+            task_distribution_config_path=_stage_training_task_distribution_config_path(stage),
             wandb_group=_curriculum_wandb_group(curriculum_run_name),
             wandb_tags=_stage_wandb_tags(stage_index, stage),
             initial_model_path=initial_model_path,
@@ -504,7 +578,9 @@ def _stage_from_mapping(index: int, raw_stage: Any) -> ManualCurriculumStage:
         message = f"stage {index} must contain an explicit task mapping"
         raise TypeError(message)
     task_payload = dict(task)
+    evaluation_task = _optional_json_mapping(raw_stage.get("evaluation_task"), "evaluation_task") or dict(task_payload)
     task_shape = str(raw_stage.get("task_shape") or task_payload.get(validation.contracts.FIELD_SHAPE) or "")
+    distribution_path = _stage_distribution_config_path_from_mapping(index, raw_stage)
     return ManualCurriculumStage(
         stage_name=_stage_display_name(task=task_payload, fallback=str(raw_stage.get("stage_name") or task_shape)),
         task_shape=task_shape,
@@ -512,6 +588,19 @@ def _stage_from_mapping(index: int, raw_stage: Any) -> ManualCurriculumStage:
         total_timesteps=int(raw_stage.get("total_timesteps", 0)),
         eval_steps=int(raw_stage.get("eval_steps", 0)),
         notes=str(raw_stage["notes"]) if raw_stage.get("notes") is not None else None,
+        task_distribution_config_path=distribution_path,
+        stage_task_distribution_config_path=distribution_path,
+        training_task_distribution_config_path=distribution_path,
+        evaluation_task=evaluation_task,
+        sampled_task_family=str(raw_stage["sampled_task_family"]) if raw_stage.get("sampled_task_family") is not None else None,
+        sampled_task_shape=str(raw_stage["sampled_task_shape"]) if raw_stage.get("sampled_task_shape") is not None else None,
+        stage_sampling_bounds=_optional_json_mapping(raw_stage.get("stage_sampling_bounds"), "stage_sampling_bounds"),
+        bootstrap_stage_source=str(raw_stage["bootstrap_stage_source"]) if raw_stage.get("bootstrap_stage_source") is not None else None,
+        bootstrap_task_shape=str(raw_stage["bootstrap_task_shape"]) if raw_stage.get("bootstrap_task_shape") is not None else None,
+        bootstrap_target_sampling_bounds=_optional_json_mapping(
+            raw_stage.get("bootstrap_target_sampling_bounds"),
+            "bootstrap_target_sampling_bounds",
+        ),
     )
 
 
@@ -546,7 +635,7 @@ def _write_stage_task_config(
     payload = {
         "name": f"{settings.curriculum_name}_stage{stage_index:02d}",
         "seed": settings.seed,
-        "tasks": [stage.task],
+        "tasks": [_stage_evaluation_task(stage)],
     }
     task_config_path.write_text(_to_yaml(payload), encoding="utf-8")
     return task_config_path
@@ -569,6 +658,9 @@ def _stage_summary_entry(
         "stage_index": stage_index,
         "stage_name": stage.stage_name,
         "task_shape": stage.task_shape,
+        "task": stage.task,
+        "evaluation_task": _stage_evaluation_task(stage),
+        **_stage_distribution_metadata_fields(stage),
         "run_name": run_name,
         "curriculum_stage_run_name": run_name,
         "stage_dir": str(training_dir.parent),
@@ -606,6 +698,8 @@ def _stage_summary_entry(
     }
     for key in SUMMARY_METRIC_KEYS:
         entry[key] = metrics.get(key)
+    if entry.get("task_distribution_config_path") is None:
+        entry["task_distribution_config_path"] = _optional_path_text(_stage_training_task_distribution_config_path(stage))
     return entry
 
 
@@ -767,17 +861,7 @@ def _write_curriculum_config_snapshot(settings: ManualCurriculumSettings) -> Pat
         "wandb_mode": settings.wandb_mode,
         "normalize_actions": settings.normalize_actions,
         **_manual_budget_metadata(settings),
-        "stages": [
-            {
-                "stage_name": stage.stage_name,
-                "task_shape": stage.task_shape,
-                "total_timesteps": stage.total_timesteps,
-                "eval_steps": stage.eval_steps,
-                "notes": stage.notes,
-                "task": stage.task,
-            }
-            for stage in settings.stages
-        ],
+        "stages": [_stage_config_snapshot_entry(stage) for stage in settings.stages],
     }
     snapshot_path.write_text(_to_yaml(payload), encoding="utf-8")
     return snapshot_path
@@ -871,7 +955,78 @@ def _stage_run_metadata(
         "stage_total_timesteps": stage.total_timesteps,
         "model_transfer_enabled": previous_model_path is not None,
         "previous_stage_model_path": previous_model_path,
+        **_stage_distribution_metadata_fields(stage),
     }
+
+
+def _stage_distribution_config_path_from_mapping(index: int, raw_stage: Mapping[str, Any]) -> Path | None:
+    """Return the configured stage distribution path while validating aliases."""
+    paths = {field: Path(str(raw_stage[field])) for field in STAGE_DISTRIBUTION_CONFIG_PATH_FIELDS if raw_stage.get(field) is not None}
+    if len({str(path) for path in paths.values()}) > 1:
+        message = f"stage {index} task distribution path aliases must match"
+        raise ValueError(message)
+    return next(iter(paths.values()), None)
+
+
+def _stage_training_task_distribution_config_path(stage: ManualCurriculumStage) -> Path | None:
+    """Return the effective PPO training distribution path for a manual stage."""
+    for path in (
+        stage.training_task_distribution_config_path,
+        stage.stage_task_distribution_config_path,
+        stage.task_distribution_config_path,
+    ):
+        if path is not None:
+            return path
+    return None
+
+
+def _stage_evaluation_task(stage: ManualCurriculumStage) -> dict[str, Any]:
+    """Return the representative deterministic evaluation task for a manual stage."""
+    return dict(stage.evaluation_task or stage.task)
+
+
+def _stage_distribution_metadata_fields(stage: ManualCurriculumStage) -> dict[str, Any]:
+    """Return JSON-ready manual stage distribution metadata."""
+    distribution_path = _stage_training_task_distribution_config_path(stage)
+    return {
+        "stage_task_distribution_config_path": _optional_path_text(stage.stage_task_distribution_config_path or distribution_path),
+        "training_task_distribution_config_path": _optional_path_text(stage.training_task_distribution_config_path or distribution_path),
+        "evaluation_task": _stage_evaluation_task(stage),
+        "sampled_task_family": stage.sampled_task_family,
+        "sampled_task_shape": stage.sampled_task_shape,
+        "stage_sampling_bounds": stage.stage_sampling_bounds,
+        "bootstrap_stage_source": stage.bootstrap_stage_source,
+        "bootstrap_task_shape": stage.bootstrap_task_shape,
+        "bootstrap_target_sampling_bounds": stage.bootstrap_target_sampling_bounds,
+    }
+
+
+def _stage_config_snapshot_entry(stage: ManualCurriculumStage) -> dict[str, Any]:
+    """Return one JSON-ready stage entry for generated config snapshots."""
+    return {
+        "stage_name": stage.stage_name,
+        "task_shape": stage.task_shape,
+        "total_timesteps": stage.total_timesteps,
+        "eval_steps": stage.eval_steps,
+        "notes": stage.notes,
+        "task": stage.task,
+        **_stage_distribution_metadata_fields(stage),
+    }
+
+
+def _optional_json_mapping(value: Any, field_name: str) -> dict[str, Any] | None:
+    """Return an optional JSON-ready mapping from stage config metadata."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        message = f"{field_name} must be a mapping"
+        raise TypeError(message)
+    return dict(value)
+
+
+def _optional_path_text(path: Path | None) -> str | None:
+    """Return a path as text for JSON/YAML metadata."""
+    return None if path is None else str(path)
 
 
 def _to_yaml(payload: Mapping[str, Any]) -> str:

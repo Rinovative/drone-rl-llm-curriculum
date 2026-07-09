@@ -161,10 +161,15 @@ def test_real_evaluation_suites_load_through_suite_loader() -> None:
             "line_reverse",
         ],
         "configs/evaluation/generalization_eval_suite.yaml": [
-            "polyline_basic",
-            "circle_basic",
+            "hover_center",
             "vertical_basic",
-            "polyline_offset",
+            "line_basic",
+            "diagonal_line_basic",
+            "short_line_start_hold",
+            "polyline_l_basic",
+            "circle_basic",
+            "ellipse_basic",
+            "figure_eight_basic",
         ],
     }
 
@@ -189,6 +194,16 @@ def test_generalization_suite_contains_optional_non_line_tasks() -> None:
     suite = evaluation_suites.load_evaluation_suite("configs/evaluation/generalization_eval_suite.yaml")
 
     assert suite.evaluation_name == "generalization"
-    assert suite.eval_steps == 360
-    assert {task.task_shape for task in suite.tasks} >= {"polyline", "circle", "vertical"}
-    assert any(task.task_shape != "line" for task in suite.tasks)
+    assert suite.eval_steps == 420
+    assert {task.task_shape for task in suite.tasks} == {
+        "circle",
+        "ellipse",
+        "figure_eight",
+        "hover_stabilization",
+        "line",
+        "polyline",
+        "start_hold_then_short_line",
+        "vertical",
+    }
+    assert all(task.task["final_hold_enabled"] is True for task in suite.tasks)
+    assert all(task.task["final_hold_sec"] == 1.0 for task in suite.tasks)

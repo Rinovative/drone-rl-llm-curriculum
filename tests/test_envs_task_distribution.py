@@ -134,6 +134,54 @@ def test_line_variation_stays_within_bounds() -> None:
     assert sampled["start_hold_enabled"] is True
 
 
+def test_polyline_bootstrap_distribution_samples_l_shape_height_offset() -> None:
+    """Verify the manual polyline bootstrap can vary final height gently."""
+    settings = envs.task_distribution.load_task_distribution_settings("configs/tasks/task_distribution_polyline_bootstrap_medium.yaml")
+
+    sampled = envs.task_distribution.sample_task(settings)
+
+    assert sampled["shape"] == "polyline"
+    points = sampled["points"]
+    final_height_offset = points[-1][2] - points[0][2]
+    assert final_height_offset != pytest.approx(0.0)
+    assert -0.1 <= final_height_offset <= 0.1
+    assert validation.tasks.validate_task(sampled, limits=settings.validation_limits).is_valid
+
+
+def test_basic_training_show_distribution_samples_bounded_episode_variation() -> None:
+    """Verify the Direct-PPO basic training show varies per episode but keeps its identity."""
+    settings = envs.task_distribution.load_task_distribution_settings("configs/tasks/task_distribution_basic_training_show.yaml")
+    first_sampler = envs.task_distribution.TaskDistributionSampler(settings, env_rank=0)
+    second_sampler = envs.task_distribution.TaskDistributionSampler(settings, env_rank=0)
+
+    first = first_sampler.sample_task()
+    second = first_sampler.sample_task()
+    repeated_first = second_sampler.sample_task()
+
+    assert first["shape"] == validation.contracts.SHAPE_BASIC_TRAINING_SHOW
+    assert first["training_task_kind"] == "basic_training_show"
+    assert first["task_is_show"] is True
+    assert first["show_name"] == "basic_training_show"
+    assert first["sampled_per_episode"] is True
+    assert first["constant_within_episode"] is True
+    assert first["variation_enabled"] is True
+    assert first["variation_mode"] == "bounded_per_episode"
+    assert first["segment_shapes"] == [
+        "hover_stabilization",
+        "vertical",
+        "horizontal_line",
+        "diagonal_line",
+        "ellipse",
+        "l_shape",
+        "zigzag",
+        "final_hold",
+    ]
+    assert first != second
+    assert first == repeated_first
+    assert validation.tasks.validate_task(first, limits=settings.validation_limits).is_valid
+    assert validation.tasks.validate_task(second, limits=settings.validation_limits).is_valid
+
+
 @pytest.mark.parametrize("family", envs.task_distribution.supported_task_families())
 def test_supported_generated_family_passes_existing_validation(family: str) -> None:
     """Verify every supported family can emit an existing valid task schema."""
@@ -184,7 +232,7 @@ def test_task_distribution_training_configs_load() -> None:
     """Verify new task-distribution training configs resolve through the PPO loader."""
     for config_path in (
         "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
-        "configs/training/ppo_tracking_pid_dynprev_net128_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_net256_m-taskdist_medium.yaml",
         "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium.yaml",
     ):
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)

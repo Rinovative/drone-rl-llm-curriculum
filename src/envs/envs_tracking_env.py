@@ -498,7 +498,10 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         reference_index = int(np.clip(reference_step_index, 0, self.reference.times.shape[0] - 1))
         tracking_phase_start_step = int(self.reference.tracking_phase_start_step)
         tracking_phase_start_time_sec = float(self.reference.tracking_phase_start_time_sec)
+        tracking_phase_end_step = int(self.reference.tracking_phase_end_step)
+        tracking_phase_end_time_sec = float(self.reference.tracking_phase_end_time_sec)
         is_start_hold = bool(self.reference.start_hold_enabled and reference_index < tracking_phase_start_step)
+        is_final_hold = bool(self.reference.final_hold_enabled and reference_index >= tracking_phase_end_step)
         task_distribution_fields = _compact_task_distribution_info_fields(self.task_distribution_metadata)
         return {
             "action_interface": self.action_interface,
@@ -530,8 +533,14 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             "exclude_start_hold_from_tracking_metrics": bool(self.reference.exclude_start_hold_from_tracking_metrics),
             "tracking_phase_start_step": tracking_phase_start_step,
             "tracking_phase_start_time_sec": tracking_phase_start_time_sec,
+            "final_hold_enabled": bool(self.reference.final_hold_enabled),
+            "final_hold_sec": float(self.reference.final_hold_sec),
+            "exclude_final_hold_from_tracking_metrics": bool(self.reference.exclude_final_hold_from_tracking_metrics),
+            "tracking_phase_end_step": tracking_phase_end_step,
+            "tracking_phase_end_time_sec": tracking_phase_end_time_sec,
             "is_start_hold": is_start_hold,
-            "is_tracking_phase": not is_start_hold,
+            "is_final_hold": is_final_hold,
+            "is_tracking_phase": not is_start_hold and not is_final_hold,
             "tracking_success": bool(tracking_success),
             "roll_pitch_yaw": attitude,
             "velocity": velocity,

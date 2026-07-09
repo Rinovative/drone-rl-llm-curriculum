@@ -23,7 +23,7 @@ Boundaries:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from typing import Any
 
@@ -46,6 +46,12 @@ PPO_CONFIG_KEYS = (
 
 SUPPORTED_POLICY_KWARGS_KEYS = ("net_arch",)
 NET_ARCH_POLICY_KEYS = ("pi", "vf")
+DEFAULT_NET_ARCH = {"pi": [128, 128], "vf": [128, 128]}
+
+
+def default_policy_kwargs() -> dict[str, Any]:
+    """Return the project default PPO MLP architecture."""
+    return _copy_policy_kwargs({"net_arch": DEFAULT_NET_ARCH})
 
 
 @dataclass(frozen=True)
@@ -83,7 +89,7 @@ class PPOConfig:
     target_kl
         Optional positive target KL early-stopping threshold.
     policy_kwargs
-        Optional explicit SB3 policy keyword arguments. Only ``net_arch`` is supported.
+        Explicit SB3 policy keyword arguments. Defaults to the project net128 pi/vf architecture. Only ``net_arch`` is supported.
 
     """
 
@@ -100,7 +106,7 @@ class PPOConfig:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     target_kl: float | None = 0.03
-    policy_kwargs: dict[str, Any] | None = None
+    policy_kwargs: dict[str, Any] | None = field(default_factory=default_policy_kwargs)
 
     def __post_init__(self) -> None:
         """Normalize scalar values and validate the PPO hyperparameter contract."""
@@ -233,10 +239,10 @@ class PPOConfig:
             raise ValueError(message)
 
 
-def _validate_policy_kwargs(value: Any) -> dict[str, Any] | None:
+def _validate_policy_kwargs(value: Any) -> dict[str, Any]:
     """Validate supported SB3 policy kwargs and return a JSON-safe copy."""
     if value is None:
-        return None
+        return default_policy_kwargs()
     if not isinstance(value, Mapping):
         message = "ppo.policy_kwargs must be a mapping"
         raise ValueError(message)  # noqa: TRY004 - public config errors are reported as ValueError.
@@ -396,7 +402,9 @@ def _finite_float(value: Any, name: str) -> float:
 
 
 __all__ = [
+    "DEFAULT_NET_ARCH",
     "PPO_CONFIG_KEYS",
     "PPOConfig",
+    "default_policy_kwargs",
     "load_ppo_config_from_mapping",
 ]

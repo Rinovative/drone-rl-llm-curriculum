@@ -932,14 +932,8 @@ def test_direct_policy_standard_evaluation_runs_default_profile(
     run_name = "direct_ppo_line_seed0"
     run_root = tmp_path / "storage" / "runs" / run_name
     run_manifest_path = _write_direct_run_manifest(run_root, run_name)
-    line_suite = tmp_path / "line_eval_suite.yaml"
-    final_suite = tmp_path / "final_benchmark_eval_suite.yaml"
     generalization_suite = tmp_path / "generalization_eval_suite.yaml"
-    _write_suite_config(line_suite, "line_eval", "line_basic")
-    _write_suite_config(final_suite, "final_benchmark", "line_final")
     _write_suite_config(generalization_suite, "generalization", "line_generalization")
-    monkeypatch.setattr(policy_evaluation, "STANDARD_LINE_EVALUATION_SUITE_PATH", line_suite)
-    monkeypatch.setattr(policy_evaluation, "STANDARD_FINAL_BENCHMARK_SUITE_PATH", final_suite)
     monkeypatch.setattr(policy_evaluation, "STANDARD_GENERALIZATION_SUITE_PATH", generalization_suite)
 
     seen: list[str | None] = []
@@ -956,19 +950,47 @@ def test_direct_policy_standard_evaluation_runs_default_profile(
         trace_path.write_text("{}\n", encoding="utf-8")
         return _FakeDiagnostics(metrics={"episode_count": 1}, trace_records=[]), {"evaluation_trace_path": str(trace_path)}
 
+    def fake_scenarios(run_manifest_path: Path, wandb_mode: str = "disabled") -> policy_evaluation.PolicyScenarioEvaluationResult:
+        assert wandb_mode == "disabled"
+        seen.append("scenarios")
+        metrics_path = run_root / "evaluations" / "scenarios" / "metrics" / f"{run_name}_scenarios_metrics.json"
+        manifest_path = run_root / "evaluations" / "scenarios" / "manifests" / f"{run_name}_scenarios_manifest.json"
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics = {"evaluation_name": "scenarios", "scenario_labels": ["easy", "medium", "hard"], "entry_count": 3}
+        metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+        manifest_path.write_text(json.dumps(metrics), encoding="utf-8")
+        policy_evaluation.update_run_evaluation_index(
+            run_manifest_path,
+            {
+                "index_key": "standard_scenario_evaluation:scenarios",
+                "run_name": run_name,
+                "run_kind": "direct_ppo",
+                "mode": "standard_scenario_evaluation",
+                "evaluation_name": "scenarios",
+                "aggregate_metrics_path": str(metrics_path),
+                "aggregate_metrics_path_relative": "evaluations/scenarios/metrics/direct_ppo_line_seed0_scenarios_metrics.json",
+                "evaluation_manifest_path": str(manifest_path),
+                "evaluation_manifest_path_relative": "evaluations/scenarios/manifests/direct_ppo_line_seed0_scenarios_manifest.json",
+                "task_names": ["easy", "medium", "hard"],
+                "evaluated_models": [],
+            },
+        )
+        return policy_evaluation.PolicyScenarioEvaluationResult(str(metrics_path), str(manifest_path), metrics)
+
     monkeypatch.setattr(policy_evaluation, "_collect_diagnostics", fake_collect)
     monkeypatch.setattr(policy_evaluation, "_write_render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(policy_evaluation, "run_direct_policy_scenario_evaluation", fake_scenarios)
 
     result = policy_evaluation.run_direct_policy_standard_evaluation(run_manifest_path=run_manifest_path, wandb_mode="disabled")
 
     assert result.metrics_path == str(run_root / "evaluation_index.json")
-    assert result.metrics["evaluation_names"] == ["own_task", "line_eval", "final_benchmark", "generalization"]
-    assert seen == ["own_task", "line_eval", "final_benchmark", "generalization"]
+    assert result.metrics["evaluation_names"] == ["own_task", "generalization", "scenarios"]
+    assert seen == ["own_task", "generalization", "scenarios"]
     updated_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     assert updated_manifest["evaluation_index"]["path_relative"] == "evaluation_index.json"
     assert [entry["evaluation_name"] for entry in updated_manifest["evaluation_index"]["evaluations"]] == [
         "own_task",
-        "line_eval",
-        "final_benchmark",
         "generalization",
+        "scenarios",
     ]

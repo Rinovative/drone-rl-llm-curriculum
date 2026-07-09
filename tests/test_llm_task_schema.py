@@ -171,11 +171,16 @@ def test_schema_includes_curriculum_specific_fields_and_shapes() -> None:
         contracts.FIELD_START_HOLD_ENABLED,
         contracts.FIELD_START_HOLD_SEC,
         contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS,
+        contracts.FIELD_FINAL_HOLD_ENABLED,
+        contracts.FIELD_FINAL_HOLD_SEC,
+        contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS,
     ):
         assert field in known_fields
     for shape in validation.contracts.SUPPORTED_TRAJECTORY_SHAPES:
         assert shape in required_by_shape
         assert contracts.FIELD_START_HOLD_ENABLED in optional_by_shape[shape]
+        assert contracts.FIELD_FINAL_HOLD_ENABLED in optional_by_shape[shape]
+        assert contracts.FIELD_FINAL_HOLD_SEC in optional_by_shape[shape]
 
 
 def test_prompt_contract_includes_supported_shapes_and_json_only_instruction() -> None:
@@ -325,18 +330,28 @@ def test_reason_metadata_is_preserved_but_not_passed_to_validation() -> None:
     assert result.is_valid
 
 
-def test_task_schema_accepts_known_task_distribution_reference() -> None:
+@pytest.mark.parametrize(
+    ("distribution_id", "expected_path"),
+    [
+        ("tracking_small", "configs/tasks/task_distribution_tracking_small.yaml"),
+        ("hover_bootstrap", "configs/tasks/task_distribution_hover_bootstrap_medium.yaml"),
+        ("short_line_bootstrap", "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml"),
+        ("vertical_bootstrap", "configs/tasks/task_distribution_vertical_bootstrap_medium.yaml"),
+        ("polyline_bootstrap", "configs/tasks/task_distribution_polyline_bootstrap_medium.yaml"),
+    ],
+)
+def test_task_schema_accepts_known_task_distribution_reference(distribution_id: str, expected_path: str) -> None:
     """Verify constrained task-distribution references validate through the schema."""
     proposal = {
         "proposal_kind": "task_distribution",
-        "task_distribution_id": "tracking_small",
-        "reason": "Stay on the conservative mixed distribution.",
+        "task_distribution_id": distribution_id,
+        "reason": "Stay on a known bounded distribution.",
     }
 
     normalized = llm.task_schema.normalize_proposed_task(proposal)
     result = llm.task_schema.validate_proposed_task(proposal)
 
-    assert normalized["task_distribution_config_path"] == "configs/tasks/task_distribution_tracking_small.yaml"
+    assert normalized["task_distribution_config_path"] == expected_path
     assert result.is_valid
 
 
@@ -384,3 +399,10 @@ def test_prompt_contract_mentions_task_distributions_and_supported_families() ->
 def test_task_schema_imports_through_package_alias() -> None:
     """Verify task schema helpers are exposed by the llm package."""
     assert llm.task_schema.build_task_schema is not None
+
+
+def test_schema_does_not_expose_basic_training_show_as_llm_focused_family() -> None:
+    """Verify the Direct-PPO composed show does not become a normal LLM focused family."""
+    schema = llm.task_schema.build_task_schema()
+
+    assert "basic_training_show" not in schema["supported_task_distribution_families"]

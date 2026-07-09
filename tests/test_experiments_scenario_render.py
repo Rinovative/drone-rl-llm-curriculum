@@ -16,6 +16,9 @@ from src.experiments.rendering import experiments_rendering_scenario as scenario
 SCRIPTED_CONFIG = Path("configs/scenarios/scripted_reference_line_polyline.yaml")
 SHOWCASE_CONFIG = Path("configs/scenarios/showcase_hover_line_polyline.yaml")
 CIRCLE_CONFIG = Path("configs/scenarios/scripted_reference_circle_polyline.yaml")
+SHOW_EASY_CONFIG = Path("configs/evaluation/scenarios/show_easy.yaml")
+SHOW_MEDIUM_CONFIG = Path("configs/evaluation/scenarios/show_medium.yaml")
+SHOW_HARD_CONFIG = Path("configs/evaluation/scenarios/show_hard.yaml")
 CONFIG_MAX_STEPS = 320
 CLI_MAX_STEPS = 123
 CLI_SEED = 4
@@ -66,14 +69,56 @@ def test_load_showcase_scenario_settings_requires_ppo_model_run() -> None:
     assert settings.phases[0].geometry["hold_current_position"] is True
 
 
-def test_ppo_scenario_settings_reject_missing_model_run_name() -> None:
-    """Verify PPO scenario rendering cannot silently fall back to old model paths."""
-    with pytest.raises(ValueError, match="model_run_name"):
+def test_ppo_scenario_settings_reject_missing_model_source() -> None:
+    """Verify PPO scenario rendering requires either a run name or explicit model path."""
+    with pytest.raises(ValueError, match="model_run_name or model_path"):
         scenario_render.ScenarioRenderSettings(
             scenario_name="bad_ppo",
             controller=policy_render.PPO_CONTROLLER,
             phases=(scenario_render.ScenarioPhase(name="line", phase_type="line"),),
         )
+
+
+def test_ppo_scenario_settings_accept_explicit_model_path(tmp_path: Path) -> None:
+    """Verify standard evaluation can pass an explicit PPO zip path for curriculum final models."""
+    model_path = tmp_path / "final_stage.zip"
+    settings = scenario_render.ScenarioRenderSettings(
+        scenario_name="explicit_model",
+        controller=policy_render.PPO_CONTROLLER,
+        model_path=model_path,
+        phases=(scenario_render.ScenarioPhase(name="line", phase_type="line"),),
+    )
+
+    assert scenario_render._resolve_model_path(settings) == model_path.resolve(strict=False)
+
+
+def test_standard_show_scenarios_compose_with_ordered_difficulty() -> None:
+    """Verify easy/medium/hard show configs compose, connect, and increase in duration."""
+    compositions = []
+    for config_path in (SHOW_EASY_CONFIG, SHOW_MEDIUM_CONFIG, SHOW_HARD_CONFIG):
+        settings = scenario_render.load_scenario_render_settings(config_path)
+        composition = scenario_render.compose_scenario_reference(settings)
+        compositions.append(composition)
+
+        assert composition.reference.shape == "scenario"
+        assert composition.final_hold_sec > 0.0
+        assert composition.final_hold_steps > 0
+        assert np.all(np.diff(composition.reference.times) > 0.0)
+        for end_position, start_position in zip(composition.phase_end_positions[:-1], composition.phase_start_positions[1:], strict=True):
+            assert np.allclose(end_position, start_position)
+
+    easy, medium, hard = compositions
+    easy_shapes = [phase.phase_type for phase in easy.phases]
+    medium_shapes = [phase.phase_type for phase in medium.phases]
+    hard_shapes = [phase.phase_type for phase in hard.phases]
+    assert easy_shapes == ["hover", "vertical", "line", "line", "ellipse", "polyline"]
+    assert len(easy.phases) + 1 >= 5
+    assert 7 <= len(medium.phases) + 1 <= 9
+    assert 10 <= len(hard.phases) + 1 <= 15
+    assert {"vertical", "ellipse", "polyline", "circle"}.issubset(set(medium_shapes))
+    assert {"vertical", "figure_eight", "ellipse", "circle", "polyline", "line"}.issubset(set(hard_shapes))
+    assert hard_shapes.count("polyline") >= 4
+    assert easy.scenario_duration_sec < medium.scenario_duration_sec < hard.scenario_duration_sec
 
 
 def test_compose_line_phase_uses_custom_delta_position() -> None:

@@ -146,6 +146,45 @@ def test_event_log_contains_validation_status_and_rejection_reasons(tmp_path: Pa
     assert any("arena" in reason for reason in events[0]["rejection_reasons"])
 
 
+def test_duplicate_consecutive_task_family_is_rejected_and_repaired(tmp_path: Path) -> None:
+    """Verify immediate duplicate task families are rejected before accepting a repair."""
+    logger = _logger(tmp_path)
+    duplicate_hover = (
+        '{"task_type":"trajectory","shape":"nearby_target_hover","duration_sec":2.5,'
+        '"sample_rate_hz":10.0,"position":[0.1,0.0,1.0],"reason":"Repeat hover."}'
+    )
+    repaired_line = (
+        '{"task_type":"trajectory","shape":"line","duration_sec":3.0,'
+        '"sample_rate_hz":10.0,"start":[0.0,0.0,1.0],"end":[0.35,0.0,1.0],"reason":"Switch to line."}'
+    )
+    context = llm.curriculum.ProposalContext(
+        curriculum_name="curriculum_llm_test",
+        stage_index=2,
+        recent_accepted_tasks=({"accepted_stage_task_shape": "hover_stabilization"},),
+    )
+
+    result = llm.curriculum.propose_next_task(
+        client=llm.client.MockLLMClient([duplicate_hover, repaired_line]),
+        context=context,
+        settings=llm.curriculum.ProposalSettings(max_repair_attempts=1),
+        logger=logger,
+    )
+    events = llm.logging.read_jsonl(logger.log_path)
+
+    assert result.task is not None
+    assert result.task["shape"] == "line"
+    assert result.stats["duplicate_task_rejections"] == 1
+    assert result.stats["repair_successes"] == 1
+    assert events[0]["status"] == "rejected"
+    assert events[0]["error_type"] == "duplicate_task"
+    assert events[0]["validation_status"] == "duplicate"
+    assert events[0]["previous_stage_task_shape"] == "hover_stabilization"
+    assert events[0]["requested_stage_task_shape"] == "nearby_target_hover"
+    assert events[0]["duplicate_task_rejected"] is True
+    assert events[1]["status"] == "accepted"
+    assert events[1]["accepted_stage_task_shape"] == "line"
+
+
 def test_valid_task_distribution_proposal_is_accepted_and_logged(tmp_path: Path) -> None:
     """Verify a constrained distribution reference proposal is accepted and logged."""
     logger = _logger(tmp_path)

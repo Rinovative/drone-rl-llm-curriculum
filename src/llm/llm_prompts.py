@@ -23,10 +23,11 @@ Boundaries:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
 from . import llm_task_schema as task_schema
 
@@ -90,6 +91,7 @@ def build_task_proposal_messages(
     user_prompt = (
         f"{JSON_ONLY_INSTRUCTION}\n"
         "Propose the next training task using this bounded context. Prefer a small, feasible progression from the latest accepted task. "
+        "Do not repeat immediate_previous_stage_task_shape; choose a different task family/shape with bounded variation. "
         "If adaptive budget profiles are enabled, choose only a stage_budget_profile from llm_stage_budget.allowed_profile_names; "
         "bootstrap is for stage 1 warmup, short is for easy confirmation, normal is default progression, "
         "recovery is for unstable but promising behavior, and extend is for appropriate but undertrained stages. "
@@ -160,7 +162,7 @@ def build_task_repair_messages(
     }
     user_prompt = (
         f"{JSON_ONLY_INSTRUCTION}\n"
-        "Repair the previous invalid proposal. Address every error. "
+        "Repair the previous invalid proposal. Address every error, including any immediate duplicate task-family rejection. "
         "Return either a concrete task with task_type and shape, or a valid task-distribution reference from the supported list "
         "using task_distribution_id or task_distribution_config_path. "
         "Use supported shapes, supported task-distribution families, safe numeric ranges, "
@@ -193,10 +195,28 @@ def _context_payload(
         "task_contract": task_schema.build_task_prompt_contract(),
         "task_schema": task_schema.build_task_schema(),
         "llm_stage_budget": dict(budget_context or {}),
+        "immediate_previous_stage_task_shape": _previous_stage_task_shape(recent_accepted_tasks),
         "recent_accepted_tasks": _tail(recent_accepted_tasks, recent_context_limit),
         "recent_rejected_tasks": _tail(recent_rejected_tasks, recent_context_limit),
         "latest_metrics_summary": dict(metrics_summary or {}),
     }
+
+
+def _previous_stage_task_shape(items: Sequence[Mapping[str, Any]]) -> str | None:
+    """Return the latest accepted task shape for duplicate-avoidance prompt context."""
+    if not items:
+        return None
+    latest = dict(items[-1])
+    for key in ("accepted_stage_task_shape", "resolved_task_shape", "task_shape"):
+        value = latest.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    task = latest.get("resolved_task") or latest.get("task")
+    if isinstance(task, Mapping):
+        shape = task.get("shape")
+        if shape is not None and str(shape).strip():
+            return str(shape)
+    return None
 
 
 def _tail(items: Sequence[Mapping[str, Any]], limit: int) -> list[dict[str, Any]]:

@@ -120,8 +120,9 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
                 "max_repair_attempts": 1,
                 "mock_responses": [
                     (
-                        '{"task_type":"trajectory","shape":"nearby_target_hover","duration_sec":2.5,'
-                        '"sample_rate_hz":10.0,"position":[0.1,0.0,1.0],"reason":"Small offset."}'
+                        '{"task_type":"trajectory","shape":"line","duration_sec":3.0,'
+                        '"sample_rate_hz":10.0,"start":[0.0,0.0,1.0],"end":[0.35,0.0,1.0],'
+                        '"reason":"Short line."}'
                     )
                 ],
             },
@@ -187,7 +188,7 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert calls[0]["initial_model_path"] is None
     assert calls[1]["initial_model_path"] == summary["stages"][0]["best_model_path"]
     assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
-    assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
+    assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_line" / "training"
     assert calls[0]["wandb_group"] == "curriculum/llm/curriculum_llm_unit_seed7"
     assert calls[0]["wandb_tags"] == (
         "stage_index:1",
@@ -210,7 +211,7 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert summary["model_transfer_enabled"] is True
     assert summary["stage_run_names"] == [
         "curriculum_llm_unit_stage01_hover_stabilization_seed7",
-        "curriculum_llm_unit_stage02_nearby_target_hover_seed7",
+        "curriculum_llm_unit_stage02_line_seed7",
     ]
     assert summary["total_configured_timesteps"] == EXPECTED_TRAINING_TOTAL_TIMESTEPS
     assert summary["total_actual_timesteps"] == EXPECTED_TRAINING_TOTAL_TIMESTEPS
@@ -225,17 +226,29 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert summary["stages"][0]["selected_transfer_model_path"] == summary["stages"][0]["best_model_path"]
     assert summary["stages"][0]["selected_transfer_model_source"] == "best"
     assert summary["stages"][1]["previous_model_path"] == summary["stages"][0]["best_model_path"]
-    assert summary["final_stage_run_name"] == "curriculum_llm_unit_stage02_nearby_target_hover_seed7"
+    assert summary["final_stage_run_name"] == "curriculum_llm_unit_stage02_line_seed7"
     assert summary["final_model_path"] == summary["stages"][1]["model_path"]
     assert summary["final_model_source"] == "last"
     assert summary["stages"][1]["task"] == {
         "task_type": "trajectory",
-        "shape": "nearby_target_hover",
-        "duration_sec": 2.5,
+        "shape": "line",
+        "duration_sec": 3.0,
         "sample_rate_hz": 10.0,
-        "position": [0.1, 0.0, 1.0],
+        "start": [0.0, 0.0, 1.0],
+        "end": [0.35, 0.0, 1.0],
     }
-    assert summary["stages"][1]["task_reason"] == "Small offset."
+    assert summary["stages"][1]["task_reason"] == "Short line."
+    generated_distribution = expected_root / "config" / "stage02_line_task_distribution.yaml"
+    assert calls[1]["task_distribution_config_path"] == generated_distribution
+    assert generated_distribution.exists()
+    assert summary["stages"][1]["proposal_type"] == "task"
+    assert summary["stages"][1]["task_distribution_config_path"] == str(generated_distribution)
+    assert summary["stages"][1]["task_distribution_id"] == "generated_stage02_line_bounded"
+    assert summary["stages"][1]["task_distribution_reference"]["generated_from_concrete_task"] is True
+    assert summary["stages"][1]["previous_stage_task_shape"] == "hover_stabilization"
+    assert summary["stages"][1]["requested_stage_task_shape"] == "line"
+    assert summary["stages"][1]["accepted_stage_task_shape"] == "line"
+    assert summary["stages"][1]["duplicate_task_rejected"] is False
     assert summary["proposal_log_path_relative"] == "llm_logs/proposals.jsonl"
 
 

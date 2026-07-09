@@ -8,9 +8,6 @@ source "${SCRIPT_DIR}/experiment_matrix.sh"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 STORAGE_ROOT_DIR="${STORAGE_ROOT:-storage}"
-VARIATION_SUITE="configs/evaluation/evaluation_task_suite_variation.yaml"
-BROAD_SUITE="configs/evaluation/evaluation_task_suite_broad.yaml"
-
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
@@ -44,7 +41,7 @@ init_lane() {
   mkdir -p "$LANE_LOG_ROOT/markers"
   LANE_SUMMARY_TSV="$LANE_LOG_ROOT/lane_summary.tsv"
   LANE_SUMMARY_MD="$LANE_LOG_ROOT/lane_summary.md"
-  printf 'experiment_id\tkind\tcurriculum_kind\tconfig_path\texpected_run_name\trun_name\twandb_group\twandb_name\tunit_count\ttrain_status\teval_status\tvariation_eval_status\tbroad_eval_status\trender_status\tmanifest_path\tnotes\n' > "$LANE_SUMMARY_TSV"
+  printf 'experiment_id\tkind\tcurriculum_kind\tconfig_path\texpected_run_name\trun_name\twandb_group\twandb_name\tunit_count\ttrain_status\teval_status\trender_status\tmanifest_path\tnotes\n' > "$LANE_SUMMARY_TSV"
   print_thread_settings | tee "$LANE_LOG_ROOT/startup.log"
   printf 'LANE_RUN_ID=%s\nLANE_ID=%s\nLOG_ROOT=%s\n' "$LANE_RUN_ID" "$LANE_ID" "$LANE_LOG_ROOT" | tee -a "$LANE_LOG_ROOT/startup.log"
 }
@@ -175,19 +172,17 @@ append_summary_row() {
   local units="$5"
   local train_status="$6"
   local eval_status="$7"
-  local variation_status="$8"
-  local broad_status="$9"
-  local render_status="${10}"
-  local manifest_path="${11}"
-  local notes="${12}"
+  local render_status="$8"
+  local manifest_path="$9"
+  local notes="${10}"
   local curriculum_kind wandb_group wandb_name
   curriculum_kind="$(experiment_curriculum_kind "$kind")"
   wandb_group="$(experiment_wandb_group "$kind" "$run_name")"
   wandb_name="$run_name"
   notes="${notes//$'\t'/ }"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$experiment_id" "$kind" "$curriculum_kind" "$config_path" "$run_name" "$run_name" "$wandb_group" "$wandb_name" "$units" "$train_status" "$eval_status" \
-    "$variation_status" "$broad_status" "$render_status" "$manifest_path" "$notes" >> "$LANE_SUMMARY_TSV"
+    "$render_status" "$manifest_path" "$notes" >> "$LANE_SUMMARY_TSV"
   write_markdown_summary
 }
 
@@ -200,7 +195,7 @@ import sys
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
 rows = list(csv.DictReader(src.read_text(encoding="utf-8").splitlines(), delimiter="\t"))
-headers = ["experiment_id", "kind", "curriculum_kind", "run_name", "wandb_group", "wandb_name", "unit_count", "train_status", "eval_status", "variation_eval_status", "broad_eval_status", "render_status", "manifest_path", "notes"]
+headers = ["experiment_id", "kind", "curriculum_kind", "run_name", "wandb_group", "wandb_name", "unit_count", "train_status", "eval_status", "render_status", "manifest_path", "notes"]
 lines = ["# Lane Summary", "", "| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
 for row in rows:
     values = [str(row.get(header, "")).replace("|", "\\|") for header in headers]
@@ -221,29 +216,25 @@ run_experiment() {
 
   local train_status="not_run"
   local eval_status="not_run"
-  local variation_status="not_run"
-  local broad_status="not_run"
   local render_status="not_run"
   local failure_notes="${notes}"
 
   if [[ ! -f "$config_path" ]]; then
-    append_summary_row "$experiment_id" "$kind" "$config_path" "$run_name" "$units" "missing_config" "skipped" "skipped" "skipped" "skipped" "$manifest_path" "missing config: $config_path"
+    append_summary_row "$experiment_id" "$kind" "$config_path" "$run_name" "$units" "missing_config" "skipped" "skipped" "$manifest_path" "missing config: $config_path"
     return 0
   fi
 
   if [[ "$kind" == "llm_curriculum" ]]; then
     local llm_log="$LANE_LOG_ROOT/${experiment_id}.llm_preflight.log"
     if ! llm_server_available "$config_path" > "$llm_log" 2>&1; then
-      append_summary_row "$experiment_id" "$kind" "$config_path" "$run_name" "$units" "skipped_llm_unavailable" "skipped" "skipped" "skipped" "skipped" "$manifest_path" "local LLM unavailable; see ${llm_log}"
+      append_summary_row "$experiment_id" "$kind" "$config_path" "$run_name" "$units" "skipped_llm_unavailable" "skipped" "skipped" "$manifest_path" "local LLM unavailable; see ${llm_log}"
       return 0
     fi
   fi
 
-  local train_marker eval_marker variation_marker broad_marker render_marker
+  local train_marker eval_marker render_marker
   train_marker="$(marker_path "$experiment_id" train)"
   eval_marker="$(marker_path "$experiment_id" eval)"
-  variation_marker="$(marker_path "$experiment_id" variation_eval)"
-  broad_marker="$(marker_path "$experiment_id" broad_eval)"
   render_marker="$(marker_path "$experiment_id" render)"
 
   if [[ -f "$train_marker" ]]; then
@@ -281,29 +272,6 @@ run_experiment() {
       fi
     fi
 
-    if [[ -f "$variation_marker" ]]; then
-      variation_status="done_marker"
-    else
-      if run_and_log "$LANE_LOG_ROOT/${experiment_id}.variation_eval.log" bash scripts/evaluate_variation_suite.sh "$manifest_path" "$VARIATION_SUITE"; then
-        variation_status="success"
-        touch "$variation_marker"
-      else
-        variation_status="failed"
-        failure_notes="${failure_notes}; variation evaluation failed"
-      fi
-    fi
-
-    if [[ -f "$broad_marker" ]]; then
-      broad_status="done_marker"
-    else
-      if run_and_log "$LANE_LOG_ROOT/${experiment_id}.broad_eval.log" bash scripts/evaluate_variation_suite.sh "$manifest_path" "$BROAD_SUITE"; then
-        broad_status="success"
-        touch "$broad_marker"
-      else
-        broad_status="failed"
-        failure_notes="${failure_notes}; broad evaluation failed"
-      fi
-    fi
 
     if [[ -f "$render_marker" ]]; then
       render_status="done_marker"
@@ -318,12 +286,10 @@ run_experiment() {
     fi
   else
     eval_status="skipped_no_manifest"
-    variation_status="skipped_no_manifest"
-    broad_status="skipped_no_manifest"
     render_status="skipped_no_manifest"
   fi
 
-  append_summary_row "$experiment_id" "$kind" "$config_path" "$run_name" "$units" "$train_status" "$eval_status" "$variation_status" "$broad_status" "$render_status" "$manifest_path" "$failure_notes"
+  append_summary_row "$experiment_id" "$kind" "$config_path" "$run_name" "$units" "$train_status" "$eval_status" "$render_status" "$manifest_path" "$failure_notes"
 }
 
 run_lane() {

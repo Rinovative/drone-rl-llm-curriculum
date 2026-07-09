@@ -356,6 +356,49 @@ def test_curriculum_evaluation_cli_parser_exposes_suite_options() -> None:
     assert default_args.suite is None
 
 
+def _fake_scenario_evaluation(**kwargs: object) -> policy_evaluation.PolicyScenarioEvaluationResult:
+    """Return a lightweight scenario aggregate and update the run index like the real helper."""
+    run_root = Path(kwargs["run_root"])
+    run_name = str(kwargs["run_name"])
+    model_scope = str(kwargs["model_scope"])
+    run_manifest_path = Path(kwargs["run_manifest_path"])
+    metrics_path = run_root / "evaluations" / "scenarios" / "metrics" / f"{run_name}_scenarios_metrics.json"
+    manifest_path = run_root / "evaluations" / "scenarios" / "manifests" / f"{run_name}_scenarios_manifest.json"
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics = {
+        "run_type": "evaluation",
+        "run_kind": "curriculum",
+        "mode": "standard_scenario_evaluation",
+        "evaluation_name": "scenarios",
+        "scenario_labels": ["easy", "medium", "hard"],
+        "entry_count": 3,
+        "evaluated_models": [],
+        "summary_metrics_path": str(metrics_path),
+        "summary_manifest_path": str(manifest_path),
+    }
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    manifest_path.write_text(json.dumps(metrics), encoding="utf-8")
+    policy_evaluation.update_run_evaluation_index(
+        run_manifest_path,
+        {
+            "index_key": "standard_scenario_evaluation:scenarios",
+            "run_name": run_name,
+            "run_kind": "curriculum",
+            "mode": "standard_scenario_evaluation",
+            "evaluation_name": "scenarios",
+            "model_scope": model_scope,
+            "aggregate_metrics_path": str(metrics_path),
+            "aggregate_metrics_path_relative": "evaluations/scenarios/metrics/" + metrics_path.name,
+            "evaluation_manifest_path": str(manifest_path),
+            "evaluation_manifest_path_relative": "evaluations/scenarios/manifests/" + manifest_path.name,
+            "task_names": ["easy", "medium", "hard"],
+            "evaluated_models": [],
+        },
+    )
+    return policy_evaluation.PolicyScenarioEvaluationResult(str(metrics_path), str(manifest_path), metrics)
+
+
 def test_curriculum_evaluation_cli_standard_profile_passes_model_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -707,14 +750,11 @@ def test_curriculum_standard_evaluation_runs_stage_owned_default_profile(
 ) -> None:
     """Verify no-suite curriculum evaluation runs every default evaluation for every stage."""
     summary_path = _curriculum_summary(tmp_path)
-    line_suite = _suite_config(tmp_path, evaluation_name="line_eval")
-    final_suite = _suite_config(tmp_path, evaluation_name="final_benchmark")
     generalization_suite = _suite_config(tmp_path, evaluation_name="generalization")
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
-    monkeypatch.setattr(curriculum_evaluation, "STANDARD_LINE_EVALUATION_SUITE_PATH", line_suite)
-    monkeypatch.setattr(curriculum_evaluation, "STANDARD_FINAL_BENCHMARK_SUITE_PATH", final_suite)
     monkeypatch.setattr(curriculum_evaluation, "STANDARD_GENERALIZATION_SUITE_PATH", generalization_suite)
     monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+    monkeypatch.setattr(policy_evaluation, "run_standard_scenario_evaluations", _fake_scenario_evaluation)
 
     result = curriculum_evaluation.run_curriculum_standard_evaluation(
         summary_path=summary_path,
@@ -727,23 +767,21 @@ def test_curriculum_standard_evaluation_runs_stage_owned_default_profile(
     updated_manifest = json.loads(summary_path.read_text(encoding="utf-8"))
     entries = summary_payload["evaluations"]
     assert result.metrics["profile_name"] == "standard"
-    assert result.metrics["evaluation_names"] == ["own_task", "line_eval", "final_benchmark", "generalization"]
-    assert summary_payload["entry_count"] == 4
+    assert result.metrics["evaluation_names"] == ["own_task", "generalization", "scenarios"]
+    assert summary_payload["entry_count"] == 3
     assert [(entry["evaluation_name"], entry["model_scope"], entry["entry_count"]) for entry in entries] == [
         ("own_task", "all-stages", 2),
-        ("line_eval", "all-stages", 4),
-        ("final_benchmark", "all-stages", 4),
         ("generalization", "all-stages", 4),
+        ("scenarios", "final-stage", 3),
     ]
     assert updated_manifest["evaluation_index"]["path_relative"] == "evaluation_index.json"
-    assert updated_manifest["evaluation_index"]["entry_count"] == 4
-    assert [(entry["evaluation_name"], entry["model_scope"]) for entry in updated_manifest["evaluation_index"]["evaluations"]] == [
+    assert updated_manifest["evaluation_index"]["entry_count"] == 3
+    assert [(entry["evaluation_name"], entry.get("model_scope")) for entry in updated_manifest["evaluation_index"]["evaluations"]] == [
         ("own_task", "all-stages"),
-        ("line_eval", "all-stages"),
-        ("final_benchmark", "all-stages"),
         ("generalization", "all-stages"),
+        ("scenarios", "final-stage"),
     ]
-    for evaluation_name in ("own_task", "line_eval", "final_benchmark", "generalization"):
+    for evaluation_name in ("own_task", "generalization"):
         evaluation_dirs = [
             model["evaluation_dir_relative"].replace("\\", "/")
             for entry in entries
@@ -752,7 +790,7 @@ def test_curriculum_standard_evaluation_runs_stage_owned_default_profile(
         ]
         assert any(path.startswith(f"stages/stage01_hover_stabilization/evaluations/{evaluation_name}") for path in evaluation_dirs)
         assert any(path.startswith(f"stages/stage02_line/evaluations/{evaluation_name}") for path in evaluation_dirs)
-    assert not (summary_path.parent / "evaluations").exists()
+    assert (summary_path.parent / "evaluations" / "scenarios").exists()
 
 
 def test_curriculum_standard_evaluation_final_stage_scope_narrows_every_default_evaluation(
@@ -761,14 +799,11 @@ def test_curriculum_standard_evaluation_final_stage_scope_narrows_every_default_
 ) -> None:
     """Verify explicit final-stage model scope narrows the whole standard profile."""
     summary_path = _curriculum_summary(tmp_path)
-    line_suite = _suite_config(tmp_path, evaluation_name="line_eval")
-    final_suite = _suite_config(tmp_path, evaluation_name="final_benchmark")
     generalization_suite = _suite_config(tmp_path, evaluation_name="generalization")
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
-    monkeypatch.setattr(curriculum_evaluation, "STANDARD_LINE_EVALUATION_SUITE_PATH", line_suite)
-    monkeypatch.setattr(curriculum_evaluation, "STANDARD_FINAL_BENCHMARK_SUITE_PATH", final_suite)
     monkeypatch.setattr(curriculum_evaluation, "STANDARD_GENERALIZATION_SUITE_PATH", generalization_suite)
     monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", _fake_policy_evaluation)
+    monkeypatch.setattr(policy_evaluation, "run_standard_scenario_evaluations", _fake_scenario_evaluation)
 
     result = curriculum_evaluation.run_curriculum_standard_evaluation(
         summary_path=summary_path,
@@ -782,18 +817,17 @@ def test_curriculum_standard_evaluation_final_stage_scope_narrows_every_default_
     updated_manifest = json.loads(summary_path.read_text(encoding="utf-8"))
     assert [(entry["evaluation_name"], entry["model_scope"], entry["entry_count"]) for entry in summary_payload["evaluations"]] == [
         ("own_task", "final-stage", 1),
-        ("line_eval", "final-stage", 2),
-        ("final_benchmark", "final-stage", 2),
         ("generalization", "final-stage", 2),
+        ("scenarios", "final-stage", 3),
     ]
-    assert [(entry["evaluation_name"], entry["model_scope"]) for entry in updated_manifest["evaluation_index"]["evaluations"]] == [
+    assert [(entry["evaluation_name"], entry.get("model_scope")) for entry in updated_manifest["evaluation_index"]["evaluations"]] == [
         ("own_task", "final-stage"),
-        ("line_eval", "final-stage"),
-        ("final_benchmark", "final-stage"),
         ("generalization", "final-stage"),
+        ("scenarios", "final-stage"),
     ]
-    assert all(model["stage_index"] == 2 for entry in summary_payload["evaluations"] for model in entry["evaluated_models"])
-    assert not (summary_path.parent / "evaluations").exists()
+    stage_models = [model for entry in summary_payload["evaluations"] for model in entry["evaluated_models"] if "stage_index" in model]
+    assert all(model["stage_index"] == 2 for model in stage_models)
+    assert (summary_path.parent / "evaluations" / "scenarios").exists()
 
 
 def test_curriculum_explicit_suite_runs_only_requested_suite(

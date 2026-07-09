@@ -33,14 +33,20 @@ from typing import Any
 from src import envs, evaluation, utils, validation
 from src.experiments import experiments_config as config
 from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
+from src.experiments.rendering import experiments_rendering_policy as policy_render
+from src.experiments.rendering import experiments_rendering_scenario as scenario_render
 
 DEFAULT_RENDER_FPS = 20
 SIMULATOR_CAPTURE_FPS = 30
 OWN_TASK_EVALUATION_NAME = "own_task"
 STANDARD_EVALUATION_PROFILE = "standard"
-STANDARD_LINE_EVALUATION_SUITE_PATH = Path("configs/evaluation/line_eval_suite.yaml")
-STANDARD_FINAL_BENCHMARK_SUITE_PATH = Path("configs/evaluation/final_benchmark_eval_suite.yaml")
 STANDARD_GENERALIZATION_SUITE_PATH = Path("configs/evaluation/generalization_eval_suite.yaml")
+STANDARD_SCENARIO_EVALUATION_NAME = "scenarios"
+STANDARD_SCENARIO_CONFIG_PATHS = {
+    "easy": Path("configs/evaluation/scenarios/show_easy.yaml"),
+    "medium": Path("configs/evaluation/scenarios/show_medium.yaml"),
+    "hard": Path("configs/evaluation/scenarios/show_hard.yaml"),
+}
 
 
 @dataclass(frozen=True)
@@ -216,6 +222,15 @@ class PolicySuiteEvaluationResult:
 @dataclass(frozen=True)
 class PolicyStandardEvaluationResult:
     """Aggregate result returned after running the standard direct PPO profile."""
+
+    metrics_path: str
+    manifest_path: str
+    metrics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PolicyScenarioEvaluationResult:
+    """Aggregate result returned after evaluating the standard show scenarios."""
 
     metrics_path: str
     manifest_path: str
@@ -501,6 +516,9 @@ def run_direct_policy_standard_evaluation(
         )
         results.append(_profile_result_entry(suite.evaluation_name, result))
 
+    scenarios = run_direct_policy_scenario_evaluation(run_manifest_path=manifest_path, wandb_mode=wandb_mode)
+    results.append(_profile_result_entry(STANDARD_SCENARIO_EVALUATION_NAME, scenarios))
+
     updated_manifest = _read_json(manifest_path)
     index_path = _evaluation_index_path_from_manifest(run_manifest=updated_manifest, run_root=run_root)
     index_payload = _read_json(index_path) if index_path.exists() else {"run_name": run_name, "evaluations": []}
@@ -518,6 +536,191 @@ def run_direct_policy_standard_evaluation(
         "evaluation_index": index_payload,
     }
     return PolicyStandardEvaluationResult(metrics_path=str(index_path), manifest_path=str(index_path), metrics=profile_payload)
+
+
+def run_direct_policy_scenario_evaluation(
+    run_manifest_path: str | Path,
+    wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED,
+) -> PolicyScenarioEvaluationResult:
+    """Evaluate a direct PPO run on the standard easy/medium/hard show scenarios."""
+    if wandb_mode not in utils.wandb.WANDB_MODES:
+        message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
+        raise ValueError(message)
+    manifest_path = Path(run_manifest_path)
+    run_manifest = _read_json(manifest_path)
+    if run_manifest.get("run_kind") != "direct_ppo":
+        message = "policy scenario evaluation requires a direct PPO run manifest"
+        raise ValueError(message)
+
+    run_name = _required_text(run_manifest.get("run_name"), "run_name")
+    run_root = manifest_path.expanduser().resolve(strict=False).parent
+    training = _mapping(run_manifest.get("training"), "training")
+    model_path, evaluated_model_source = _select_manifest_model_path(run_root=run_root, payload=training, field_prefix="training")
+    return run_standard_scenario_evaluations(
+        run_root=run_root,
+        run_name=run_name,
+        model_path=model_path,
+        model_run_name=run_name,
+        source_run_kind="direct_ppo",
+        source_curriculum_kind=None,
+        model_scope="direct",
+        evaluated_model_source=evaluated_model_source,
+        run_manifest_path=manifest_path,
+    )
+
+
+def run_standard_scenario_evaluations(
+    *,
+    run_root: Path,
+    run_name: str,
+    model_path: Path,
+    model_run_name: str | None,
+    source_run_kind: str,
+    source_curriculum_kind: str | None,
+    model_scope: str,
+    evaluated_model_source: str | None,
+    run_manifest_path: Path | None = None,
+    scenario_config_paths: Mapping[str, Path] | None = None,
+) -> PolicyScenarioEvaluationResult:
+    """Evaluate one trained model on the standard easy, medium, and hard show scenarios."""
+    scenario_paths = dict(scenario_config_paths or STANDARD_SCENARIO_CONFIG_PATHS)
+    output_root = run_root / utils.artifacts.EVALUATIONS_DIRNAME / STANDARD_SCENARIO_EVALUATION_NAME
+    entries: list[dict[str, Any]] = []
+    for scenario_label, scenario_path in scenario_paths.items():
+        loaded = scenario_render.load_scenario_render_settings(scenario_path)
+        output_dir = output_root / _safe_name(scenario_label)
+        settings = scenario_render.ScenarioRenderSettings(
+            scenario_config_path=loaded.scenario_config_path,
+            scenario_name=loaded.scenario_name,
+            task_config_path=loaded.task_config_path,
+            phases=loaded.phases,
+            controller=policy_render.PPO_CONTROLLER,
+            model_run_name=model_run_name,
+            model_path=model_path,
+            run_name=f"{run_name}_{scenario_label}_scenario",
+            output_dir=output_dir,
+            max_steps=loaded.max_steps,
+            seed=loaded.seed,
+            camera_mode=loaded.camera_mode,
+            camera_distance=loaded.camera_distance,
+            camera_yaw=loaded.camera_yaw,
+            camera_pitch=loaded.camera_pitch,
+            gif_filename=loaded.gif_filename,
+            manifest_filename=loaded.manifest_filename,
+            frame_interval=loaded.frame_interval,
+            image_width=loaded.image_width,
+            image_height=loaded.image_height,
+            final_hold_sec=loaded.final_hold_sec,
+        )
+        scenario_result = scenario_render.run_scenario_render(settings)
+        entry = {
+            "scenario_label": scenario_label,
+            "scenario_name": scenario_result.metrics.get("scenario_name"),
+            "evaluation_name": STANDARD_SCENARIO_EVALUATION_NAME,
+            "scenario_config_path": str(scenario_path),
+            "output_dir": str(output_dir),
+            "output_dir_relative": utils.artifacts.path_relative_to(output_dir, run_root),
+            "manifest_path": scenario_result.manifest_path,
+            "manifest_path_relative": utils.artifacts.path_relative_to(scenario_result.manifest_path, run_root),
+            "gif_path": scenario_result.gif_path,
+            "gif_path_relative": utils.artifacts.path_relative_to(scenario_result.gif_path, run_root),
+            "model_path": str(model_path),
+            "model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
+            "model_run_name": model_run_name,
+            "source_run_name": run_name,
+            "source_run_kind": source_run_kind,
+            "source_curriculum_kind": source_curriculum_kind,
+            "model_scope": model_scope,
+            "evaluated_model_source": evaluated_model_source,
+            "warnings": list(scenario_result.warnings),
+            "metrics": dict(scenario_result.metrics),
+        }
+        entries.append(entry)
+
+    metrics_dir = output_root / utils.artifacts.METRICS_DIRNAME
+    manifests_dir = output_root / utils.artifacts.MANIFESTS_DIRNAME
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    filename_stem = f"{run_name}_{STANDARD_SCENARIO_EVALUATION_NAME}"
+    metrics_path = metrics_dir / f"{filename_stem}_metrics.json"
+    manifest_path = manifests_dir / f"{filename_stem}_manifest.json"
+    aggregate_metrics = {
+        "run_type": "evaluation",
+        "run_kind": source_run_kind,
+        "mode": "standard_scenario_evaluation",
+        "run_name": run_name,
+        "evaluation_name": STANDARD_SCENARIO_EVALUATION_NAME,
+        "scenario_labels": list(scenario_paths),
+        "scenario_names": [str(entry.get("scenario_name")) for entry in entries],
+        "scenario_count": len(entries),
+        "model_path": str(model_path),
+        "model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
+        "model_run_name": model_run_name,
+        "source_run_name": run_name,
+        "source_run_kind": source_run_kind,
+        "source_curriculum_kind": source_curriculum_kind,
+        "model_scope": model_scope,
+        "evaluated_model_source": evaluated_model_source,
+        "evaluated_models": entries,
+        "summary_metrics_path": str(metrics_path),
+        "summary_metrics_path_relative": utils.artifacts.path_relative_to(metrics_path, run_root),
+        "summary_manifest_path": str(manifest_path),
+        "summary_manifest_path_relative": utils.artifacts.path_relative_to(manifest_path, run_root),
+        "entry_count": len(entries),
+    }
+    aggregate_manifest = {
+        key: aggregate_metrics[key]
+        for key in (
+            "run_type",
+            "run_kind",
+            "mode",
+            "run_name",
+            "evaluation_name",
+            "scenario_labels",
+            "scenario_names",
+            "scenario_count",
+            "model_path",
+            "model_path_relative",
+            "model_run_name",
+            "source_run_name",
+            "source_run_kind",
+            "source_curriculum_kind",
+            "model_scope",
+            "evaluated_model_source",
+            "summary_metrics_path",
+            "summary_metrics_path_relative",
+            "summary_manifest_path",
+            "summary_manifest_path_relative",
+            "entry_count",
+        )
+    }
+    _write_json(metrics_path, aggregate_metrics)
+    _write_json(manifest_path, aggregate_manifest)
+
+    if run_manifest_path is not None:
+        update_run_evaluation_index(
+            run_manifest_path,
+            _evaluation_index_entry(
+                run_root=run_root,
+                run_name=run_name,
+                run_kind=source_run_kind,
+                evaluation_name=STANDARD_SCENARIO_EVALUATION_NAME,
+                evaluation_suite_name=None,
+                suite_config_snapshot_path=None,
+                suite_config_snapshot_path_relative=None,
+                suite_config_sha256=None,
+                aggregate_metrics_path=metrics_path,
+                aggregate_manifest_path=manifest_path,
+                model_label=run_name,
+                model_role=model_scope,
+                model_path=model_path,
+                task_names=list(scenario_paths),
+                evaluated_models=entries,
+                mode="standard_scenario_evaluation",
+            ),
+        )
+
+    return PolicyScenarioEvaluationResult(metrics_path=str(metrics_path), manifest_path=str(manifest_path), metrics=aggregate_metrics)
 
 
 def run_direct_policy_suite_evaluation(
@@ -863,13 +1066,10 @@ def _direct_training_task_shape(run_manifest: Mapping[str, Any]) -> str:
 
 def _standard_suite_paths() -> list[Path]:
     """Return suite configs included in the standard direct PPO profile."""
-    paths = [STANDARD_LINE_EVALUATION_SUITE_PATH, STANDARD_FINAL_BENCHMARK_SUITE_PATH]
-    if STANDARD_GENERALIZATION_SUITE_PATH.is_file():
-        paths.append(STANDARD_GENERALIZATION_SUITE_PATH)
-    return paths
+    return [STANDARD_GENERALIZATION_SUITE_PATH]
 
 
-def _profile_result_entry(evaluation_name: str, result: PolicySuiteEvaluationResult) -> dict[str, Any]:
+def _profile_result_entry(evaluation_name: str, result: PolicySuiteEvaluationResult | PolicyScenarioEvaluationResult) -> dict[str, Any]:
     """Return a compact profile result link for one evaluation step."""
     return {
         "evaluation_name": evaluation_name,
@@ -1194,6 +1394,11 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "exclude_start_hold_from_tracking_metrics",
         "tracking_phase_start_step",
         "tracking_phase_start_time_sec",
+        "final_hold_enabled",
+        "final_hold_sec",
+        "exclude_final_hold_from_tracking_metrics",
+        "tracking_phase_end_step",
+        "tracking_phase_end_time_sec",
         "mean_position_error_m",
         "mean_position_error_tracking_m",
         "final_position_error_m",
@@ -1227,17 +1432,20 @@ __all__ = [
     "DEFAULT_RENDER_FPS",
     "OWN_TASK_EVALUATION_NAME",
     "STANDARD_EVALUATION_PROFILE",
-    "STANDARD_FINAL_BENCHMARK_SUITE_PATH",
     "STANDARD_GENERALIZATION_SUITE_PATH",
-    "STANDARD_LINE_EVALUATION_SUITE_PATH",
+    "STANDARD_SCENARIO_CONFIG_PATHS",
+    "STANDARD_SCENARIO_EVALUATION_NAME",
     "PolicyEvaluationArtifactOptions",
     "PolicyEvaluationResult",
     "PolicyEvaluationSpec",
+    "PolicyScenarioEvaluationResult",
     "PolicyStandardEvaluationResult",
     "PolicySuiteEvaluationResult",
     "run_direct_policy_own_task_evaluation",
+    "run_direct_policy_scenario_evaluation",
     "run_direct_policy_standard_evaluation",
     "run_direct_policy_suite_evaluation",
     "run_policy_evaluation",
+    "run_standard_scenario_evaluations",
     "update_run_evaluation_index",
 ]

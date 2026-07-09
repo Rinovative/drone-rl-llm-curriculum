@@ -45,6 +45,7 @@ DEFAULT_SAMPLE_RATE_HZ = 10.0
 DEFAULT_DURATION_SEC = 3.0
 DEFAULT_Z_M = 1.0
 DEFAULT_START_HOLD_SEC = 1.0
+DEFAULT_FINAL_HOLD_SEC = 1.0
 MAX_SAMPLE_ATTEMPTS = 64
 RANK_SEED_STRIDE = 1
 COIN_FLIP_PROBABILITY = 0.5
@@ -61,6 +62,7 @@ FAMILY_SQUARE = "square"
 FAMILY_CIRCLE = "circle"
 FAMILY_ELLIPSE = "ellipse"
 FAMILY_FIGURE_EIGHT = "figure_eight"
+FAMILY_BASIC_TRAINING_SHOW = "basic_training_show"
 
 _FAMILY_TO_TASK_SHAPE: dict[str, str] = {
     FAMILY_HOVER: validation.contracts.SHAPE_HOVER_STABILIZATION,
@@ -74,6 +76,7 @@ _FAMILY_TO_TASK_SHAPE: dict[str, str] = {
     FAMILY_CIRCLE: validation.contracts.SHAPE_CIRCLE,
     FAMILY_ELLIPSE: validation.contracts.SHAPE_ELLIPSE,
     FAMILY_FIGURE_EIGHT: validation.contracts.SHAPE_FIGURE_EIGHT,
+    FAMILY_BASIC_TRAINING_SHOW: validation.contracts.SHAPE_BASIC_TRAINING_SHOW,
 }
 
 _UNSUPPORTED_REQUESTED_FAMILIES: tuple[str, ...] = ()
@@ -472,12 +475,209 @@ def _sample_family_task(family: str, settings: TaskDistributionSettings, rng: np
         FAMILY_CIRCLE: lambda: _sample_circle_task(settings, rng),
         FAMILY_ELLIPSE: lambda: _sample_ellipse_task(settings, rng),
         FAMILY_FIGURE_EIGHT: lambda: _sample_figure_eight_task(settings, rng),
+        FAMILY_BASIC_TRAINING_SHOW: lambda: _sample_basic_training_show_task(settings, rng),
     }
     sampler = family_samplers.get(family)
     if sampler is None:
         message = f"unsupported task family: {family}"
         raise ValueError(message)
     return sampler()
+
+
+def _sample_basic_training_show_task(settings: TaskDistributionSettings, rng: np.random.Generator) -> dict[str, Any]:
+    """Sample a bounded composed basic training show."""
+    variation = settings.variations.get(FAMILY_BASIC_TRAINING_SHOW, {})
+    base = settings.base_task
+    sample_rate_hz = _sample_rate(base)
+    origin = _base_position(base)
+    offset = np.array(
+        [
+            _sample_range(rng, variation.get("x_offset_range_m"), default=(0.0, 0.0), anchor=0.0, strength=settings.strength),
+            _sample_range(rng, variation.get("y_offset_range_m"), default=(0.0, 0.0), anchor=0.0, strength=settings.strength),
+            _sample_range(rng, variation.get("z_offset_range_m"), default=(0.0, 0.0), anchor=0.0, strength=settings.strength),
+        ],
+        dtype=float,
+    )
+    length_scale = _sample_range(rng, variation.get("length_scale_range"), default=(0.95, 1.05), anchor=1.0, strength=settings.strength)
+    duration_scale = _sample_range(rng, variation.get("duration_scale_range"), default=(0.95, 1.08), anchor=1.0, strength=settings.strength)
+    ellipse_scale = _sample_range(rng, variation.get("ellipse_scale_range"), default=(0.9, 1.1), anchor=1.0, strength=settings.strength)
+    heading = math.radians(_float_value(variation.get("heading_jitter_deg", 10.0))) * settings.strength * float(rng.uniform(-1.0, 1.0))
+    final_hold_sec = _sample_range(
+        rng,
+        variation.get("final_hold_range_sec"),
+        default=(1.0, 1.2),
+        anchor=float(base.get(validation.contracts.FIELD_FINAL_HOLD_SEC, 1.1)),
+        strength=settings.strength,
+    )
+
+    def rotate(delta_xyz: Sequence[float]) -> np.ndarray:
+        delta = np.asarray(delta_xyz, dtype=float)
+        c = math.cos(heading)
+        s = math.sin(heading)
+        return np.array([c * delta[0] - s * delta[1], s * delta[0] + c * delta[1], delta[2]], dtype=float)
+
+    def scaled_duration(duration_sec: float) -> float:
+        return _round(max(1.0, duration_sec * duration_scale))
+
+    p0 = origin + offset
+    p1 = p0 + np.array([0.0, 0.0, 0.30 * length_scale], dtype=float)
+    p2 = p1 + rotate([0.45 * length_scale, 0.0, 0.0])
+    p3 = p2 + rotate([0.30 * length_scale, 0.22 * length_scale, 0.0])
+    radius_x = 0.14 * ellipse_scale * length_scale
+    radius_y = 0.09 * ellipse_scale * length_scale
+    p4 = p3 + rotate([0.0, 0.28 * length_scale, 0.0])
+    p5 = p4 + rotate([0.32 * length_scale, 0.0, -0.05 * length_scale])
+    p6 = p5 + rotate([0.18 * length_scale, 0.12 * length_scale, 0.0])
+    p7 = p5 + rotate([0.36 * length_scale, -0.12 * length_scale, -0.05 * length_scale])
+    p8 = p5 + rotate([0.54 * length_scale, 0.08 * length_scale, -0.05 * length_scale])
+
+    segments = [
+        _basic_show_segment("hover_start", "hover_stabilization", p0, p0, scaled_duration(1.2)),
+        _basic_show_segment("vertical_lift", "vertical", p0, p1, scaled_duration(1.8)),
+        _basic_show_segment("horizontal_line", "horizontal_line", p1, p2, scaled_duration(2.2)),
+        _basic_show_segment("diagonal_line", "diagonal_line", p2, p3, scaled_duration(2.2)),
+        _basic_show_segment(
+            "ellipse_loop",
+            "ellipse",
+            p3,
+            p3,
+            scaled_duration(3.5),
+            radius_x_m=_round(radius_x),
+            radius_y_m=_round(radius_y),
+            phase_deg=180.0,
+        ),
+        _basic_show_segment(
+            "polyline_l_shape",
+            "l_shape",
+            p3,
+            p5,
+            scaled_duration(3.0),
+            segment_points=[_vector(p3), _vector(p4), _vector(p5)],
+        ),
+        _basic_show_segment(
+            "zigzag_finish",
+            "zigzag",
+            p5,
+            p8,
+            scaled_duration(3.2),
+            segment_points=[_vector(p5), _vector(p6), _vector(p7), _vector(p8)],
+        ),
+        _basic_show_segment(
+            "final_hold",
+            "final_hold",
+            p8,
+            p8,
+            _round(final_hold_sec),
+            segment_final_hold_sec=_round(final_hold_sec),
+        ),
+    ]
+    metadata = _basic_training_show_metadata(
+        segments=segments,
+        final_hold_sec=final_hold_sec,
+        settings=settings,
+        variation=variation,
+    )
+    return {
+        validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
+        validation.contracts.FIELD_SHAPE: validation.contracts.SHAPE_BASIC_TRAINING_SHOW,
+        validation.contracts.FIELD_DURATION_SEC: metadata["duration_range_sec"][0],
+        validation.contracts.FIELD_SAMPLE_RATE_HZ: sample_rate_hz,
+        validation.contracts.FIELD_START_HOLD_ENABLED: False,
+        validation.contracts.FIELD_FINAL_HOLD_ENABLED: True,
+        validation.contracts.FIELD_FINAL_HOLD_SEC: _round(final_hold_sec),
+        validation.contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS: True,
+        validation.contracts.FIELD_SEGMENTS: segments,
+        **metadata,
+    }
+
+
+def _basic_show_segment(
+    name: str,
+    shape: str,
+    start: np.ndarray,
+    end: np.ndarray,
+    duration_sec: float,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build compact metadata for one basic-training-show segment."""
+    return {
+        "segment_name": name,
+        validation.contracts.FIELD_SEGMENT_SHAPE: shape,
+        validation.contracts.FIELD_SEGMENT_START: _vector(start),
+        validation.contracts.FIELD_SEGMENT_END: _vector(end),
+        validation.contracts.FIELD_SEGMENT_DURATION_SEC: _round(duration_sec),
+        **extra,
+    }
+
+
+def _basic_training_show_metadata(
+    *,
+    segments: Sequence[Mapping[str, Any]],
+    final_hold_sec: float,
+    settings: TaskDistributionSettings,
+    variation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return compact metadata for a sampled basic training show."""
+    durations = [float(segment[validation.contracts.FIELD_SEGMENT_DURATION_SEC]) for segment in segments]
+    moving_duration = float(sum(durations[:-1]))
+    total_duration = moving_duration + float(final_hold_sec)
+    path_lengths = [_basic_show_segment_path_length(segment) for segment in segments]
+    nonzero_speeds = [length / duration for length, duration in zip(path_lengths, durations, strict=True) if length > 0.0 and duration > 0.0]
+    path_length = float(sum(path_lengths))
+    min_speed = min(nonzero_speeds) if nonzero_speeds else 0.0
+    max_speed = max(nonzero_speeds) if nonzero_speeds else 0.0
+    return {
+        "training_task_kind": FAMILY_BASIC_TRAINING_SHOW,
+        "task_is_distribution": bool(settings.enabled and settings.mode == MODE_RANDOMIZED),
+        "task_is_show": True,
+        "show_name": FAMILY_BASIC_TRAINING_SHOW,
+        "segment_count": len(segments),
+        "meaningful_figure_count": len(segments),
+        "segment_shapes": [str(segment[validation.contracts.FIELD_SEGMENT_SHAPE]) for segment in segments],
+        "show_is_continuous": True,
+        "continuity_tolerance": 1.0e-6,
+        "difficulty_level": "basic",
+        "duration_range_sec": [_round(total_duration), _round(total_duration)],
+        "move_duration_range_sec": [_round(moving_duration), _round(moving_duration)],
+        "segment_duration_range_sec": [_round(min(durations)), _round(max(durations))],
+        "path_length_range_m": [_round(path_length), _round(path_length)],
+        "approx_reference_speed_range_mps": [_round(min_speed), _round(max_speed)],
+        "segment_speed_bounds": {"min_mps": _round(min_speed), "max_mps": _round(max_speed)},
+        "sampled_per_episode": bool(settings.sample_on_reset),
+        "constant_within_episode": True,
+        "variation_enabled": bool(settings.strength > 0.0),
+        "variation_mode": "bounded_per_episode" if settings.strength > 0.0 else "fixed",
+        "final_hold_enabled": True,
+        "final_hold_sec": _round(final_hold_sec),
+        "own_task_eval_path": "evaluations/own_task",
+        "generalization_eval_path": "evaluations/generalization",
+        "scenario_eval_path": "evaluations/scenarios",
+        "requested_task_family": FAMILY_BASIC_TRAINING_SHOW,
+        "accepted_task_family": FAMILY_BASIC_TRAINING_SHOW,
+        "variation_strength": float(settings.strength),
+        "proposed_sampling_bounds": copy.deepcopy(dict(variation)),
+        "accepted_sampling_bounds": copy.deepcopy(dict(variation)),
+        "repair_was_applied": False,
+        "repair_reason": None,
+    }
+
+
+def _basic_show_segment_path_length(segment: Mapping[str, Any]) -> float:
+    """Approximate path length for one basic-training-show segment."""
+    shape = str(segment[validation.contracts.FIELD_SEGMENT_SHAPE])
+    duration_shape = shape.lower()
+    if duration_shape in {"hover_stabilization", "final_hold"}:
+        return 0.0
+    if duration_shape == "ellipse":
+        radius_x = float(segment["radius_x_m"])
+        radius_y = float(segment["radius_y_m"])
+        return float(math.pi * (3.0 * (radius_x + radius_y) - math.sqrt((3.0 * radius_x + radius_y) * (radius_x + 3.0 * radius_y))))
+    if validation.contracts.FIELD_SEGMENT_POINTS in segment:
+        points = np.asarray(segment[validation.contracts.FIELD_SEGMENT_POINTS], dtype=float)
+        return float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
+    start = np.asarray(segment[validation.contracts.FIELD_SEGMENT_START], dtype=float)
+    end = np.asarray(segment[validation.contracts.FIELD_SEGMENT_END], dtype=float)
+    return float(np.linalg.norm(end - start))
 
 
 def _sample_hover_task(settings: TaskDistributionSettings, rng: np.random.Generator) -> dict[str, Any]:
@@ -499,13 +699,14 @@ def _sample_hover_task(settings: TaskDistributionSettings, rng: np.random.Genera
         anchor=_duration(base),
         strength=settings.strength,
     )
-    return {
+    task = {
         validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
         validation.contracts.FIELD_SHAPE: validation.contracts.SHAPE_HOVER_STABILIZATION,
         validation.contracts.FIELD_DURATION_SEC: _round(duration),
         validation.contracts.FIELD_SAMPLE_RATE_HZ: _sample_rate(base),
         validation.contracts.FIELD_POSITION: _xyz(xy[0], xy[1], z),
     }
+    return _with_final_hold(task, base, variation, rng, settings.strength)
 
 
 def _sample_takeoff_task(settings: TaskDistributionSettings, rng: np.random.Generator) -> dict[str, Any]:
@@ -575,7 +776,7 @@ def _sample_start_hold_line_task(settings: TaskDistributionSettings, rng: np.ran
         anchor=move_anchor,
         strength=settings.strength,
     )
-    return {
+    task = {
         validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
         validation.contracts.FIELD_SHAPE: validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
         validation.contracts.FIELD_HOLD_DURATION_SEC: _round(hold_duration),
@@ -587,6 +788,7 @@ def _sample_start_hold_line_task(settings: TaskDistributionSettings, rng: np.ran
         validation.contracts.FIELD_START: _vector(start),
         validation.contracts.FIELD_END: _vector(end),
     }
+    return _with_final_hold(task, base, variation, rng, settings.strength)
 
 
 def _sample_polyline_task(settings: TaskDistributionSettings, rng: np.random.Generator) -> dict[str, Any]:
@@ -629,6 +831,15 @@ def _sample_l_shape_task(settings: TaskDistributionSettings, rng: np.random.Gene
     end = mid + np.array(
         [leg2 * math.cos(heading + turn_direction * math.pi / 2.0), leg2 * math.sin(heading + turn_direction * math.pi / 2.0), 0.0], dtype=float
     )
+    final_z_offset = _sample_range(
+        rng,
+        variation.get("final_z_offset_range_m"),
+        default=(0.0, 0.0),
+        anchor=0.0,
+        strength=settings.strength,
+    )
+    end[2] = start[2] + final_z_offset
+    mid[2] = (start[2] + end[2]) / 2.0
     duration = _sample_range(rng, variation.get("duration_range_sec"), default=(6.0, 9.0), anchor=7.0, strength=settings.strength)
     task = {
         validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
@@ -826,7 +1037,7 @@ def _with_start_hold(
         task[validation.contracts.FIELD_START_HOLD_ENABLED] = True
         task[validation.contracts.FIELD_START_HOLD_SEC] = _round(hold_sec)
         task[validation.contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS] = True
-        return task
+        return _with_final_hold(task, base_task, variation, rng, strength)
     for key in (
         validation.contracts.FIELD_START_HOLD_ENABLED,
         validation.contracts.FIELD_START_HOLD_SEC,
@@ -834,6 +1045,46 @@ def _with_start_hold(
     ):
         if key in base_task:
             task[key] = copy.deepcopy(base_task[key])
+    return _with_final_hold(task, base_task, variation, rng, strength)
+
+
+def _with_final_hold(
+    task: dict[str, Any],
+    base_task: Mapping[str, Any],
+    variation: Mapping[str, Any],
+    rng: np.random.Generator,
+    strength: float,
+) -> dict[str, Any]:
+    """Add explicit final-hold fields from variation, base task, or project defaults."""
+    if validation.contracts.FIELD_FINAL_HOLD_SEC in variation or "final_hold_range_sec" in variation:
+        hold_sec = _sample_range(
+            rng,
+            variation.get("final_hold_range_sec", variation.get(validation.contracts.FIELD_FINAL_HOLD_SEC)),
+            default=(0.75, 1.0),
+            anchor=float(base_task.get(validation.contracts.FIELD_FINAL_HOLD_SEC, DEFAULT_FINAL_HOLD_SEC)),
+            strength=strength,
+        )
+        task[validation.contracts.FIELD_FINAL_HOLD_ENABLED] = True
+        task[validation.contracts.FIELD_FINAL_HOLD_SEC] = _round(hold_sec)
+        task[validation.contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS] = True
+        return task
+    copied = False
+    for key in (
+        validation.contracts.FIELD_FINAL_HOLD_ENABLED,
+        validation.contracts.FIELD_FINAL_HOLD_SEC,
+        validation.contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS,
+    ):
+        if key in base_task:
+            task[key] = copy.deepcopy(base_task[key])
+            copied = True
+    if copied:
+        task.setdefault(
+            validation.contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS, bool(task.get(validation.contracts.FIELD_FINAL_HOLD_ENABLED, False))
+        )
+        return task
+    task[validation.contracts.FIELD_FINAL_HOLD_ENABLED] = True
+    task[validation.contracts.FIELD_FINAL_HOLD_SEC] = DEFAULT_FINAL_HOLD_SEC
+    task[validation.contracts.FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS] = True
     return task
 
 
@@ -852,6 +1103,12 @@ def _base_position(task: Mapping[str, Any]) -> np.ndarray:
     """Return a representative XYZ position for a task mapping."""
     if validation.contracts.FIELD_POSITION in task:
         return np.asarray(task[validation.contracts.FIELD_POSITION], dtype=float)
+    if task.get(validation.contracts.FIELD_SHAPE) == validation.contracts.SHAPE_BASIC_TRAINING_SHOW:
+        segments = task.get(validation.contracts.FIELD_SEGMENTS, [])
+        if isinstance(segments, Sequence) and not isinstance(segments, str) and segments:
+            first_segment = segments[0]
+            if isinstance(first_segment, Mapping) and validation.contracts.FIELD_SEGMENT_START in first_segment:
+                return np.asarray(first_segment[validation.contracts.FIELD_SEGMENT_START], dtype=float)
     if validation.contracts.FIELD_START in task:
         return np.asarray(task[validation.contracts.FIELD_START], dtype=float)
     if validation.contracts.FIELD_POINTS in task:
@@ -884,6 +1141,8 @@ def _family_from_task_shape(shape: str) -> str:
         return FAMILY_ELLIPSE
     if shape == validation.contracts.SHAPE_FIGURE_EIGHT:
         return FAMILY_FIGURE_EIGHT
+    if shape == validation.contracts.SHAPE_BASIC_TRAINING_SHOW:
+        return FAMILY_BASIC_TRAINING_SHOW
     message = f"unsupported base task shape for task distribution: {shape}"
     raise ValueError(message)
 
@@ -1047,6 +1306,7 @@ def _xy(x: float, y: float) -> list[float]:
 
 __all__ = [
     "DISTRIBUTION_CONFIG_KEY",
+    "FAMILY_BASIC_TRAINING_SHOW",
     "MODE_FIXED",
     "MODE_RANDOMIZED",
     "SampledTask",

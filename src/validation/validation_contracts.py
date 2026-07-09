@@ -28,6 +28,7 @@ SHAPE_FIGURE_EIGHT = "figure_eight"
 SHAPE_LINE = "line"
 SHAPE_VERTICAL = "vertical"
 SHAPE_POLYLINE = "polyline"
+SHAPE_BASIC_TRAINING_SHOW = "basic_training_show"
 SHAPE_HOVER_STABILIZATION = "hover_stabilization"
 SHAPE_NEARBY_TARGET_HOVER = "nearby_target_hover"
 SHAPE_START_HOLD_THEN_SHORT_LINE = "start_hold_then_short_line"
@@ -63,11 +64,21 @@ FIELD_XY = "xy"
 FIELD_START_HEIGHT = "start_height"
 FIELD_END_HEIGHT = "end_height"
 FIELD_POINTS = "points"
+FIELD_SEGMENTS = "segments"
+FIELD_SEGMENT_SHAPE = "segment_shape"
+FIELD_SEGMENT_START = "segment_start"
+FIELD_SEGMENT_END = "segment_end"
+FIELD_SEGMENT_DURATION_SEC = "segment_duration_sec"
+FIELD_SEGMENT_FINAL_HOLD_SEC = "segment_final_hold_sec"
+FIELD_SEGMENT_POINTS = "segment_points"
 FIELD_HOLD_DURATION_SEC = "hold_duration_sec"
 FIELD_MOVE_DURATION_SEC = "move_duration_sec"
 FIELD_START_HOLD_ENABLED = "start_hold_enabled"
 FIELD_START_HOLD_SEC = "start_hold_sec"
 FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS = "exclude_start_hold_from_tracking_metrics"
+FIELD_FINAL_HOLD_ENABLED = "final_hold_enabled"
+FIELD_FINAL_HOLD_SEC = "final_hold_sec"
+FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS = "exclude_final_hold_from_tracking_metrics"
 
 __all__ = [
     "FIELD_CENTER",
@@ -75,7 +86,10 @@ __all__ = [
     "FIELD_DURATION_SEC",
     "FIELD_END",
     "FIELD_END_HEIGHT",
+    "FIELD_EXCLUDE_FINAL_HOLD_FROM_TRACKING_METRICS",
     "FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS",
+    "FIELD_FINAL_HOLD_ENABLED",
+    "FIELD_FINAL_HOLD_SEC",
     "FIELD_HEIGHT",
     "FIELD_HOLD_DURATION_SEC",
     "FIELD_MOVE_DURATION_SEC",
@@ -85,6 +99,13 @@ __all__ = [
     "FIELD_RADIUS_X",
     "FIELD_RADIUS_Y",
     "FIELD_SAMPLE_RATE_HZ",
+    "FIELD_SEGMENTS",
+    "FIELD_SEGMENT_DURATION_SEC",
+    "FIELD_SEGMENT_END",
+    "FIELD_SEGMENT_FINAL_HOLD_SEC",
+    "FIELD_SEGMENT_POINTS",
+    "FIELD_SEGMENT_SHAPE",
+    "FIELD_SEGMENT_START",
     "FIELD_SHAPE",
     "FIELD_START",
     "FIELD_START_HEIGHT",
@@ -92,6 +113,7 @@ __all__ = [
     "FIELD_START_HOLD_SEC",
     "FIELD_TASK_TYPE",
     "FIELD_XY",
+    "SHAPE_BASIC_TRAINING_SHOW",
     "SHAPE_CIRCLE",
     "SHAPE_ELLIPSE",
     "SHAPE_FIGURE_EIGHT",

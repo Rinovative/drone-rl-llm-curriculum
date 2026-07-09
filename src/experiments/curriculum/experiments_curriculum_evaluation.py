@@ -37,9 +37,9 @@ from src.experiments.evaluation import experiments_evaluation_suites as evaluati
 DEFAULT_EVALUATION_SUITE_PATH = evaluation_suites.DEFAULT_EVALUATION_SUITE_PATH
 OWN_TASK_EVALUATION_NAME = policy_evaluation.OWN_TASK_EVALUATION_NAME
 STANDARD_EVALUATION_PROFILE = policy_evaluation.STANDARD_EVALUATION_PROFILE
-STANDARD_LINE_EVALUATION_SUITE_PATH = policy_evaluation.STANDARD_LINE_EVALUATION_SUITE_PATH
-STANDARD_FINAL_BENCHMARK_SUITE_PATH = policy_evaluation.STANDARD_FINAL_BENCHMARK_SUITE_PATH
 STANDARD_GENERALIZATION_SUITE_PATH = policy_evaluation.STANDARD_GENERALIZATION_SUITE_PATH
+STANDARD_SCENARIO_EVALUATION_NAME = policy_evaluation.STANDARD_SCENARIO_EVALUATION_NAME
+STANDARD_SCENARIO_CONFIG_PATHS = policy_evaluation.STANDARD_SCENARIO_CONFIG_PATHS
 SUPPORTED_EVALUATION_MODES = ("own-stage", "suite")
 DEFAULT_EVALUATION_MODE = "suite"
 SUPPORTED_MODEL_SCOPES = ("all-stages", "final-stage")
@@ -130,9 +130,38 @@ def run_curriculum_standard_evaluation(
     run_manifest_path = Path(summary_path)
     run_root = run_manifest_path.expanduser().resolve(strict=False).parent
     summary = _read_json(run_manifest_path)
-    run_name = _curriculum_run_name(summary)
+    stages = _stages(summary)
+    final_stage = stages[-1]
+    final_model_path, final_model_source = _stage_model_path_and_source(final_stage)
+    curriculum_run_name = _curriculum_run_name(summary)
+    scenario_result = policy_evaluation.run_standard_scenario_evaluations(
+        run_root=run_root,
+        run_name=curriculum_run_name,
+        model_path=final_model_path,
+        model_run_name=str(final_stage.get("run_name") or curriculum_run_name),
+        source_run_kind="curriculum",
+        source_curriculum_kind=str(summary.get("curriculum_kind") or ""),
+        model_scope="final-stage",
+        evaluated_model_source=final_model_source,
+        run_manifest_path=run_manifest_path,
+    )
+    results.append(_standard_profile_result_entry(STANDARD_SCENARIO_EVALUATION_NAME, "final-stage", scenario_result))
+
+    run_name = curriculum_run_name
     storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
     evaluation_summary_path = utils.artifacts.get_run_evaluation_summary_path(run_name, storage_root=storage_root)
+    scenario_summary_entry = {
+        **scenario_result.metrics,
+        "curriculum_run_name": run_name,
+        "model_scope": "final-stage",
+        "index_key": f"curriculum_evaluation:{STANDARD_SCENARIO_EVALUATION_NAME}:final-stage",
+    }
+    _update_curriculum_evaluation_summary(
+        run_name=run_name,
+        run_root=run_root,
+        summary_path=evaluation_summary_path,
+        aggregate_entry=scenario_summary_entry,
+    )
     evaluation_summary = _read_json(evaluation_summary_path) if evaluation_summary_path.exists() else {}
     profile_payload = {
         "run_type": "evaluation",
@@ -350,19 +379,13 @@ def run_curriculum_evaluation(
 
 def _standard_curriculum_suite_plan(model_scope: str) -> list[tuple[Path, str]]:
     """Return suite configs and model scopes for the standard curriculum profile."""
-    plan = [
-        (STANDARD_LINE_EVALUATION_SUITE_PATH, model_scope),
-        (STANDARD_FINAL_BENCHMARK_SUITE_PATH, model_scope),
-    ]
-    if STANDARD_GENERALIZATION_SUITE_PATH.is_file():
-        plan.append((STANDARD_GENERALIZATION_SUITE_PATH, model_scope))
-    return plan
+    return [(STANDARD_GENERALIZATION_SUITE_PATH, model_scope)]
 
 
 def _standard_profile_result_entry(
     evaluation_name: str,
     model_scope: str,
-    result: CurriculumEvaluationResult,
+    result: CurriculumEvaluationResult | policy_evaluation.PolicyScenarioEvaluationResult,
 ) -> dict[str, str]:
     """Return a compact standard-profile result link."""
     return {
@@ -1029,9 +1052,9 @@ __all__ = [
     "DEFAULT_RENDER_FPS",
     "OWN_TASK_EVALUATION_NAME",
     "STANDARD_EVALUATION_PROFILE",
-    "STANDARD_FINAL_BENCHMARK_SUITE_PATH",
     "STANDARD_GENERALIZATION_SUITE_PATH",
-    "STANDARD_LINE_EVALUATION_SUITE_PATH",
+    "STANDARD_SCENARIO_CONFIG_PATHS",
+    "STANDARD_SCENARIO_EVALUATION_NAME",
     "SUPPORTED_EVALUATION_MODES",
     "SUPPORTED_MODEL_SCOPES",
     "CurriculumEvaluationResult",
