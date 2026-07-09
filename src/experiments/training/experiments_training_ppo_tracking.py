@@ -1013,29 +1013,29 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "terminate_on_base_truncation": termination_limits.terminate_on_base_truncation,
             **diagnostic_artifact_fields,
         }
-        metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        manifest = _build_manifest(active_settings, metrics, task_source=task_source, selected_task_index=selected_task_index, task=task)
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        safe_metrics = _write_json_artifact(metrics_path, metrics, "PPO tracking metrics")
+        manifest = _build_manifest(active_settings, safe_metrics, task_source=task_source, selected_task_index=selected_task_index, task=task)
+        safe_manifest = _write_json_artifact(manifest_path, manifest, "PPO tracking manifest")
         if run_manifest_path is not None:
-            run_manifest = _build_run_manifest(active_settings, metrics, manifest)
-            run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        utils.wandb.log_wandb_summary(wandb_run, metrics)
+            run_manifest = _build_run_manifest(active_settings, safe_metrics, safe_manifest)
+            _write_json_artifact(run_manifest_path, run_manifest, "PPO tracking run manifest")
+        utils.wandb.log_wandb_summary(wandb_run, safe_metrics)
         artifact_paths = {
             f"{training_run_name}_last_model": model_path,
             f"{training_run_name}_metrics": metrics_path,
             f"{training_run_name}_manifest": manifest_path,
         }
-        if metrics.get("best_model_path"):
-            artifact_paths[f"{training_run_name}_best_model"] = Path(str(metrics["best_model_path"]))
+        if safe_metrics.get("best_model_path"):
+            artifact_paths[f"{training_run_name}_best_model"] = Path(str(safe_metrics["best_model_path"]))
         if run_manifest_path is not None:
             artifact_paths[f"{training_run_name}_run_manifest"] = run_manifest_path
-        artifact_paths.update(_diagnostic_artifact_paths(training_run_name, metrics))
+        artifact_paths.update(_diagnostic_artifact_paths(training_run_name, safe_metrics))
         utils.wandb.log_wandb_artifacts(wandb_run, artifact_paths)
         return PPOTrackingSmokeResult(
             model_path=str(model_path),
             metrics_path=str(metrics_path),
             manifest_path=str(manifest_path),
-            metrics=metrics,
+            metrics=safe_metrics,
             last_model_path=str(model_path),
             best_model_path=None,
             best_model_metric=None,
@@ -2119,6 +2119,17 @@ def _build_run_manifest(
         "warnings": list(metrics.get("warnings", [])),
         "evaluation_index": _evaluation_index_manifest(run_name),
     }
+
+
+def _write_json_artifact(path: Path, payload: Mapping[str, Any], context: str) -> dict[str, Any]:
+    """Write one strict JSON artifact and return the JSON-safe payload."""
+    safe_payload = utils.serialization.to_jsonable(payload)
+    if not isinstance(safe_payload, dict):
+        message = f"{context} must serialize to a JSON object"
+        raise TypeError(message)
+    utils.serialization.assert_json_serializable(safe_payload, context)
+    path.write_text(json.dumps(safe_payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    return safe_payload
 
 
 def _write_direct_config_snapshots(

@@ -169,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         task_index=args.task_index,
         skip_plot=args.skip_plot,
     )
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    print(json.dumps(utils.serialization.to_jsonable(summary), indent=2, sort_keys=True, allow_nan=False))
     return 0
 
 

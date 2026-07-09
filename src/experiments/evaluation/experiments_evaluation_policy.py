@@ -436,6 +436,11 @@ def run_policy_evaluation(
     manifest_path = manifests_dir / f"{label_stem}_manifest.json"
     metrics_payload["metrics_path"] = str(metrics_path)
     metrics_payload["manifest_path"] = str(manifest_path)
+    safe_metrics_payload = utils.serialization.to_jsonable(metrics_payload)
+    if not isinstance(safe_metrics_payload, dict):
+        message = "policy evaluation metrics must serialize to a JSON object"
+        raise TypeError(message)
+    metrics_payload = safe_metrics_payload
 
     manifest = _manifest_from_metrics(metrics_payload)
     _write_json(metrics_path, metrics_payload)
@@ -843,6 +848,16 @@ def run_standard_scenario_evaluations(
             "entry_count",
         )
     }
+    safe_aggregate_metrics = utils.serialization.to_jsonable(aggregate_metrics)
+    if not isinstance(safe_aggregate_metrics, dict):
+        message = "standard scenario aggregate metrics must serialize to a JSON object"
+        raise TypeError(message)
+    safe_aggregate_manifest = utils.serialization.to_jsonable(aggregate_manifest)
+    if not isinstance(safe_aggregate_manifest, dict):
+        message = "standard scenario aggregate manifest must serialize to a JSON object"
+        raise TypeError(message)
+    aggregate_metrics = safe_aggregate_metrics
+    aggregate_manifest = safe_aggregate_manifest
     _write_json(metrics_path, aggregate_metrics)
     _write_json(manifest_path, aggregate_manifest)
 
@@ -955,6 +970,16 @@ def _write_standard_scenario_metrics_and_diagnostics(
             "diagnostics_summary": diagnostics_payload,
         }
     )
+    safe_diagnostics_payload = utils.serialization.to_jsonable(diagnostics_payload)
+    if not isinstance(safe_diagnostics_payload, dict):
+        message = "standard scenario diagnostics must serialize to a JSON object"
+        raise TypeError(message)
+    safe_metrics_payload = utils.serialization.to_jsonable(metrics_payload)
+    if not isinstance(safe_metrics_payload, dict):
+        message = "standard scenario metrics must serialize to a JSON object"
+        raise TypeError(message)
+    diagnostics_payload = safe_diagnostics_payload
+    metrics_payload = safe_metrics_payload
     _write_json(diagnostics_path, diagnostics_payload)
     _write_json(metrics_path, metrics_payload)
     _augment_standard_scenario_manifest(
@@ -1474,6 +1499,16 @@ def run_direct_policy_suite_evaluation(
             "entry_count",
         )
     }
+    safe_aggregate_metrics = utils.serialization.to_jsonable(aggregate_metrics)
+    if not isinstance(safe_aggregate_metrics, dict):
+        message = "direct policy suite aggregate metrics must serialize to a JSON object"
+        raise TypeError(message)
+    safe_aggregate_manifest = utils.serialization.to_jsonable(aggregate_manifest)
+    if not isinstance(safe_aggregate_manifest, dict):
+        message = "direct policy suite aggregate manifest must serialize to a JSON object"
+        raise TypeError(message)
+    aggregate_metrics = safe_aggregate_metrics
+    aggregate_manifest = safe_aggregate_manifest
     _write_json(metrics_path, aggregate_metrics)
     _write_json(aggregate_manifest_path, aggregate_manifest)
 
@@ -2228,9 +2263,14 @@ def _safe_name(value: str) -> str:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Write stable-formatted JSON."""
+    """Write stable-formatted strict JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    safe_payload = utils.serialization.to_jsonable(payload)
+    if not isinstance(safe_payload, dict):
+        message = f"JSON payload for {path} must serialize to an object"
+        raise TypeError(message)
+    utils.serialization.assert_json_serializable(safe_payload, str(path))
+    path.write_text(json.dumps(safe_payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
 
 
 __all__ = [

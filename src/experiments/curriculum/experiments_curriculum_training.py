@@ -561,7 +561,12 @@ def run_manual_curriculum_training(settings: ManualCurriculumSettings) -> Manual
         stage_entries.append(entry)
         previous_model_path = _preferred_result_model_path(result)
 
-    summary = _build_curriculum_summary(settings=settings, stage_entries=stage_entries, model_transfer_enabled=transfer_used)
+    summary = utils.serialization.to_jsonable(
+        _build_curriculum_summary(settings=settings, stage_entries=stage_entries, model_transfer_enabled=transfer_used)
+    )
+    if not isinstance(summary, dict):
+        message = "manual curriculum summary must serialize to a JSON object"
+        raise TypeError(message)
     summary_path, manifest_path = _write_curriculum_artifacts(settings=settings, summary=summary)
     return ManualCurriculumResult(summary_path=str(summary_path), manifest_path=str(manifest_path), summary=summary)
 
@@ -882,7 +887,12 @@ def _write_curriculum_artifacts(settings: ManualCurriculumSettings, summary: dic
         },
         "evaluation_index": _evaluation_index_manifest(artifact_run_name),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    safe_manifest = utils.serialization.to_jsonable(manifest)
+    if not isinstance(safe_manifest, dict):
+        message = "manual curriculum manifest must serialize to a JSON object"
+        raise TypeError(message)
+    utils.serialization.assert_json_serializable(safe_manifest, "manual curriculum manifest")
+    manifest_path.write_text(json.dumps(safe_manifest, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     return manifest_path, manifest_path
 
 

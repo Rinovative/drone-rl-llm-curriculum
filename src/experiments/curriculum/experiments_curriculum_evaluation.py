@@ -370,6 +370,11 @@ def run_curriculum_evaluation(
         "entry_count": len(evaluated_models),
         "index_key": f"curriculum_evaluation:{evaluation_name}:{model_scope}",
     }
+    safe_aggregate_metrics = utils.serialization.to_jsonable(aggregate_metrics)
+    if not isinstance(safe_aggregate_metrics, dict):
+        message = "curriculum evaluation aggregate metrics must serialize to a JSON object"
+        raise TypeError(message)
+    aggregate_metrics = safe_aggregate_metrics
     _update_curriculum_evaluation_summary(
         run_name=curriculum_run_name,
         run_root=run_root,
@@ -1108,9 +1113,14 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    """Write stable-formatted JSON."""
+    """Write stable-formatted strict JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    safe_payload = utils.serialization.to_jsonable(dict(payload))
+    if not isinstance(safe_payload, dict):
+        message = f"JSON payload for {path} must serialize to an object"
+        raise TypeError(message)
+    utils.serialization.assert_json_serializable(safe_payload, str(path))
+    path.write_text(json.dumps(safe_payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
 
 
 __all__ = [

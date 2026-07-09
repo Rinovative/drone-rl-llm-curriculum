@@ -25,6 +25,7 @@ import argparse
 import json
 from pathlib import Path
 
+from src import utils
 from src.experiments.rendering import experiments_rendering_smoke as render_smoke
 
 
@@ -60,7 +61,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     print(
-        json.dumps({"manifest_path": result.manifest_path, "manifest": result.manifest, "warnings": list(result.warnings)}, indent=2, sort_keys=True)
+        json.dumps(
+            utils.serialization.to_jsonable({"manifest_path": result.manifest_path, "manifest": result.manifest, "warnings": list(result.warnings)}),
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
     )
     return 0
 

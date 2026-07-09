@@ -1169,6 +1169,96 @@ def test_run_ppo_tracking_smoke_finishes_wandb_run_on_success(
     assert harness.eval_env.closed is True
 
 
+def test_run_ppo_tracking_smoke_serializes_numpy_metrics_and_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify raw NumPy diagnostics cannot crash PPO metrics or manifest JSON writes."""
+    _install_fast_ppo_smoke_fakes(tmp_path, monkeypatch, wandb_run=None)
+    monkeypatch.setattr(
+        ppo_tracking,
+        "run_liftoff_diagnostics",
+        lambda *_args, **_kwargs: {
+            "high_action": {
+                "requested_action": np.asarray([[1.0, 1.0, 1.0]], dtype=np.float32),
+                "rpm_saturation_mask": np.asarray([[False, True, False, True]], dtype=np.bool_),
+            }
+        },
+    )
+    monkeypatch.setattr(
+        ppo_tracking,
+        "_tracking_env_action_metadata",
+        lambda _env: {
+            "actions_normalized": np.bool_(True),
+            "action_interface": "pid_position",
+            "ppo_action_dim": np.int64(PID_ACTION_DIM),
+            "real_action_type": "pid_target_position",
+            "real_action_space_bounds": {
+                "low": np.asarray([[-1.0, -1.0, 0.2]], dtype=np.float32),
+                "high": np.asarray([[1.0, 1.0, 1.5]], dtype=np.float32),
+                "units": "meters",
+            },
+            "real_action_space_low": np.asarray([[-1.0, -1.0, 0.2]], dtype=np.float32),
+            "real_action_space_high": np.asarray([[1.0, 1.0, 1.5]], dtype=np.float32),
+            "initial_state_mode": "reference_start",
+            "initial_state": {"mode": "reference_start", "offset_xyz": np.asarray([0.0, 0.0, 0.0], dtype=np.float32)},
+            "initial_xyz": np.asarray([0.0, 0.0, 1.0], dtype=np.float64),
+            "requested_initial_xyz": np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+            "actual_initial_xyz": np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+            "initial_reference_xyz": np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+            "initial_xyz_offset": np.asarray([0.0, 0.0, 0.0], dtype=np.float32),
+            "initial_position_error_m": np.float32(0.0),
+            "initial_z_error_m": np.float32(0.0),
+            "observation_dim": np.int64(BASE_OBSERVATION_DIM),
+            "observation_components": [{"name": "current_position", "dim": np.int64(3)}],
+        },
+    )
+    monkeypatch.setattr(
+        ppo_tracking.evaluation.diagnostics,
+        "collect_policy_evaluation_diagnostics",
+        lambda **_kwargs: types.SimpleNamespace(
+            metrics={
+                "mean_position_error_m": np.float32(0.125),
+                "action_mean": np.asarray([0.1, 0.2, 0.3], dtype=np.float32),
+                "real_action_saturation_fraction": np.asarray([0.0, 1.0, 0.0], dtype=np.float64),
+                "trace_summary": {
+                    "normalized_action": np.asarray([[0.0, 0.0, 1.0]], dtype=np.float32),
+                    "nan_replaced_with_null": np.float64(np.nan),
+                },
+            }
+        ),
+    )
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
+        run_name="json_safe_numpy_metrics",
+        total_timesteps=CONFIGURED_TEST_PPO_N_STEPS,
+        ppo_config=ppo_config.PPOConfig(n_steps=CONFIGURED_TEST_PPO_N_STEPS, batch_size=CONFIGURED_TEST_PPO_BATCH_SIZE),
+        eval_steps=4,
+        check_env=False,
+        wandb_mode=utils.wandb.WANDB_MODE_DISABLED,
+    )
+
+    result = ppo_tracking.run_ppo_tracking_smoke(settings)
+
+    metrics = json.loads(Path(result.metrics_path).read_text(encoding="utf-8"))
+    manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+    run_manifest = json.loads(Path(result.metrics["run_manifest_path"]).read_text(encoding="utf-8"))
+    assert metrics["mean_position_error_m"] == pytest.approx(0.125)
+    assert metrics["action_mean"] == pytest.approx([0.1, 0.2, 0.3])
+    assert metrics["real_action_saturation_fraction"] == [0.0, 1.0, 0.0]
+    assert metrics["trace_summary"] == {"nan_replaced_with_null": None, "normalized_action": [[0.0, 0.0, 1.0]]}
+    assert metrics["action_metadata"]["real_action_space_low"] == [[-1.0, -1.0, 0.20000000298023224]]
+    assert metrics["initial_xyz"] == [0.0, 0.0, 1.0]
+    assert metrics["liftoff_diagnostics"]["high_action"]["rpm_saturation_mask"] == [[False, True, False, True]]
+    assert manifest["initial_xyz"] == [0.0, 0.0, 1.0]
+    assert run_manifest["real_action_space_bounds"]["high"] == [[1.0, 1.0, 1.5]]
+    assert utils.serialization.find_non_jsonable_paths(metrics) == []
+    assert utils.serialization.find_non_jsonable_paths(manifest) == []
+    assert utils.serialization.find_non_jsonable_paths(run_manifest) == []
+    json.dumps(metrics, allow_nan=False)
+    json.dumps(manifest, allow_nan=False)
+    json.dumps(run_manifest, allow_nan=False)
+
+
 def test_run_ppo_tracking_smoke_finishes_wandb_run_on_exception(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

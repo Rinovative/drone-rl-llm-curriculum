@@ -191,8 +191,13 @@ def write_task_rollout_evaluation(
     result = evaluate_task_rollout(task_or_reference=task_or_reference, offset=offset, lag_steps=lag_steps)
     resolved_path = Path(output_path) if output_path is not None else utils.paths.get_results_root() / "mvp_smoke" / DEFAULT_OUTPUT_FILENAME
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_path.write_text(json.dumps(result.metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return RolloutWriteResult(output_path=str(resolved_path), metrics=result.metrics)
+    safe_metrics = utils.serialization.to_jsonable(result.metrics)
+    if not isinstance(safe_metrics, dict):
+        message = "rollout metrics must serialize to a JSON object"
+        raise TypeError(message)
+    utils.serialization.assert_json_serializable(safe_metrics, "rollout metrics")
+    resolved_path.write_text(json.dumps(safe_metrics, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    return RolloutWriteResult(output_path=str(resolved_path), metrics=safe_metrics)
 
 
 def write_policy_rollout_trace(
@@ -225,16 +230,22 @@ def write_policy_rollout_trace(
         message = "trace_records must contain at least one step"
         raise ValueError(message)
 
-    json_records = [_trace_record_to_json(record) for record in trace_records]
-    for index, record in enumerate(json_records):
+    json_records: list[dict[str, Any]] = []
+    for index, source_record in enumerate(trace_records):
+        record = utils.serialization.to_jsonable(_trace_record_to_json(source_record))
+        if not isinstance(record, dict):
+            message = f"trace record {index} must serialize to a JSON object"
+            raise TypeError(message)
         missing = [field for field in TRACE_REQUIRED_FIELDS if field not in record]
         if missing:
             message = f"trace record {index} is missing required fields: {', '.join(missing)}"
             raise ValueError(message)
+        utils.serialization.assert_json_serializable(record, f"trace record {index}")
+        json_records.append(record)
 
     resolved_path = Path(output_path)
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [json.dumps(record, sort_keys=True) for record in json_records]
+    lines = [json.dumps(record, sort_keys=True, allow_nan=False) for record in json_records]
     resolved_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     columns = tuple(sorted({key for record in json_records for key in record}))
     return RolloutTraceWriteResult(output_path=str(resolved_path), step_count=len(json_records), columns=columns)
@@ -372,15 +383,7 @@ def _trace_record_to_json(record: Mapping[str, Any]) -> dict[str, Any]:
 
 def _json_ready(value: Any) -> Any:
     """Return a JSON-compatible copy of a rollout trace value."""
-    if isinstance(value, np.ndarray):
-        return _json_ready(value.tolist())
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {str(key): _json_ready(nested_value) for key, nested_value in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_ready(item) for item in value]
-    return value
+    return utils.serialization.to_jsonable(value)
 
 
 __all__ = [

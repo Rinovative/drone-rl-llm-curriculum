@@ -72,14 +72,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         json.dumps(
-            {
-                "manifest_path": result.manifest_path,
-                "summary_path": result.summary_path,
-                "proposal_log_path": result.proposal_log_path,
-                "summary": result.summary,
-            },
+            utils.serialization.to_jsonable(
+                {
+                    "manifest_path": result.manifest_path,
+                    "summary_path": result.summary_path,
+                    "proposal_log_path": result.proposal_log_path,
+                    "summary": result.summary,
+                }
+            ),
             indent=2,
             sort_keys=True,
+            allow_nan=False,
         )
     )
     return 0

@@ -104,14 +104,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         json.dumps(
-            {
-                "metrics": result.metrics,
-                "metrics_path": result.metrics_path,
-                "model_path": result.model_path,
-                "warnings": list(result.warnings),
-            },
+            utils.serialization.to_jsonable(
+                {
+                    "metrics": result.metrics,
+                    "metrics_path": result.metrics_path,
+                    "model_path": result.model_path,
+                    "warnings": list(result.warnings),
+                }
+            ),
             indent=2,
             sort_keys=True,
+            allow_nan=False,
         )
     )
     return 0

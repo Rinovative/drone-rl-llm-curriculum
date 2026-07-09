@@ -23,10 +23,14 @@ Boundaries:
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from src import utils
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 @dataclass(frozen=True)
@@ -54,7 +58,9 @@ class ProposalEventLogger:
 
         """
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        encoded = json.dumps(_json_ready(event), sort_keys=True)
+        safe_event = utils.serialization.to_jsonable(event)
+        utils.serialization.assert_json_serializable(safe_event, "LLM proposal event")
+        encoded = json.dumps(safe_event, sort_keys=True, allow_nan=False)
         with self.log_path.open("a", encoding="utf-8") as file_obj:
             file_obj.write(f"{encoded}\n")
 
@@ -78,21 +84,6 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
     if not log_path.exists():
         return []
     return [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-def _json_ready(value: Any) -> Any:
-    """Return a JSON-ready representation of a nested value."""
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, Mapping):
-        return {str(key): _json_ready(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_json_ready(item) for item in value]
-    if isinstance(value, list):
-        return [_json_ready(item) for item in value]
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_json_ready(item) for item in value]
-    return value
 
 
 __all__ = [

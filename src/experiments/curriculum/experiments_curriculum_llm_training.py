@@ -863,13 +863,18 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
         stage_entries.append(entry)
         recent_accepted_tasks.append(_accepted_task_context(entry))
 
-    summary = _build_curriculum_summary(
-        settings=settings,
-        stage_entries=stage_entries,
-        proposal_log_path=proposal_log_path,
-        proposal_stats=proposal_stats,
-        dry_run_proposals=dry_run_proposals,
+    summary = utils.serialization.to_jsonable(
+        _build_curriculum_summary(
+            settings=settings,
+            stage_entries=stage_entries,
+            proposal_log_path=proposal_log_path,
+            proposal_stats=proposal_stats,
+            dry_run_proposals=dry_run_proposals,
+        )
     )
+    if not isinstance(summary, dict):
+        message = "LLM curriculum summary must serialize to a JSON object"
+        raise TypeError(message)
     summary_path, manifest_path = _write_curriculum_artifacts(settings=settings, summary=summary)
     return LLMCurriculumResult(
         summary_path=str(summary_path),
@@ -1282,7 +1287,12 @@ def _write_curriculum_artifacts(settings: LLMCurriculumSettings, summary: dict[s
         },
         "evaluation_index": _evaluation_index_manifest(artifact_run_name),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    safe_manifest = utils.serialization.to_jsonable(manifest)
+    if not isinstance(safe_manifest, dict):
+        message = "LLM curriculum manifest must serialize to a JSON object"
+        raise TypeError(message)
+    utils.serialization.assert_json_serializable(safe_manifest, "LLM curriculum manifest")
+    manifest_path.write_text(json.dumps(safe_manifest, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     return manifest_path, manifest_path
 
 

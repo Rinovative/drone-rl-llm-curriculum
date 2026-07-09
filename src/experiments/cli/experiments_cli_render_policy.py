@@ -26,6 +26,7 @@ import argparse
 import json
 from pathlib import Path
 
+from src import utils
 from src.experiments.rendering import experiments_rendering_policy as policy_render
 
 
@@ -93,14 +94,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         json.dumps(
-            {
-                "gif_path": result.gif_path,
-                "manifest_path": result.manifest_path,
-                "metrics": result.metrics,
-                "warnings": list(result.warnings),
-            },
+            utils.serialization.to_jsonable(
+                {
+                    "gif_path": result.gif_path,
+                    "manifest_path": result.manifest_path,
+                    "metrics": result.metrics,
+                    "warnings": list(result.warnings),
+                }
+            ),
             indent=2,
             sort_keys=True,
+            allow_nan=False,
         )
     )
     return 0

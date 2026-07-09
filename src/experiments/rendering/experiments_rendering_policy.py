@@ -1527,15 +1527,7 @@ def _pid_z_trace_fields(info: dict[str, Any]) -> dict[str, Any]:
 
 def _json_ready_trace_value(value: Any) -> Any:
     """Return a JSON-compatible copy of a rollout trace value."""
-    if isinstance(value, np.ndarray):
-        return _array_to_jsonable(value)
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {str(key): _json_ready_trace_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_ready_trace_value(item) for item in value]
-    return value
+    return utils.serialization.to_jsonable(value)
 
 
 def _array_to_jsonable(value: Any) -> list[Any]:
@@ -1544,9 +1536,14 @@ def _array_to_jsonable(value: Any) -> list[Any]:
 
 
 def _write_manifest(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
-    """Write a manifest payload to JSON and return the same payload."""
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return payload
+    """Write a manifest payload to strict JSON and return the JSON-safe payload."""
+    safe_payload = utils.serialization.to_jsonable(payload)
+    if not isinstance(safe_payload, dict):
+        message = "policy render manifest must serialize to a JSON object"
+        raise TypeError(message)
+    utils.serialization.assert_json_serializable(safe_payload, str(path))
+    path.write_text(json.dumps(safe_payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    return safe_payload
 
 
 def _resolve_model_path(settings: PolicyRenderSettings) -> Path:

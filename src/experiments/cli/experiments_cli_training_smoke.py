@@ -25,6 +25,7 @@ import argparse
 import json
 from pathlib import Path
 
+from src import utils
 from src.experiments.training import experiments_training_smoke as training_smoke
 
 
@@ -47,7 +48,14 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=args.max_steps,
         task_index=args.task_index,
     )
-    print(json.dumps({"output_path": result.output_path, "metrics": result.metrics, "warnings": list(result.warnings)}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            utils.serialization.to_jsonable({"output_path": result.output_path, "metrics": result.metrics, "warnings": list(result.warnings)}),
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+    )
     return 0
 
 

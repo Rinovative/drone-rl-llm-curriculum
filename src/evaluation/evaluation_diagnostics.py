@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from src import evaluation
+from src import evaluation, utils
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -2470,8 +2470,10 @@ def _dedupe(values: Sequence[str]) -> list[str]:
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    """Write a JSON artifact with stable formatting."""
-    path.write_text(json.dumps(_json_ready(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    """Write a JSON artifact with stable strict formatting."""
+    safe_payload = utils.serialization.to_jsonable(payload)
+    utils.serialization.assert_json_serializable(safe_payload, str(path))
+    path.write_text(json.dumps(safe_payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
 
 
 __all__ = [

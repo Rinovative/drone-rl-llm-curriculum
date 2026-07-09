@@ -206,8 +206,13 @@ def run_training_smoke(settings: TrainingSmokeSettings | None = None) -> Trainin
     }
     output_path = _resolve_output_path(active_settings)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return TrainingSmokeResult(output_path=str(output_path), metrics=metrics, warnings=warnings)
+    safe_metrics = utils.serialization.to_jsonable(metrics)
+    if not isinstance(safe_metrics, dict):
+        message = "training smoke metrics must serialize to a JSON object"
+        raise TypeError(message)
+    utils.serialization.assert_json_serializable(safe_metrics, "training smoke metrics")
+    output_path.write_text(json.dumps(safe_metrics, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    return TrainingSmokeResult(output_path=str(output_path), metrics=safe_metrics, warnings=warnings)
 
 
 def run_training_smoke_from_config(

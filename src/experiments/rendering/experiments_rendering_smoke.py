@@ -183,9 +183,14 @@ def run_render_smoke(settings: RenderSmokeSettings | None = None) -> RenderSmoke
         artifacts = _write_fallback_plot(active_settings, renders_dir, warnings=(warning,))
 
     manifest = _build_manifest(artifacts)
+    safe_manifest = utils.serialization.to_jsonable(manifest)
+    if not isinstance(safe_manifest, dict):
+        message = "render smoke manifest must serialize to a JSON object"
+        raise TypeError(message)
     manifest_path = manifests_dir / DEFAULT_OUTPUT_FILENAME
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return RenderSmokeResult(manifest_path=str(manifest_path), manifest=manifest, warnings=artifacts.warnings)
+    utils.serialization.assert_json_serializable(safe_manifest, "render smoke manifest")
+    manifest_path.write_text(json.dumps(safe_manifest, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    return RenderSmokeResult(manifest_path=str(manifest_path), manifest=safe_manifest, warnings=artifacts.warnings)
 
 
 def _artifact_dirs(output_dir: Path) -> tuple[Path, Path]:

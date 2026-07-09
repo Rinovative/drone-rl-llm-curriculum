@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from src import evaluation
+from src import evaluation, utils
 
 TRACE_POSITION_NDIM = 2
 XYZ_DIMENSIONS = 3
@@ -664,7 +664,9 @@ def _write_json_fallback(
         "actual_positions": np.asarray(actual.positions, dtype=float).tolist(),
         "position_errors_m": [float(value) for value in errors],
     }
-    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    safe_payload = utils.serialization.to_jsonable(payload)
+    utils.serialization.assert_json_serializable(safe_payload, str(output_path))
+    output_path.write_text(json.dumps(safe_payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     return TrajectoryPlotResult(output_path=str(output_path), output_kind="json_fallback", sample_count=int(errors.shape[0]))
 
 

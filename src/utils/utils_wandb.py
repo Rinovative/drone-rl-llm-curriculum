@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
 from . import utils_artifacts as artifacts
+from . import utils_serialization as serialization
 
 WANDB_MODE_AUTO = "auto"
 WANDB_MODE_DISABLED = "disabled"
@@ -207,12 +208,15 @@ def start_wandb_run(settings: WandbTrackingSettings, config: dict[str, Any]) -> 
         message = "W&B tracking requires settings.dir or settings.name to resolve a run-scoped directory"
         raise RuntimeError(message)
     original_tags, sanitized_tags, shortening_map = _sanitize_wandb_tags_with_metadata(settings.tags)
+    safe_config = serialization.to_jsonable(config)
+    serialization.assert_json_serializable(safe_config, "W&B config")
     wandb_config = _wandb_config_with_tag_sanitization_metadata(
-        config,
+        safe_config,
         original_tags=original_tags,
         sanitized_tags=sanitized_tags,
         shortening_map=shortening_map,
     )
+    serialization.assert_json_serializable(wandb_config, "W&B config")
 
     wandb_dir = settings.dir or default_wandb_dir(str(settings.name))
     wandb_dir.mkdir(parents=True, exist_ok=True)
@@ -424,7 +428,10 @@ def log_wandb_summary(run: Any | None, metrics: dict[str, Any]) -> None:
     """Write grouped final diagnostics to ``run.summary`` without creating history charts."""
     if run is None:
         return
-    summary_metrics = build_wandb_summary_metrics(metrics)
+    safe_metrics = serialization.to_jsonable(metrics)
+    serialization.assert_json_serializable(safe_metrics, "W&B summary source metrics")
+    summary_metrics = serialization.to_jsonable(build_wandb_summary_metrics(safe_metrics))
+    serialization.assert_json_serializable(summary_metrics, "W&B summary metrics")
     for key, value in summary_metrics.items():
         run.summary[key] = value
 

@@ -68,9 +68,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(
         json.dumps(
-            {"manifest_path": result.manifest_path, "metrics_path": result.metrics_path, "metrics": result.metrics},
+            utils.serialization.to_jsonable({"manifest_path": result.manifest_path, "metrics_path": result.metrics_path, "metrics": result.metrics}),
             indent=2,
             sort_keys=True,
+            allow_nan=False,
         )
     )
     return 0
