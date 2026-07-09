@@ -321,6 +321,10 @@ def test_add_phase_fields_labels_trace_rows_with_required_aliases() -> None:
     assert enriched[0]["is_start_hold"] is False
     assert enriched[0]["is_phase_hold"] is False
     assert enriched[0]["is_final_hold"] is False
+    assert enriched[0]["is_tracking_phase"] is True
+    assert enriched[0]["planned_tracking_steps"] == composition.reference_motion_steps
+    assert enriched[0]["tracking_phase_start_step"] == composition.start_hold_steps
+    assert enriched[0]["tracking_phase_end_step"] == composition.reference_motion_end_step
     assert enriched[0]["reference_position"] == [0.0, 0.0, 1.0]
     assert enriched[0]["current_position"] == [0.0, 0.0, 1.0]
     assert enriched[0]["position_error"] == 0.0
@@ -328,12 +332,48 @@ def test_add_phase_fields_labels_trace_rows_with_required_aliases() -> None:
     assert enriched[1]["is_start_hold"] is False
     assert enriched[1]["is_phase_hold"] is True
     assert enriched[1]["is_final_hold"] is False
+    assert enriched[1]["is_tracking_phase"] is False
     assert enriched[2]["phase_index"] == 1
     assert enriched[2]["phase_type"] == "polyline"
     assert enriched[2]["is_phase_hold"] is False
+    assert enriched[2]["is_tracking_phase"] is True
     assert enriched[3]["phase_name"] == "final_hold"
     assert enriched[3]["phase_type"] == "final_hold"
     assert enriched[3]["is_final_hold"] is True
+    assert enriched[3]["is_tracking_phase"] is False
+
+
+def test_scenario_tracking_completion_metrics_use_active_phase_rows() -> None:
+    """Verify scenario completion uses active phase metadata when available."""
+    trace_records = [
+        {"is_start_hold": True, "is_phase_hold": False, "is_final_hold": False, "position_error_m": 0.8},
+        {"is_start_hold": False, "is_phase_hold": False, "is_final_hold": False, "position_error_m": 0.1},
+        {"is_start_hold": False, "is_phase_hold": True, "is_final_hold": False, "position_error_m": 0.9},
+        {"is_start_hold": False, "is_phase_hold": False, "is_final_hold": False, "position_error_m": 0.3},
+        {"is_start_hold": False, "is_phase_hold": False, "is_final_hold": True, "position_error_m": 0.7},
+    ]
+
+    metrics = scenario_render._scenario_tracking_completion_metrics(trace_records, planned_tracking_steps=4)
+
+    assert metrics["mean_position_error_tracking_m"] == pytest.approx(0.2)
+    assert metrics["completed_tracking_steps"] == 2
+    assert metrics["planned_tracking_steps"] == 4
+    assert metrics["completion_ratio"] == pytest.approx(0.5)
+    assert metrics["completion_adjusted_tracking_error_m"] == pytest.approx(0.4)
+
+
+def test_scenario_tracking_completion_metrics_stay_empty_without_phase_metadata() -> None:
+    """Verify tracking completion is not fabricated without active phase flags."""
+    metrics = scenario_render._scenario_tracking_completion_metrics(
+        [{"step_index": 0, "position_error_m": 0.1}, {"step_index": 1, "position_error_m": 0.2}],
+        planned_tracking_steps=2,
+    )
+
+    assert metrics["mean_position_error_tracking_m"] is None
+    assert metrics["completed_tracking_steps"] is None
+    assert metrics["planned_tracking_steps"] is None
+    assert metrics["completion_ratio"] is None
+    assert metrics["completion_adjusted_tracking_error_m"] is None
 
 
 def test_scenario_run_name_derivation_matches_contract() -> None:
@@ -465,6 +505,9 @@ def test_build_scenario_manifest_includes_required_fields(tmp_path: Path) -> Non
     assert payload["total_steps"] == composition.total_reference_steps
     assert payload["requested_max_steps"] == CONFIG_MAX_STEPS
     assert payload["effective_max_steps"] == CONFIG_MAX_STEPS
+    assert payload["completed_rollout_steps"] == composition.total_reference_steps
+    assert payload["planned_rollout_steps"] == CONFIG_MAX_STEPS
+    assert payload["rollout_completion_ratio"] == pytest.approx(composition.total_reference_steps / CONFIG_MAX_STEPS)
     assert payload["base_time_limit_sec"] > payload["scenario_duration_sec"]
     assert payload["reference_motion_steps"] == 262
     assert payload["start_hold_enabled"] is False

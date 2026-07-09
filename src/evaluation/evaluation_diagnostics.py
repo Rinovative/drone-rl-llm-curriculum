@@ -71,6 +71,7 @@ TREND_IMPROVING = "improving"
 TREND_WORSENING = "worsening"
 TREND_FLAT = "flat"
 TREND_UNKNOWN = "unknown"
+COMPLETION_ADJUSTMENT_MIN_RATIO = 0.05
 
 FAILURE_HOVER_LOCK = "hover_lock"
 FAILURE_INSUFFICIENT_XY_MOTION = "insufficient_xy_motion"
@@ -296,6 +297,13 @@ def summarize_policy_evaluation_trace(
     _validate_trace_task_shape(records=records, task_shape=task_shape)
     episode_summaries = _episode_summaries(records, action_space)
     metrics = _overall_metrics(records, episode_summaries, action_space)
+    metrics.update(
+        _evaluation_completion_metrics(
+            records=records,
+            eval_steps=eval_steps,
+            mean_tracking_error_m=metrics.get("mean_position_error_tracking_m"),
+        )
+    )
     metrics.update(
         {
             "actual_eval_steps": len(records),
@@ -759,6 +767,7 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
         "final_reward": float(rewards[-1]),
         "mean_position_error_m": float(np.mean(errors)),
         "mean_position_error_tracking_m": float(np.mean(tracking_errors)),
+        **_episode_completion_metrics(records, mean_tracking_error_m=float(np.mean(tracking_errors))),
         "final_position_error_m": float(errors[-1]),
         "max_position_error_m": float(np.max(errors)),
         **_start_hold_summary(records),
@@ -791,6 +800,111 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
         "termination_reason": str(records[-1].get("termination_reason", "running")),
         "reset_after_episode": bool(records[-1].get("terminated")) or bool(records[-1].get("truncated")),
     }
+
+
+def _episode_completion_metrics(records: Sequence[Mapping[str, Any]], mean_tracking_error_m: Any) -> dict[str, Any]:
+    """Return completion-aware tracking metrics for one represented episode."""
+    completed_tracking_steps = _completed_tracking_steps(records)
+    planned_tracking_steps = _planned_tracking_steps(records)
+    completion_ratio = _completion_ratio(completed=completed_tracking_steps, planned=planned_tracking_steps)
+    return {
+        "completed_tracking_steps": completed_tracking_steps,
+        "planned_tracking_steps": planned_tracking_steps,
+        "completion_ratio": completion_ratio,
+        "completion_adjusted_tracking_error_m": _completion_adjusted_tracking_error(
+            mean_tracking_error_m=mean_tracking_error_m,
+            completion_ratio=completion_ratio,
+        ),
+    }
+
+
+def _evaluation_completion_metrics(records: Sequence[Mapping[str, Any]], eval_steps: int, mean_tracking_error_m: Any) -> dict[str, Any]:
+    """Return completion-aware metrics aligned with the tracking-error phase."""
+    episode_records = _records_by_episode(records)
+    completed_tracking_steps = sum(_completed_tracking_steps(episode) for episode in episode_records)
+    planned_by_episode = [_planned_tracking_steps(episode) for episode in episode_records]
+    planned_tracking_steps = (
+        None if any(value is None for value in planned_by_episode) else int(sum(value for value in planned_by_episode if value is not None))
+    )
+    completion_ratio = _completion_ratio(completed=completed_tracking_steps, planned=planned_tracking_steps)
+    completed_rollout_steps = len(records)
+    planned_rollout_steps = int(eval_steps) if eval_steps > 0 else None
+    return {
+        "completed_tracking_steps": int(completed_tracking_steps),
+        "planned_tracking_steps": planned_tracking_steps,
+        "completion_ratio": completion_ratio,
+        "completion_adjusted_tracking_error_m": _completion_adjusted_tracking_error(
+            mean_tracking_error_m=mean_tracking_error_m,
+            completion_ratio=completion_ratio,
+        ),
+        "completed_rollout_steps": int(completed_rollout_steps),
+        "planned_rollout_steps": planned_rollout_steps,
+        "rollout_completion_ratio": _completion_ratio(completed=completed_rollout_steps, planned=planned_rollout_steps),
+    }
+
+
+def _records_by_episode(records: Sequence[Mapping[str, Any]]) -> list[list[Mapping[str, Any]]]:
+    """Group trace rows by episode while preserving trace order."""
+    grouped: dict[int, list[Mapping[str, Any]]] = {}
+    for record in records:
+        grouped.setdefault(_int(record.get("episode_index")), []).append(record)
+    return [grouped[index] for index in sorted(grouped)]
+
+
+def _completed_tracking_steps(records: Sequence[Mapping[str, Any]]) -> int:
+    """Return the number of records included in the current tracking-error mean."""
+    return len(_tracking_metric_records(records))
+
+
+def _planned_tracking_steps(records: Sequence[Mapping[str, Any]]) -> int | None:
+    """Infer planned tracking-phase rows from reference phase metadata."""
+    if not records:
+        return None
+    first = records[0]
+    if _uses_tracking_phase_filter(records):
+        start_step = _int(first.get("tracking_phase_start_step"))
+        end_step = _int(first.get("tracking_phase_end_step"))
+        return int(end_step - start_step) if end_step > start_step else None
+    end_step = _int(first.get("tracking_phase_end_step"))
+    return int(end_step) if end_step > 0 else None
+
+
+def _uses_tracking_phase_filter(records: Sequence[Mapping[str, Any]]) -> bool:
+    """Return whether tracking-error metrics are filtered to active tracking rows."""
+    return any(
+        bool(record.get("exclude_start_hold_from_tracking_metrics", False)) or bool(record.get("exclude_final_hold_from_tracking_metrics", False))
+        for record in records
+    )
+
+
+def _completion_ratio(completed: int | None, planned: int | None) -> float | None:
+    """Return bounded completion fraction, or None when the denominator is unknown."""
+    if completed is None or planned is None or planned <= 0:
+        return None
+    ratio = float(completed) / float(planned)
+    if not np.isfinite(ratio):
+        return None
+    return float(min(1.0, max(0.0, ratio)))
+
+
+def _completion_adjusted_tracking_error(mean_tracking_error_m: Any, completion_ratio: float | None) -> float | None:
+    """Return tracking error divided by the completion fraction floor."""
+    mean_error = _optional_float(mean_tracking_error_m)
+    if mean_error is None or completion_ratio is None:
+        return None
+    denominator = max(float(completion_ratio), COMPLETION_ADJUSTMENT_MIN_RATIO)
+    return float(mean_error / denominator)
+
+
+def _optional_float(value: Any) -> float | None:
+    """Convert finite numeric values to float while preserving missing values."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if np.isfinite(result) else None
 
 
 def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Sequence[Mapping[str, Any]], action_space: Any) -> dict[str, Any]:

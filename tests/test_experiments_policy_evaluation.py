@@ -458,10 +458,15 @@ def test_direct_policy_evaluation_cli_parser_accepts_run_manifest_and_suite() ->
 
     assert args.run_manifest == Path("storage/runs/direct_ppo_line_seed0/run_manifest.json")
     assert args.suite == Path("configs/evaluation/generalization_eval_suite.yaml")
+    assert args.profile == "standard"
     assert args.wandb_mode == "disabled"
+
+    scenario_args = parser.parse_args(["--run-manifest", "storage/runs/direct_ppo_line_seed0/run_manifest.json", "--profile", "scenario"])
+    assert scenario_args.profile == "scenario"
 
     default_args = parser.parse_args(["--run-manifest", "storage/runs/direct_ppo_line_seed0/run_manifest.json"])
     assert default_args.suite is None
+    assert default_args.profile == "standard"
 
 
 def test_direct_policy_suite_evaluation_writes_under_direct_run_and_updates_index(
@@ -668,6 +673,13 @@ def test_direct_policy_suite_evaluation_uses_manifest_env_flags(
             "include_dynamics_observation": True,
             "include_previous_action": True,
             "normalize_actions": True,
+            "initial_state": {
+                "mode": "reference_start_random_offset",
+                "xy_offset_range_m": [0.1, 0.3],
+                "z_offset_range_m": [-0.18, 0.08],
+                "z_offset_bias": "below",
+                "below_probability": 0.7,
+            },
         }
     )
     run_manifest["training"].update(
@@ -716,11 +728,19 @@ def test_direct_policy_suite_evaluation_uses_manifest_env_flags(
     assert captured_specs[0].include_dynamics_observation is True
     assert captured_specs[0].include_previous_action is True
     assert captured_specs[0].normalize_actions is True
+    initial_state = policy_evaluation.envs.initial_state.parse_initial_state_config(captured_specs[0].initial_state)
+    assert initial_state.mode == "reference_start_random_offset"
+    assert initial_state.to_dict()["xy_offset_range_m"] == [0.1, 0.3]
+    assert captured_specs[0].initial_state_config_source == "run_manifest"
+    assert captured_specs[0].environment_config_sources["initial_state"] == "run_manifest"
     assert evaluated_model["source_manifest_path"] == str(run_manifest_path)
     assert evaluated_model["action_interface"] == "direct_rpm"
     assert evaluated_model["rpm_delta_scale"] == EVAL_RPM_DELTA_SCALE
     assert evaluated_model["include_dynamics_observation"] is True
     assert evaluated_model["include_previous_action"] is True
+    assert evaluated_model["initial_state_mode"] == "reference_start_random_offset"
+    assert evaluated_model["initial_state"]["mode"] == "reference_start_random_offset"
+    assert evaluated_model["initial_state_config_source"] == "run_manifest"
 
 
 def test_direct_policy_suite_evaluation_prefers_best_model_from_manifest(
@@ -1077,8 +1097,16 @@ def test_standard_scenario_evaluation_writes_easy_medium_hard_metrics_and_diagno
             metrics={
                 "scenario_name": settings.scenario_name,
                 "mean_position_error_m": 0.10,
+                "mean_position_error_tracking_m": 0.08,
                 "final_position_error_m": 0.20,
                 "max_position_error_m": 0.30,
+                "completed_tracking_steps": 12,
+                "planned_tracking_steps": 16,
+                "completion_ratio": 0.75,
+                "completion_adjusted_tracking_error_m": 0.10666666666666667,
+                "completed_rollout_steps": 18,
+                "planned_rollout_steps": 20,
+                "rollout_completion_ratio": 0.9,
                 "terminated": True,
                 "truncated": False,
                 "termination_reason": "tracking_reference_complete",
@@ -1132,7 +1160,19 @@ def test_standard_scenario_evaluation_writes_easy_medium_hard_metrics_and_diagno
         assert metrics["scenario_duration_sec"] > 0.0
         assert metrics["scenario_reference_path_length_m"] > 0.0
         assert metrics["scenario_reference_mean_speed_mps"] > 0.0
+        expected_completed_tracking_steps = 12
+        expected_planned_tracking_steps = 16
+        expected_completed_rollout_steps = 18
+        expected_planned_rollout_steps = 20
         assert metrics["scenario_phase_count"] == len(metrics["scenario_segments"])
+        assert metrics["mean_position_error_tracking_m"] == pytest.approx(0.08)
+        assert metrics["completed_tracking_steps"] == expected_completed_tracking_steps
+        assert metrics["planned_tracking_steps"] == expected_planned_tracking_steps
+        assert metrics["completion_ratio"] == pytest.approx(0.75)
+        assert metrics["completion_adjusted_tracking_error_m"] == pytest.approx(0.10666666666666667)
+        assert metrics["completed_rollout_steps"] == expected_completed_rollout_steps
+        assert metrics["planned_rollout_steps"] == expected_planned_rollout_steps
+        assert metrics["rollout_completion_ratio"] == pytest.approx(0.9)
         assert metrics["start_hold_enabled"] is True
         assert metrics["start_hold_sec"] == STANDARD_SCENARIO_START_HOLD_SEC
         assert metrics["final_hold_enabled"] is True

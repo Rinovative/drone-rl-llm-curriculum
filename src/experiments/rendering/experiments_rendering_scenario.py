@@ -51,6 +51,7 @@ DEFAULT_SEED = 0
 DEFAULT_GIF_FILENAME = "scenario_rollout.gif"
 DEFAULT_MANIFEST_FILENAME = "scenario_render_manifest.json"
 DEFAULT_TRACE_FILENAME = "scenario_rollout_trace.jsonl"
+COMPLETION_ADJUSTMENT_MIN_RATIO = 0.05
 DEFAULT_PHASE_SAMPLE_RATE_HZ = 10.0
 DEFAULT_PHASE_Z_M = 1.0
 DEFAULT_START_HOLD_SEC = 1.0
@@ -592,6 +593,10 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         tracking_env.close()
 
     trace_records = _add_phase_fields(rollout_payload["trace_records"], composition)
+    tracking_completion = _scenario_tracking_completion_metrics(
+        trace_records=trace_records,
+        planned_tracking_steps=composition.reference_motion_steps,
+    )
     policy_render._write_gif(rollout_payload["frames"], gif_path, active_settings.frame_interval)  # noqa: SLF001
     trace_result = evaluation.rollout.write_policy_rollout_trace(trace_records, trace_path)
     plot_result = evaluation.plots.write_policy_rollout_trace_plots(trace_path, plots_dir)
@@ -638,6 +643,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         truncated=bool(rollout_payload["truncated"]),
         termination_reason=termination_reason,
     )
+    completion.update(tracking_completion)
     metrics = _build_scenario_metrics(
         settings=active_settings,
         evaluation_run_name=evaluation_run_name,
@@ -1790,10 +1796,17 @@ def _add_phase_fields(trace_records: list[dict[str, Any]], composition: Scenario
         global_step = int(record.get("step_index", fallback_step))
         phase_metadata = _phase_metadata_for_step(global_step, composition)
         enriched_record = dict(record)
+        is_active_tracking_phase = not (
+            bool(phase_metadata.get("is_start_hold")) or bool(phase_metadata.get("is_phase_hold")) or bool(phase_metadata.get("is_final_hold"))
+        )
         enriched_record.update(
             {
                 "global_step": global_step,
                 **phase_metadata,
+                "is_tracking_phase": is_active_tracking_phase,
+                "tracking_phase_start_step": int(composition.start_hold_steps),
+                "tracking_phase_end_step": int(composition.reference_motion_end_step),
+                "planned_tracking_steps": int(composition.reference_motion_steps),
                 "reference_position": record.get("reference_position_xyz_m"),
                 "current_position": record.get("actual_position_xyz_m"),
                 "position_error": record.get("position_error_m"),
@@ -2050,6 +2063,7 @@ def _scenario_completion_summary(
 ) -> dict[str, Any]:
     """Build explicit scenario completion and fraction metrics."""
     rollout_step_fraction = 0.0 if effective_max_steps <= 0 else float(actual_steps / effective_max_steps)
+    rollout_completion_ratio = 0.0 if effective_max_steps <= 0 else float(min(max(actual_steps / effective_max_steps, 0.0), 1.0))
     reference_completion_fraction = 0.0 if reference_sample_count <= 0 else float(min(actual_steps / reference_sample_count, 1.0))
     normal_reference_done = termination_reason in NORMAL_TERMINATION_REASONS
     completed_reference_motion = actual_steps >= reference_motion_end_step or normal_reference_done
@@ -2061,6 +2075,9 @@ def _scenario_completion_summary(
     return {
         "requested_max_steps": None if requested_max_steps is None else int(requested_max_steps),
         "effective_max_steps": int(effective_max_steps),
+        "completed_rollout_steps": int(actual_steps),
+        "planned_rollout_steps": int(effective_max_steps),
+        "rollout_completion_ratio": rollout_completion_ratio,
         "rollout_step_fraction": rollout_step_fraction,
         "reference_completion_fraction": reference_completion_fraction,
         "reference_motion_steps": int(reference_motion_steps),
@@ -2074,6 +2091,62 @@ def _scenario_completion_summary(
         "ended_normally": bool(ended_normally),
         "survived_fraction": float(survived_fraction),
     }
+
+
+def _scenario_tracking_completion_metrics(trace_records: list[dict[str, Any]], planned_tracking_steps: int | None) -> dict[str, Any]:
+    """Return active-tracking completion metrics when scenario phase flags exist."""
+    fields: dict[str, Any] = {
+        "mean_position_error_tracking_m": None,
+        "completed_tracking_steps": None,
+        "planned_tracking_steps": None,
+        "completion_ratio": None,
+        "completion_adjusted_tracking_error_m": None,
+    }
+    planned_steps = None if planned_tracking_steps is None else int(planned_tracking_steps)
+    active_records = _scenario_active_tracking_records(trace_records)
+    if active_records is None or planned_steps is None or planned_steps <= 0:
+        return fields
+
+    completed_steps = len(active_records)
+    completion_ratio = float(min(max(completed_steps / planned_steps, 0.0), 1.0))
+    mean_tracking_error = _mean_trace_position_error(active_records)
+    fields.update(
+        {
+            "mean_position_error_tracking_m": mean_tracking_error,
+            "completed_tracking_steps": int(completed_steps),
+            "planned_tracking_steps": int(planned_steps),
+            "completion_ratio": completion_ratio,
+            "completion_adjusted_tracking_error_m": (
+                None if mean_tracking_error is None else float(mean_tracking_error / max(completion_ratio, COMPLETION_ADJUSTMENT_MIN_RATIO))
+            ),
+        }
+    )
+    return fields
+
+
+def _scenario_active_tracking_records(trace_records: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Return scenario trace rows belonging to active tracking, or None without phase flags."""
+    phase_keys = ("is_start_hold", "is_phase_hold", "is_final_hold")
+    if not trace_records or not all(all(key in record for key in phase_keys) for record in trace_records):
+        return None
+    return [
+        record
+        for record in trace_records
+        if not (bool(record.get("is_start_hold")) or bool(record.get("is_phase_hold")) or bool(record.get("is_final_hold")))
+    ]
+
+
+def _mean_trace_position_error(trace_records: list[dict[str, Any]]) -> float | None:
+    """Return the mean position error from trace rows when every value is numeric."""
+    errors: list[float] = []
+    for record in trace_records:
+        value = record.get("position_error_m", record.get("position_error"))
+        if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(float(value)):
+            return None
+        errors.append(float(value))
+    if not errors:
+        return None
+    return float(np.mean(errors))
 
 
 def _build_scenario_metrics(
@@ -2229,6 +2302,13 @@ def _build_scenario_manifest(
         "total_steps": int(actual_steps),
         "requested_max_steps": None if requested_max_steps is None else int(requested_max_steps),
         "effective_max_steps": int(effective_max_steps),
+        "completed_rollout_steps": completion.get("completed_rollout_steps"),
+        "planned_rollout_steps": completion.get("planned_rollout_steps"),
+        "rollout_completion_ratio": completion.get("rollout_completion_ratio"),
+        "completed_tracking_steps": completion.get("completed_tracking_steps"),
+        "planned_tracking_steps": completion.get("planned_tracking_steps"),
+        "completion_ratio": completion.get("completion_ratio"),
+        "completion_adjusted_tracking_error_m": completion.get("completion_adjusted_tracking_error_m"),
         "base_time_limit_sec": float(base_time_limit_sec),
         "reference_sample_count": int(composition.reference.positions.shape[0]),
         "reference_motion_steps": int(composition.reference_motion_steps),

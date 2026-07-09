@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate trained curriculum PPO models through the standard profile or one explicit suite.")
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument(
+        "--profile",
+        choices=("standard", "scenario"),
+        default="standard",
+        help="Evaluation profile to run when --suite is omitted.",
+    )
+    parser.add_argument(
         "--suite",
         type=Path,
         default=None,
@@ -74,9 +80,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the curriculum evaluation CLI and return a process status code."""
-    args = build_parser().parse_args(argv)
-    result: curriculum_evaluation.CurriculumStandardEvaluationResult | curriculum_evaluation.CurriculumEvaluationResult
-    if args.suite is None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    result: (
+        curriculum_evaluation.CurriculumStandardEvaluationResult
+        | curriculum_evaluation.CurriculumEvaluationResult
+        | curriculum_evaluation.policy_evaluation.PolicyScenarioEvaluationResult
+    )
+    if args.profile == "scenario":
+        if args.suite is not None:
+            parser.error("--suite cannot be combined with --profile scenario")
+        result = curriculum_evaluation.run_curriculum_scenario_evaluation(
+            summary_path=args.summary,
+            wandb_mode=args.wandb_mode,
+            model_scope=args.model_scope,
+        )
+    elif args.suite is None:
         result = curriculum_evaluation.run_curriculum_standard_evaluation(
             summary_path=args.summary,
             eval_steps=args.eval_steps,

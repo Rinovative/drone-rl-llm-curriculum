@@ -16,6 +16,10 @@ TRACE_RECORD_COUNT = 5
 EXPECTED_CURRICULUM_FEEDBACK_VERSION = 2
 PHASE_START_STEP = 2
 PHASE_END_STEP = 5
+FULL_COMPLETION_STEPS = 4
+PARTIAL_COMPLETED_STEPS = 2
+PARTIAL_PLANNED_STEPS = 10
+COMPLETION_FLOOR_PLANNED_STEPS = 100
 
 
 class _ActionSpace:
@@ -589,6 +593,72 @@ def test_tracking_only_metrics_exclude_final_hold_rows() -> None:
     assert diagnostics.metrics["final_hold_enabled"] is True
     assert diagnostics.metrics["tracking_phase_end_step"] == tracking_phase_end_step
     assert diagnostics.metrics["tracking_phase_end_time_sec"] == pytest.approx(tracking_phase_end_time_sec)
+
+
+def test_completion_metrics_report_full_tracking_completion() -> None:
+    """Verify full planned tracking completion keeps adjusted error unchanged."""
+    records = [_record(index, current_x=0.15, reference_x=0.0, action=[0.0, 0.0, 0.0]) for index in range(FULL_COMPLETION_STEPS)]
+    for record in records:
+        record["tracking_phase_end_step"] = FULL_COMPLETION_STEPS
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="full_completion",
+        task_shape="line",
+        total_timesteps=64,
+        eval_steps=FULL_COMPLETION_STEPS,
+        seed=0,
+    )
+
+    assert diagnostics.metrics["completed_tracking_steps"] == FULL_COMPLETION_STEPS
+    assert diagnostics.metrics["planned_tracking_steps"] == FULL_COMPLETION_STEPS
+    assert diagnostics.metrics["completion_ratio"] == pytest.approx(1.0)
+    assert diagnostics.metrics["completion_adjusted_tracking_error_m"] == pytest.approx(0.15)
+    assert diagnostics.metrics["completed_rollout_steps"] == FULL_COMPLETION_STEPS
+    assert diagnostics.metrics["planned_rollout_steps"] == FULL_COMPLETION_STEPS
+    assert diagnostics.metrics["rollout_completion_ratio"] == pytest.approx(1.0)
+
+
+def test_completion_adjusted_tracking_error_penalizes_partial_completion() -> None:
+    """Verify partial tracking completion inflates otherwise low tracking error."""
+    records = [_record(index, current_x=0.05, reference_x=0.0, action=[0.0, 0.0, 0.0]) for index in range(PARTIAL_COMPLETED_STEPS)]
+    for record in records:
+        record["tracking_phase_end_step"] = PARTIAL_PLANNED_STEPS
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="partial_completion",
+        task_shape="line",
+        total_timesteps=64,
+        eval_steps=PARTIAL_PLANNED_STEPS,
+        seed=0,
+    )
+
+    assert diagnostics.metrics["completed_tracking_steps"] == PARTIAL_COMPLETED_STEPS
+    assert diagnostics.metrics["planned_tracking_steps"] == PARTIAL_PLANNED_STEPS
+    assert diagnostics.metrics["completion_ratio"] == pytest.approx(0.2)
+    assert diagnostics.metrics["completion_adjusted_tracking_error_m"] == pytest.approx(0.25)
+
+
+def test_completion_adjusted_tracking_error_uses_ratio_floor() -> None:
+    """Verify the adjusted error denominator is floored at 0.05."""
+    records = [_record(0, current_x=0.1, reference_x=0.0, action=[0.0, 0.0, 0.0])]
+    records[0]["tracking_phase_end_step"] = COMPLETION_FLOOR_PLANNED_STEPS
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="completion_floor",
+        task_shape="line",
+        total_timesteps=64,
+        eval_steps=COMPLETION_FLOOR_PLANNED_STEPS,
+        seed=0,
+    )
+
+    assert diagnostics.metrics["completion_ratio"] == pytest.approx(0.01)
+    assert diagnostics.metrics["completion_adjusted_tracking_error_m"] == pytest.approx(2.0)
 
 
 def test_diagnostics_report_no_failure_for_accurate_hover() -> None:

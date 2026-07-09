@@ -163,6 +163,8 @@ class PolicyEvaluationSpec:
     source_run_kind: str | None = None
     source_curriculum_kind: str | None = None
     source_stage: dict[str, Any] | None = None
+    environment_config_sources: Mapping[str, Any] | None = None
+    initial_state_config_source: str | None = None
     model_scope: str | None = None
     evaluated_model_source: str | None = None
     own_task_source: str | None = None
@@ -384,6 +386,10 @@ def run_policy_evaluation(
         "source_run_kind": spec.source_run_kind,
         "source_curriculum_kind": spec.source_curriculum_kind,
         "source_stage": spec.source_stage,
+        "environment_config_sources": dict(spec.environment_config_sources or {}),
+        "initial_state_config_source": spec.initial_state_config_source,
+        "initial_state_mode": _spec_initial_state(spec).mode,
+        "initial_state": _spec_initial_state(spec).to_dict(),
         "model_scope": spec.model_scope,
         "model_path": str(spec.model_path),
         "evaluated_model_path": str(spec.model_path),
@@ -1282,42 +1288,16 @@ def _curriculum_scenario_evaluation_env_settings(
     if isinstance(final_stage.get("manifest_path"), str) and str(final_stage.get("manifest_path")).strip():
         stage_manifest_path = _resolve_manifest_path(str(final_stage["manifest_path"]), run_root=run_root)
     stage_manifest = _mapping_or_empty(_read_json(stage_manifest_path) if stage_manifest_path is not None and stage_manifest_path.exists() else {})
-    stage_config = _mapping_or_empty(stage_manifest.get("config"))
+    env_kwargs = evaluation_env_kwargs_from_curriculum_stage(final_stage, stage_manifest)
     return _ScenarioEvaluationEnvSettings(
-        normalize_actions=bool(
-            final_stage.get("normalize_actions", stage_manifest.get("normalize_actions", stage_config.get("normalize_actions", True)))
-        ),
-        action_interface=str(
-            final_stage.get("action_interface") or stage_manifest.get("action_interface") or stage_config.get("action_interface") or "pid_position"
-        ),
-        rpm_delta_scale=float(
-            final_stage.get("rpm_delta_scale") or stage_manifest.get("rpm_delta_scale") or stage_config.get("rpm_delta_scale") or 0.05
-        ),
-        pid_target_z_min_m=float(
-            final_stage.get("pid_target_z_min_m")
-            or stage_manifest.get("pid_target_z_min_m")
-            or stage_config.get("pid_target_z_min_m")
-            or envs.actions.DEFAULT_PID_TARGET_Z_MIN_M
-        ),
-        pid_target_z_max_m=float(
-            final_stage.get("pid_target_z_max_m")
-            or stage_manifest.get("pid_target_z_max_m")
-            or stage_config.get("pid_target_z_max_m")
-            or envs.actions.DEFAULT_PID_TARGET_Z_MAX_M
-        ),
-        include_dynamics_observation=bool(
-            final_stage.get(
-                "include_dynamics_observation",
-                stage_manifest.get("include_dynamics_observation", stage_config.get("include_dynamics_observation", False)),
-            )
-        ),
-        include_previous_action=bool(
-            final_stage.get(
-                "include_previous_action",
-                stage_manifest.get("include_previous_action", stage_config.get("include_previous_action", False)),
-            )
-        ),
-        initial_state=_initial_state_config_from_sources(final_stage, stage_manifest, stage_config),
+        normalize_actions=bool(env_kwargs["normalize_actions"]),
+        action_interface=str(env_kwargs["action_interface"]),
+        rpm_delta_scale=float(env_kwargs["rpm_delta_scale"]),
+        pid_target_z_min_m=float(env_kwargs["pid_target_z_min_m"]),
+        pid_target_z_max_m=float(env_kwargs["pid_target_z_max_m"]),
+        include_dynamics_observation=bool(env_kwargs["include_dynamics_observation"]),
+        include_previous_action=bool(env_kwargs["include_previous_action"]),
+        initial_state=envs.initial_state.parse_initial_state_config(env_kwargs.get("initial_state")),
         source_manifest_path=manifest_path,
         training_config_path=_training_config_path_from_manifest_payload(stage_manifest, run_root=run_root),
         final_stage_manifest_path=stage_manifest_path,
@@ -1606,6 +1586,8 @@ def _evaluated_model_entry(result: PolicyEvaluationResult, run_root: Path, suite
         "source_stage": metrics.get("source_stage"),
         "model_scope": metrics.get("model_scope"),
         "source_manifest_path": metrics.get("source_manifest_path"),
+        "environment_config_sources": metrics.get("environment_config_sources"),
+        "initial_state_config_source": metrics.get("initial_state_config_source"),
         "action_interface": metrics.get("action_interface"),
         "rpm_delta_scale": metrics.get("rpm_delta_scale"),
         "pid_target_z_min_m": metrics.get("pid_target_z_min_m"),
@@ -1615,6 +1597,15 @@ def _evaluated_model_entry(result: PolicyEvaluationResult, run_root: Path, suite
         "include_previous_action": metrics.get("include_previous_action"),
         "initial_state_mode": metrics.get("initial_state_mode"),
         "initial_state": metrics.get("initial_state"),
+        "initial_xyz": metrics.get("initial_xyz"),
+        "requested_initial_xyz": metrics.get("requested_initial_xyz"),
+        "actual_initial_xyz": metrics.get("actual_initial_xyz"),
+        "initial_xyz_source": metrics.get("initial_xyz_source"),
+        "initial_xyz_offset": metrics.get("initial_xyz_offset"),
+        "initial_reference_xyz": metrics.get("initial_reference_xyz"),
+        "initial_position_error_m": metrics.get("initial_position_error_m"),
+        "spawned_at_reference_start": metrics.get("spawned_at_reference_start"),
+        "spawned_near_reference_start": metrics.get("spawned_near_reference_start"),
         "termination_limits_mode": metrics.get("termination_limits_mode"),
         "base_truncation_policy": metrics.get("base_truncation_policy"),
         "strict_limit_violation_count": metrics.get("strict_limit_violation_count"),
@@ -1941,39 +1932,117 @@ def _required_text(value: Any, field_name: str) -> str:
     return str(value)
 
 
+def evaluation_env_kwargs_from_curriculum_stage(
+    stage: Mapping[str, Any],
+    stage_manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return ``PolicyEvaluationSpec`` env kwargs recorded for a curriculum stage."""
+    return _evaluation_env_kwargs_from_stage(stage, stage_manifest)
+
+
+def _value_from_sources(
+    key: str,
+    sources: tuple[tuple[str, Mapping[str, Any]], ...],
+    default: Any,
+) -> tuple[Any, str]:
+    """Return the first present non-null source value and its source label."""
+    for source_name, source in sources:
+        if key not in source:
+            continue
+        value = source.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value, source_name
+    return default, "default"
+
+
+def _initial_state_config_from_named_sources(
+    *sources: tuple[str, Mapping[str, Any]],
+) -> tuple[envs.initial_state.InitialStateConfig, str]:
+    """Return the first initial-state config recorded in named source mappings."""
+    for source_name, source in sources:
+        raw_initial_state = source.get("initial_state")
+        if raw_initial_state is not None:
+            return envs.initial_state.parse_initial_state_config(raw_initial_state), source_name
+        raw_mode = source.get("initial_state_mode")
+        if raw_mode is not None:
+            return envs.initial_state.parse_initial_state_config({"mode": raw_mode}), source_name
+    return envs.initial_state.parse_initial_state_config(None), "default"
+
+
 def _evaluation_env_kwargs_from_manifest(run_manifest: Mapping[str, Any], manifest_path: Path) -> dict[str, Any]:
     """Return environment identity flags recorded in a training manifest."""
     raw_config_payload = run_manifest.get("config")
     config_payload = raw_config_payload if isinstance(raw_config_payload, Mapping) else {}
+    sources = (("run_manifest", run_manifest), ("config", config_payload))
+    action_interface, action_source = _value_from_sources("action_interface", sources, "pid_position")
+    rpm_delta_scale, rpm_source = _value_from_sources("rpm_delta_scale", sources, 0.05)
+    pid_target_z_min_m, pid_min_source = _value_from_sources("pid_target_z_min_m", sources, envs.actions.DEFAULT_PID_TARGET_Z_MIN_M)
+    pid_target_z_max_m, pid_max_source = _value_from_sources("pid_target_z_max_m", sources, envs.actions.DEFAULT_PID_TARGET_Z_MAX_M)
+    include_dynamics_observation, dynamics_source = _value_from_sources("include_dynamics_observation", sources, False)
+    include_previous_action, previous_action_source = _value_from_sources("include_previous_action", sources, False)
+    initial_state, initial_state_source = _initial_state_config_from_named_sources(*sources)
     return {
-        "action_interface": str(run_manifest.get("action_interface") or config_payload.get("action_interface") or "pid_position"),
-        "rpm_delta_scale": float(run_manifest.get("rpm_delta_scale") or config_payload.get("rpm_delta_scale") or 0.05),
-        "pid_target_z_min_m": float(
-            run_manifest.get("pid_target_z_min_m") or config_payload.get("pid_target_z_min_m") or envs.actions.DEFAULT_PID_TARGET_Z_MIN_M
-        ),
-        "pid_target_z_max_m": float(
-            run_manifest.get("pid_target_z_max_m") or config_payload.get("pid_target_z_max_m") or envs.actions.DEFAULT_PID_TARGET_Z_MAX_M
-        ),
-        "include_dynamics_observation": bool(
-            run_manifest.get("include_dynamics_observation", config_payload.get("include_dynamics_observation", False))
-        ),
-        "include_previous_action": bool(run_manifest.get("include_previous_action", config_payload.get("include_previous_action", False))),
-        "initial_state": _initial_state_config_from_sources(run_manifest, config_payload).to_dict(),
+        "action_interface": str(action_interface),
+        "rpm_delta_scale": float(rpm_delta_scale),
+        "pid_target_z_min_m": float(pid_target_z_min_m),
+        "pid_target_z_max_m": float(pid_target_z_max_m),
+        "include_dynamics_observation": bool(include_dynamics_observation),
+        "include_previous_action": bool(include_previous_action),
+        "initial_state": initial_state.to_dict(),
         "source_manifest_path": manifest_path,
+        "environment_config_sources": {
+            "action_interface": action_source,
+            "rpm_delta_scale": rpm_source,
+            "pid_target_z_min_m": pid_min_source,
+            "pid_target_z_max_m": pid_max_source,
+            "include_dynamics_observation": dynamics_source,
+            "include_previous_action": previous_action_source,
+            "initial_state": initial_state_source,
+        },
+        "initial_state_config_source": initial_state_source,
     }
 
 
-def _evaluation_env_kwargs_from_stage(stage: Mapping[str, Any]) -> dict[str, Any]:
+def _evaluation_env_kwargs_from_stage(
+    stage: Mapping[str, Any],
+    stage_manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return environment identity flags recorded for a curriculum stage."""
+    manifest = stage_manifest or {}
+    config_payload = _mapping_or_empty(manifest.get("config"))
+    sources = (("stage_manifest", manifest), ("stage_summary", stage), ("stage_manifest_config", config_payload))
+    normalize_actions, normalize_source = _value_from_sources("normalize_actions", sources, True)
+    action_interface, action_source = _value_from_sources("action_interface", sources, "pid_position")
+    rpm_delta_scale, rpm_source = _value_from_sources("rpm_delta_scale", sources, 0.05)
+    pid_target_z_min_m, pid_min_source = _value_from_sources("pid_target_z_min_m", sources, envs.actions.DEFAULT_PID_TARGET_Z_MIN_M)
+    pid_target_z_max_m, pid_max_source = _value_from_sources("pid_target_z_max_m", sources, envs.actions.DEFAULT_PID_TARGET_Z_MAX_M)
+    include_dynamics_observation, dynamics_source = _value_from_sources("include_dynamics_observation", sources, False)
+    include_previous_action, previous_action_source = _value_from_sources("include_previous_action", sources, False)
+    initial_state, initial_state_source = _initial_state_config_from_named_sources(*sources)
     return {
-        "action_interface": str(stage.get("action_interface") or "pid_position"),
-        "rpm_delta_scale": float(stage.get("rpm_delta_scale") or 0.05),
-        "pid_target_z_min_m": float(stage.get("pid_target_z_min_m") or envs.actions.DEFAULT_PID_TARGET_Z_MIN_M),
-        "pid_target_z_max_m": float(stage.get("pid_target_z_max_m") or envs.actions.DEFAULT_PID_TARGET_Z_MAX_M),
-        "include_dynamics_observation": bool(stage.get("include_dynamics_observation", False)),
-        "include_previous_action": bool(stage.get("include_previous_action", False)),
-        "initial_state": _initial_state_config_from_sources(stage).to_dict(),
+        "normalize_actions": bool(normalize_actions),
+        "action_interface": str(action_interface),
+        "rpm_delta_scale": float(rpm_delta_scale),
+        "pid_target_z_min_m": float(pid_target_z_min_m),
+        "pid_target_z_max_m": float(pid_target_z_max_m),
+        "include_dynamics_observation": bool(include_dynamics_observation),
+        "include_previous_action": bool(include_previous_action),
+        "initial_state": initial_state.to_dict(),
         "source_manifest_path": Path(str(stage["manifest_path"])) if stage.get("manifest_path") else None,
+        "environment_config_sources": {
+            "normalize_actions": normalize_source,
+            "action_interface": action_source,
+            "rpm_delta_scale": rpm_source,
+            "pid_target_z_min_m": pid_min_source,
+            "pid_target_z_max_m": pid_max_source,
+            "include_dynamics_observation": dynamics_source,
+            "include_previous_action": previous_action_source,
+            "initial_state": initial_state_source,
+        },
+        "initial_state_config_source": initial_state_source,
     }
 
 
@@ -2170,6 +2239,8 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "own_task_fallback_used",
         "own_task_fallback_reason",
         "source_manifest_path",
+        "environment_config_sources",
+        "initial_state_config_source",
         "action_interface",
         "rpm_delta_scale",
         "normalize_actions",
@@ -2177,6 +2248,15 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "include_previous_action",
         "initial_state_mode",
         "initial_state",
+        "initial_xyz",
+        "requested_initial_xyz",
+        "actual_initial_xyz",
+        "initial_xyz_source",
+        "initial_xyz_offset",
+        "initial_reference_xyz",
+        "initial_position_error_m",
+        "spawned_at_reference_start",
+        "spawned_near_reference_start",
         "termination_limits_mode",
         "termination_limits",
         "diagnostic_limits",
@@ -2231,6 +2311,13 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "tracking_phase_end_time_sec",
         "mean_position_error_m",
         "mean_position_error_tracking_m",
+        "completed_tracking_steps",
+        "planned_tracking_steps",
+        "completion_ratio",
+        "completion_adjusted_tracking_error_m",
+        "completed_rollout_steps",
+        "planned_rollout_steps",
+        "rollout_completion_ratio",
         "final_position_error_m",
         "max_position_error_m",
         "actual_xy_span_m",
@@ -2286,6 +2373,7 @@ __all__ = [
     "PolicyScenarioEvaluationResult",
     "PolicyStandardEvaluationResult",
     "PolicySuiteEvaluationResult",
+    "evaluation_env_kwargs_from_curriculum_stage",
     "run_direct_policy_own_task_evaluation",
     "run_direct_policy_scenario_evaluation",
     "run_direct_policy_standard_evaluation",

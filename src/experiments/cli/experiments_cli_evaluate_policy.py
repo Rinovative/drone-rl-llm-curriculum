@@ -37,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--run-manifest", type=Path, required=True)
     parser.add_argument(
+        "--profile",
+        choices=("standard", "scenario"),
+        default="standard",
+        help="Evaluation profile to run when --suite is omitted.",
+    )
+    parser.add_argument(
         "--suite",
         type=Path,
         default=None,
@@ -53,9 +59,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Run direct PPO suite evaluation and return a process status code."""
-    args = build_parser().parse_args(argv)
-    result: policy_evaluation.PolicyStandardEvaluationResult | policy_evaluation.PolicySuiteEvaluationResult
-    if args.suite is None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    result: (
+        policy_evaluation.PolicyStandardEvaluationResult
+        | policy_evaluation.PolicySuiteEvaluationResult
+        | policy_evaluation.PolicyScenarioEvaluationResult
+    )
+    if args.profile == "scenario":
+        if args.suite is not None:
+            parser.error("--suite cannot be combined with --profile scenario")
+        result = policy_evaluation.run_direct_policy_scenario_evaluation(
+            run_manifest_path=args.run_manifest,
+            wandb_mode=args.wandb_mode,
+        )
+    elif args.suite is None:
         result = policy_evaluation.run_direct_policy_standard_evaluation(
             run_manifest_path=args.run_manifest,
             wandb_mode=args.wandb_mode,

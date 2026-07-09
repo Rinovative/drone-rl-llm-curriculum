@@ -201,6 +201,73 @@ def run_curriculum_standard_evaluation(
     )
 
 
+def run_curriculum_scenario_evaluation(
+    summary_path: str | Path,
+    wandb_mode: str = utils.wandb.WANDB_MODE_DISABLED,
+    model_scope: str = "final-stage",
+) -> policy_evaluation.PolicyScenarioEvaluationResult:
+    """Run the final-stage standard scenario evaluation for a curriculum run."""
+    if wandb_mode not in utils.wandb.WANDB_MODES:
+        message = f"wandb_mode must be one of: {', '.join(utils.wandb.WANDB_MODES)}"
+        raise ValueError(message)
+    if model_scope != "final-stage":
+        message = "curriculum scenario evaluation supports only model_scope='final-stage'"
+        raise ValueError(message)
+
+    run_manifest_path = Path(summary_path)
+    run_root = run_manifest_path.expanduser().resolve(strict=False).parent
+    summary = _read_json(run_manifest_path)
+    stages = _stages(summary)
+    final_stage = stages[-1]
+    final_model_path, final_model_source = _stage_model_path_and_source(final_stage)
+    curriculum_run_name = _curriculum_run_name(summary)
+    storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
+    final_stage_index = int(final_stage["stage_index"])
+    final_stage_name = str(final_stage["stage_name"])
+    final_stage_source = {"stage_index": final_stage_index, "stage_name": final_stage_name}
+    final_stage_scenario_output_root = utils.artifacts.get_curriculum_stage_evaluation_dir(
+        curriculum_run_name,
+        final_stage_index,
+        final_stage_name,
+        STANDARD_SCENARIO_EVALUATION_NAME,
+        storage_root=storage_root,
+    )
+    scenario_result = policy_evaluation.run_standard_scenario_evaluations(
+        run_root=run_root,
+        run_name=curriculum_run_name,
+        model_path=final_model_path,
+        model_run_name=str(final_stage.get("run_name") or curriculum_run_name),
+        source_run_kind="curriculum",
+        source_curriculum_kind=str(summary.get("curriculum_kind") or ""),
+        model_scope="final-stage",
+        evaluated_model_source=final_model_source,
+        run_manifest_path=run_manifest_path,
+        final_stage_manifest_path=Path(str(final_stage["manifest_path"])) if final_stage.get("manifest_path") else None,
+        output_root=final_stage_scenario_output_root,
+        source_stage=final_stage_source,
+    )
+    evaluation_summary_path = utils.artifacts.get_run_evaluation_summary_path(curriculum_run_name, storage_root=storage_root)
+    scenario_summary_entry = {
+        **scenario_result.metrics,
+        "curriculum_run_name": curriculum_run_name,
+        "model_scope": "final-stage",
+        "final_stage_index": final_stage_index,
+        "final_stage_name": final_stage_name,
+        "final_stage_evaluation_path": str(final_stage_scenario_output_root),
+        "final_stage_evaluation_path_relative": utils.artifacts.path_relative_to(final_stage_scenario_output_root, run_root),
+        "evaluated_model_source": final_model_source,
+        "root_evaluation_outputs_duplicated": False,
+        "index_key": f"curriculum_evaluation:{STANDARD_SCENARIO_EVALUATION_NAME}:final-stage",
+    }
+    _update_curriculum_evaluation_summary(
+        run_name=curriculum_run_name,
+        run_root=run_root,
+        summary_path=evaluation_summary_path,
+        aggregate_entry=scenario_summary_entry,
+    )
+    return scenario_result
+
+
 def run_curriculum_evaluation(
     summary_path: str | Path,
     mode: str = DEFAULT_EVALUATION_MODE,
@@ -607,7 +674,6 @@ def _suite_payloads(
                     eval_steps=int(eval_steps_override or suite.eval_steps),
                     seed=suite.seed,
                     total_timesteps=int(stage.get("total_timesteps", stage_manifest.get("total_timesteps", 0))),
-                    normalize_actions=bool(stage.get("normalize_actions", stage_manifest.get("normalize_actions", True))),
                     **_stage_evaluation_env_kwargs(stage, stage_manifest),
                     evaluation_name=evaluation_name,
                     evaluation_suite_name=suite.evaluation_name,
@@ -732,7 +798,6 @@ def _own_stage_payloads(
                     eval_steps=int(eval_steps_override or stage.get("eval_steps") or stage_manifest.get("eval_steps") or 120),
                     seed=int(stage.get("seed", default_seed)),
                     total_timesteps=int(stage.get("total_timesteps", stage_manifest.get("total_timesteps", 0))),
-                    normalize_actions=bool(stage.get("normalize_actions", stage_manifest.get("normalize_actions", True))),
                     **_stage_evaluation_env_kwargs(stage, stage_manifest),
                     evaluation_name=evaluation_name,
                     evaluation_suite_name=None,
@@ -785,14 +850,7 @@ def _stage_model_path_relative(stage: Mapping[str, Any]) -> str | None:
 
 def _stage_evaluation_env_kwargs(stage: Mapping[str, Any], stage_manifest: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return PPO-facing env flags from a curriculum stage and optional manifest."""
-    manifest = stage_manifest or {}
-    return {
-        "action_interface": str(stage.get("action_interface") or manifest.get("action_interface") or "pid_position"),
-        "rpm_delta_scale": float(stage.get("rpm_delta_scale") or manifest.get("rpm_delta_scale") or 0.05),
-        "include_dynamics_observation": bool(stage.get("include_dynamics_observation", manifest.get("include_dynamics_observation", False))),
-        "include_previous_action": bool(stage.get("include_previous_action", manifest.get("include_previous_action", False))),
-        "source_manifest_path": Path(str(stage["manifest_path"])) if stage.get("manifest_path") else None,
-    }
+    return policy_evaluation.evaluation_env_kwargs_from_curriculum_stage(stage, stage_manifest)
 
 
 def _curriculum_run_name(summary: Mapping[str, Any]) -> str:
@@ -892,6 +950,8 @@ def _evaluated_model_entry(
         "source_stage": metrics.get("source_stage"),
         "model_scope": metrics.get("model_scope"),
         "source_manifest_path": metrics.get("source_manifest_path"),
+        "environment_config_sources": metrics.get("environment_config_sources"),
+        "initial_state_config_source": metrics.get("initial_state_config_source"),
         "own_task_source": metrics.get("own_task_source"),
         "own_task_config_path": metrics.get("own_task_config_path"),
         "own_task_distribution_config_path": metrics.get("own_task_distribution_config_path"),
@@ -901,9 +961,22 @@ def _evaluated_model_entry(
         "own_task_fallback_reason": metrics.get("own_task_fallback_reason"),
         "action_interface": metrics.get("action_interface"),
         "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+        "pid_target_z_min_m": metrics.get("pid_target_z_min_m"),
+        "pid_target_z_max_m": metrics.get("pid_target_z_max_m"),
         "normalize_actions": metrics.get("normalize_actions"),
         "include_dynamics_observation": metrics.get("include_dynamics_observation"),
         "include_previous_action": metrics.get("include_previous_action"),
+        "initial_state_mode": metrics.get("initial_state_mode"),
+        "initial_state": metrics.get("initial_state"),
+        "initial_xyz": metrics.get("initial_xyz"),
+        "requested_initial_xyz": metrics.get("requested_initial_xyz"),
+        "actual_initial_xyz": metrics.get("actual_initial_xyz"),
+        "initial_xyz_source": metrics.get("initial_xyz_source"),
+        "initial_xyz_offset": metrics.get("initial_xyz_offset"),
+        "initial_reference_xyz": metrics.get("initial_reference_xyz"),
+        "initial_position_error_m": metrics.get("initial_position_error_m"),
+        "spawned_at_reference_start": metrics.get("spawned_at_reference_start"),
+        "spawned_near_reference_start": metrics.get("spawned_near_reference_start"),
         "canonical_owner": "convenience_baseline" if result.model_role == "baseline" else "curriculum_stage",
     }
     if result.model_role == "baseline":
@@ -1138,5 +1211,6 @@ __all__ = [
     "CurriculumEvaluationResult",
     "CurriculumStandardEvaluationResult",
     "run_curriculum_evaluation",
+    "run_curriculum_scenario_evaluation",
     "run_curriculum_standard_evaluation",
 ]

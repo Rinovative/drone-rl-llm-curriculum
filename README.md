@@ -275,6 +275,8 @@ This project is released under the [MIT License](LICENSE).
 ---
 
 ## 🎞️ Evaluation Rollout Gallery
+
+The following rollout gallery shows the fixed generalization tasks for the model `direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0`. This model is used as a representative direct-PPO baseline because it achieved the strongest fixed-evaluation performance among the direct PPO variants. The gallery is included as an appendix to provide visual examples of the evaluation task suite.
 <details>
 <summary><strong>Stabilization and altitude tasks</strong></summary>
 

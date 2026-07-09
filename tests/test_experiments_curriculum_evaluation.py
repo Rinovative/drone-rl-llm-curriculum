@@ -72,6 +72,13 @@ tasks:
             "rpm_delta_scale": 0.07,
             "include_dynamics_observation": True,
             "include_previous_action": True,
+            "initial_state": {
+                "mode": "reference_start_random_offset",
+                "xy_offset_range_m": [0.1, 0.3],
+                "z_offset_range_m": [-0.18, 0.08],
+                "z_offset_bias": "below",
+                "below_probability": 0.7,
+            },
         },
     )
 
@@ -120,6 +127,7 @@ tasks:
                     "seed": 0,
                     "total_timesteps": 4096,
                     "normalize_actions": True,
+                    "initial_state": {"mode": "fixed", "xyz": [0.0, 0.0, 0.4]},
                 },
             ],
         },
@@ -220,6 +228,7 @@ def _fake_policy_evaluation(spec: object, artifacts: object) -> policy_evaluatio
 
     metrics_path = metrics_dir / f"{spec.label}_metrics.json"
     manifest_path = manifests_dir / f"{spec.label}_manifest.json"
+    initial_state = policy_evaluation.envs.initial_state.parse_initial_state_config(spec.initial_state)
 
     payload = {
         "label": spec.label,
@@ -245,11 +254,17 @@ def _fake_policy_evaluation(spec: object, artifacts: object) -> policy_evaluatio
         "own_task_fallback_used": spec.own_task_fallback_used,
         "own_task_fallback_reason": spec.own_task_fallback_reason,
         "source_manifest_path": None if spec.source_manifest_path is None else str(spec.source_manifest_path),
+        "environment_config_sources": dict(spec.environment_config_sources or {}),
+        "initial_state_config_source": spec.initial_state_config_source,
         "action_interface": spec.action_interface,
         "rpm_delta_scale": spec.rpm_delta_scale if spec.action_interface == "direct_rpm" else None,
+        "pid_target_z_min_m": spec.pid_target_z_min_m if spec.action_interface == "pid_position" else None,
+        "pid_target_z_max_m": spec.pid_target_z_max_m if spec.action_interface == "pid_position" else None,
         "normalize_actions": spec.normalize_actions,
         "include_dynamics_observation": spec.include_dynamics_observation,
         "include_previous_action": spec.include_previous_action,
+        "initial_state_mode": initial_state.mode,
+        "initial_state": initial_state.to_dict(),
         "source_run_name": spec.source_run_name,
         "source_run_kind": spec.source_run_kind,
         "source_curriculum_kind": spec.source_curriculum_kind,
@@ -349,6 +364,7 @@ def test_curriculum_evaluation_cli_parser_exposes_suite_options() -> None:
 
     assert args.summary == Path("summary.json")
     assert args.suite == Path("suite.yaml")
+    assert args.profile == "standard"
     assert args.mode == "suite"
     assert not hasattr(args, "benchmark")
     assert not hasattr(args, "benchmark_config")
@@ -359,8 +375,13 @@ def test_curriculum_evaluation_cli_parser_exposes_suite_options() -> None:
     assert args.no_traces is True
     assert args.model_scope == "final-stage"
 
+    scenario_args = parser.parse_args(["--summary", "summary.json", "--profile", "scenario", "--model-scope", "final-stage"])
+    assert scenario_args.profile == "scenario"
+    assert scenario_args.model_scope == "final-stage"
+
     default_args = parser.parse_args(["--summary", "summary.json"])
     assert default_args.suite is None
+    assert default_args.profile == "standard"
 
 
 def _fake_scenario_evaluation(**kwargs: object) -> policy_evaluation.PolicyScenarioEvaluationResult:
@@ -717,6 +738,20 @@ def test_curriculum_final_stage_suite_uses_final_stage_manifest_env_flags(
     assert captured_specs[0].include_dynamics_observation is True
     assert captured_specs[0].include_previous_action is True
     assert captured_specs[0].normalize_actions is True
+    initial_state = policy_evaluation.envs.initial_state.parse_initial_state_config(captured_specs[0].initial_state)
+    assert initial_state.mode == "reference_start_random_offset"
+    assert initial_state.to_dict()["xy_offset_range_m"] == [0.1, 0.3]
+    assert captured_specs[0].initial_state_config_source == "stage_manifest"
+    assert captured_specs[0].environment_config_sources == {
+        "normalize_actions": "stage_manifest",
+        "action_interface": "stage_manifest",
+        "rpm_delta_scale": "stage_manifest",
+        "pid_target_z_min_m": "default",
+        "pid_target_z_max_m": "default",
+        "include_dynamics_observation": "stage_manifest",
+        "include_previous_action": "stage_manifest",
+        "initial_state": "stage_manifest",
+    }
     assert evaluated_model["source_manifest_path"] == str(final_manifest_path)
     assert evaluated_model["evaluated_model_path"].endswith("stage02_model_best.zip")
     assert evaluated_model["evaluated_model_source"] == "best"
@@ -724,6 +759,10 @@ def test_curriculum_final_stage_suite_uses_final_stage_manifest_env_flags(
     assert evaluated_model["rpm_delta_scale"] == 0.07
     assert evaluated_model["include_dynamics_observation"] is True
     assert evaluated_model["include_previous_action"] is True
+    assert evaluated_model["initial_state_mode"] == "reference_start_random_offset"
+    assert evaluated_model["initial_state"]["mode"] == "reference_start_random_offset"
+    assert evaluated_model["environment_config_sources"]["initial_state"] == "stage_manifest"
+    assert evaluated_model["initial_state_config_source"] == "stage_manifest"
 
 
 def test_llm_curriculum_final_stage_suite_uses_final_stage_manifest_env_flags(
@@ -761,10 +800,57 @@ def test_llm_curriculum_final_stage_suite_uses_final_stage_manifest_env_flags(
     assert captured_specs[0].action_interface == "direct_rpm"
     assert captured_specs[0].include_dynamics_observation is True
     assert captured_specs[0].include_previous_action is True
+    initial_state = policy_evaluation.envs.initial_state.parse_initial_state_config(captured_specs[0].initial_state)
+    assert initial_state.mode == "reference_start_random_offset"
+    assert captured_specs[0].initial_state_config_source == "stage_manifest"
     assert evaluated_model["source_curriculum_kind"] == "llm"
     assert evaluated_model["action_interface"] == "direct_rpm"
     assert evaluated_model["include_dynamics_observation"] is True
     assert evaluated_model["include_previous_action"] is True
+    assert evaluated_model["initial_state_mode"] == "reference_start_random_offset"
+    assert evaluated_model["initial_state_config_source"] == "stage_manifest"
+
+
+def test_curriculum_final_stage_suite_falls_back_to_stage_summary_initial_state_when_manifest_omits_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify initial-state fallback is deterministic and recorded when stage manifests are incomplete."""
+    summary_path = _curriculum_summary(tmp_path)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    final_manifest_path = Path(summary["stages"][-1]["manifest_path"])
+    final_manifest = json.loads(final_manifest_path.read_text(encoding="utf-8"))
+    final_manifest.pop("initial_state", None)
+    final_manifest.pop("initial_state_mode", None)
+    final_manifest_path.write_text(json.dumps(final_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    suite_path = _one_task_suite(tmp_path)
+    captured_specs: list[policy_evaluation.PolicyEvaluationSpec] = []
+
+    def fake_policy_evaluation(
+        spec: policy_evaluation.PolicyEvaluationSpec,
+        artifacts: policy_evaluation.PolicyEvaluationArtifactOptions,
+    ) -> policy_evaluation.PolicyEvaluationResult:
+        captured_specs.append(spec)
+        return _fake_policy_evaluation(spec, artifacts)
+
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setattr(policy_evaluation, "run_policy_evaluation", fake_policy_evaluation)
+
+    result = curriculum_evaluation.run_curriculum_evaluation(
+        summary_path=summary_path,
+        suite_path=suite_path,
+        model_scope="final-stage",
+    )
+
+    evaluated_model = result.metrics["evaluated_models"][0]
+    initial_state = policy_evaluation.envs.initial_state.parse_initial_state_config(captured_specs[0].initial_state)
+    assert initial_state.mode == "fixed"
+    assert initial_state.to_dict()["xyz"] == [0.0, 0.0, 0.4]
+    assert captured_specs[0].initial_state_config_source == "stage_summary"
+    assert captured_specs[0].environment_config_sources["initial_state"] == "stage_summary"
+    assert evaluated_model["initial_state_mode"] == "fixed"
+    assert evaluated_model["initial_state"]["xyz"] == [0.0, 0.0, 0.4]
+    assert evaluated_model["initial_state_config_source"] == "stage_summary"
 
 
 def test_curriculum_standard_evaluation_runs_stage_owned_default_profile(
@@ -813,6 +899,27 @@ def test_curriculum_standard_evaluation_runs_stage_owned_default_profile(
         ]
         assert any(path.startswith(f"stages/stage01_hover_stabilization/evaluations/{evaluation_name}") for path in evaluation_dirs)
         assert any(path.startswith(f"stages/stage02_line/evaluations/{evaluation_name}") for path in evaluation_dirs)
+    assert not (summary_path.parent / "evaluations" / "scenarios").exists()
+    assert (summary_path.parent / "stages" / "stage02_line" / "evaluations" / "scenarios").exists()
+
+
+def test_curriculum_scenario_evaluation_runs_final_stage_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the scenario-only curriculum helper evaluates the final model."""
+    summary_path = _curriculum_summary(tmp_path)
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setattr(policy_evaluation, "run_standard_scenario_evaluations", _fake_scenario_evaluation)
+
+    result = curriculum_evaluation.run_curriculum_scenario_evaluation(summary_path=summary_path, model_scope="final-stage")
+
+    summary_payload = json.loads((summary_path.parent / "evaluation_summary.json").read_text(encoding="utf-8"))
+    assert result.metrics["evaluation_name"] == "scenarios"
+    assert result.metrics["source_stage"] == {"stage_index": 2, "stage_name": "line"}
+    assert summary_payload["entry_count"] == 1
+    assert summary_payload["evaluations"][0]["evaluation_name"] == "scenarios"
+    assert summary_payload["evaluations"][0]["model_scope"] == "final-stage"
     assert not (summary_path.parent / "evaluations" / "scenarios").exists()
     assert (summary_path.parent / "stages" / "stage02_line" / "evaluations" / "scenarios").exists()
 
