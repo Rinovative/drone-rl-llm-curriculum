@@ -51,6 +51,8 @@ DEFAULT_SEED = 0
 DEFAULT_LIFTOFF_DIAGNOSTIC_STEPS = 120
 DEFAULT_NORMALIZE_ACTIONS = True
 DEFAULT_ACTION_INTERFACE = envs.actions.DEFAULT_ACTION_INTERFACE.value
+DEFAULT_PID_TARGET_Z_MIN_M = envs.actions.DEFAULT_PID_TARGET_Z_MIN_M
+DEFAULT_PID_TARGET_Z_MAX_M = envs.actions.DEFAULT_PID_TARGET_Z_MAX_M
 DEFAULT_INCLUDE_DYNAMICS_OBSERVATION = envs.actions.DEFAULT_INCLUDE_DYNAMICS_OBSERVATION
 DEFAULT_INCLUDE_PREVIOUS_ACTION = envs.actions.DEFAULT_INCLUDE_PREVIOUS_ACTION
 _MOVEMENT_WARNING_SPAN_THRESHOLD_M = 0.05
@@ -65,6 +67,40 @@ _LOW_LR_LEARNING_RATE = 0.0001
 _CLIP010_RANGE = 0.1
 _TARGETKL015_VALUE = 0.015
 VEC_MONITOR_ENABLED = True
+INITIAL_STATE_METADATA_KEYS = (
+    "initial_state_mode",
+    "initial_state",
+    "initial_xyz",
+    "requested_initial_xyz",
+    "actual_initial_xyz",
+    "initial_xyz_source",
+    "initial_xyz_offset",
+    "initial_reference_xyz",
+    "initial_xyz_matches_reference_start",
+    "initial_position_error_m",
+    "initial_z_error_m",
+    "initial_z_error_signed_m",
+    "spawned_at_reference_start",
+)
+PID_Z_METADATA_KEYS = (
+    "pid_target_z_min_m",
+    "pid_target_z_max_m",
+    "base_pid_z_target_low",
+    "base_pid_z_target_high",
+    "real_pid_z_target_low",
+    "real_pid_z_target_high",
+    "reference_z_min",
+    "reference_z_max",
+    "reference_z_reachable_by_pid_position",
+    "z_reference_above_pid_high_margin",
+    "z_reference_below_pid_low_margin",
+    "pid_z_action_space_expanded",
+    "pid_z_action_space_changed",
+    "real_pid_z_target_for_normalized_action2_minus1",
+    "real_pid_z_target_for_normalized_action2_zero",
+    "real_pid_z_target_for_normalized_action2_plus1",
+    "normalized_action2_real_z_targets",
+)
 
 
 @dataclass(frozen=True)
@@ -118,10 +154,16 @@ class PPOTrackingSmokeSettings:
         Explicit action interface, either ``pid_position`` or ``direct_rpm``.
     rpm_delta_scale
         Fractional RPM delta around hover used by ``direct_rpm``.
+    pid_target_z_min_m
+        Minimum z target in meters exposed by ``pid_position``.
+    pid_target_z_max_m
+        Maximum z target in meters exposed by ``pid_position``.
     include_dynamics_observation
         Whether tracking observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether tracking observations append the previous PPO-facing action.
+    initial_state
+        Initial drone spawn-position policy used by training, diagnostics, and evaluation reconstruction.
     termination_limits
         Hard safety limits used by PPO training environments.
     diagnostic_limits
@@ -169,8 +211,11 @@ class PPOTrackingSmokeSettings:
     normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS
     action_interface: str = DEFAULT_ACTION_INTERFACE
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None
     wandb_mode: str = utils.wandb.WANDB_MODE_AUTO
@@ -229,13 +274,18 @@ class PPOTrackingSmokeSettings:
         action_config = envs.actions.ActionInterfaceConfig(
             action_interface=self.action_interface,
             rpm_delta_scale=self.rpm_delta_scale,
+            pid_target_z_min_m=self.pid_target_z_min_m,
+            pid_target_z_max_m=self.pid_target_z_max_m,
             include_dynamics_observation=self.include_dynamics_observation,
             include_previous_action=self.include_previous_action,
         )
         object.__setattr__(self, "action_interface", action_config.parsed_action_interface.value)
         object.__setattr__(self, "rpm_delta_scale", action_config.rpm_delta_scale)
+        object.__setattr__(self, "pid_target_z_min_m", action_config.pid_target_z_min_m)
+        object.__setattr__(self, "pid_target_z_max_m", action_config.pid_target_z_max_m)
         object.__setattr__(self, "include_dynamics_observation", action_config.include_dynamics_observation)
         object.__setattr__(self, "include_previous_action", action_config.include_previous_action)
+        object.__setattr__(self, "initial_state", envs.initial_state.parse_initial_state_config(self.initial_state))
         object.__setattr__(
             self,
             "termination_limits",
@@ -306,6 +356,11 @@ def _settings_termination_limits(settings: PPOTrackingSmokeSettings) -> envs.ter
 def _settings_diagnostic_limits(settings: PPOTrackingSmokeSettings) -> envs.termination.DiagnosticLimitConfig:
     """Return the resolved diagnostic limit config stored on validated settings."""
     return cast("envs.termination.DiagnosticLimitConfig", settings.diagnostic_limits)
+
+
+def _settings_initial_state(settings: PPOTrackingSmokeSettings) -> envs.initial_state.InitialStateConfig:
+    """Return the resolved initial-state config stored on validated settings."""
+    return cast("envs.initial_state.InitialStateConfig", settings.initial_state)
 
 
 def load_ppo_tracking_settings(path: str | Path) -> PPOTrackingSmokeSettings:
@@ -382,8 +437,11 @@ def describe_tracking_env_action_metadata(
     normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS,
     action_interface: str = DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
@@ -400,10 +458,16 @@ def describe_tracking_env_action_metadata(
         Explicit action interface, either ``pid_position`` or ``direct_rpm``.
     rpm_delta_scale
         Fractional RPM delta around hover used by ``direct_rpm``.
+    pid_target_z_min_m
+        Minimum z target in meters exposed by ``pid_position``.
+    pid_target_z_max_m
+        Maximum z target in meters exposed by ``pid_position``.
     include_dynamics_observation
         Whether observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether observations append the previous PPO-facing action.
+    initial_state
+        Optional initial drone spawn-position config.
     termination_limits
         Optional hard episode-control safety limits used by the described environment.
     diagnostic_limits
@@ -421,8 +485,11 @@ def describe_tracking_env_action_metadata(
         seed=DEFAULT_SEED,
         action_interface=action_interface,
         rpm_delta_scale=rpm_delta_scale,
+        pid_target_z_min_m=pid_target_z_min_m,
+        pid_target_z_max_m=pid_target_z_max_m,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        initial_state=initial_state,
         termination_limits=termination_limits,
         diagnostic_limits=diagnostic_limits,
     )
@@ -448,8 +515,11 @@ def _make_seeded_ppo_tracking_env(
     seed: int,
     action_interface: str = DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
     task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
@@ -467,8 +537,11 @@ def _make_seeded_ppo_tracking_env(
         record=False,
         action_interface=action_interface,
         rpm_delta_scale=rpm_delta_scale,
+        pid_target_z_min_m=pid_target_z_min_m,
+        pid_target_z_max_m=pid_target_z_max_m,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        initial_state=initial_state,
         termination_limits=termination_limits,
         diagnostic_limits=diagnostic_limits,
     )
@@ -495,8 +568,11 @@ def _make_ppo_training_env_factory(
     seed: int,
     action_interface: str = DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
     task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
@@ -513,8 +589,11 @@ def _make_ppo_training_env_factory(
             seed=seed,
             action_interface=action_interface,
             rpm_delta_scale=rpm_delta_scale,
+            pid_target_z_min_m=pid_target_z_min_m,
+            pid_target_z_max_m=pid_target_z_max_m,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            initial_state=initial_state,
             termination_limits=termination_limits,
             diagnostic_limits=diagnostic_limits,
             task_distribution_settings=task_distribution_settings,
@@ -561,8 +640,11 @@ def _make_ppo_training_vec_env(
     seed: int,
     action_interface: str = DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
     task_distribution_settings: envs.task_distribution.TaskDistributionSettings | None = None,
@@ -578,8 +660,11 @@ def _make_ppo_training_vec_env(
             "seed": _rank_seed(seed, env_rank),
             "action_interface": action_interface,
             "rpm_delta_scale": rpm_delta_scale,
+            "pid_target_z_min_m": pid_target_z_min_m,
+            "pid_target_z_max_m": pid_target_z_max_m,
             "include_dynamics_observation": include_dynamics_observation,
             "include_previous_action": include_previous_action,
+            "initial_state": initial_state,
             "termination_limits": termination_limits,
             "diagnostic_limits": diagnostic_limits,
         }
@@ -681,8 +766,11 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
                 normalize_actions=active_settings.normalize_actions,
                 action_interface=active_settings.action_interface,
                 rpm_delta_scale=active_settings.rpm_delta_scale,
+                pid_target_z_min_m=active_settings.pid_target_z_min_m,
+                pid_target_z_max_m=active_settings.pid_target_z_max_m,
                 include_dynamics_observation=active_settings.include_dynamics_observation,
                 include_previous_action=active_settings.include_previous_action,
+                initial_state=active_settings.initial_state,
                 termination_limits=active_settings.termination_limits,
                 diagnostic_limits=active_settings.diagnostic_limits,
             )
@@ -697,8 +785,11 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
         seed=active_settings.seed,
         action_interface=active_settings.action_interface,
         rpm_delta_scale=active_settings.rpm_delta_scale,
+        pid_target_z_min_m=active_settings.pid_target_z_min_m,
+        pid_target_z_max_m=active_settings.pid_target_z_max_m,
         include_dynamics_observation=active_settings.include_dynamics_observation,
         include_previous_action=active_settings.include_previous_action,
+        initial_state=active_settings.initial_state,
         termination_limits=active_settings.termination_limits,
         diagnostic_limits=active_settings.diagnostic_limits,
     )
@@ -723,8 +814,11 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             seed=active_settings.seed,
             action_interface=active_settings.action_interface,
             rpm_delta_scale=active_settings.rpm_delta_scale,
+            pid_target_z_min_m=active_settings.pid_target_z_min_m,
+            pid_target_z_max_m=active_settings.pid_target_z_max_m,
             include_dynamics_observation=active_settings.include_dynamics_observation,
             include_previous_action=active_settings.include_previous_action,
+            initial_state=active_settings.initial_state,
             termination_limits=active_settings.termination_limits,
             diagnostic_limits=active_settings.diagnostic_limits,
             task_distribution_settings=task_distribution_settings,
@@ -783,8 +877,11 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
                 seed=active_settings.seed,
                 action_interface=active_settings.action_interface,
                 rpm_delta_scale=active_settings.rpm_delta_scale,
+                pid_target_z_min_m=active_settings.pid_target_z_min_m,
+                pid_target_z_max_m=active_settings.pid_target_z_max_m,
                 include_dynamics_observation=active_settings.include_dynamics_observation,
                 include_previous_action=active_settings.include_previous_action,
+                initial_state=active_settings.initial_state,
                 termination_limits=envs.termination.default_termination_limits(),
                 diagnostic_limits=active_settings.diagnostic_limits,
             )
@@ -813,8 +910,11 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             include_simple_policies=False,
             action_interface=active_settings.action_interface,
             rpm_delta_scale=active_settings.rpm_delta_scale,
+            pid_target_z_min_m=active_settings.pid_target_z_min_m,
+            pid_target_z_max_m=active_settings.pid_target_z_max_m,
             include_dynamics_observation=active_settings.include_dynamics_observation,
             include_previous_action=active_settings.include_previous_action,
+            initial_state=active_settings.initial_state,
             termination_limits=active_settings.termination_limits,
             diagnostic_limits=active_settings.diagnostic_limits,
         )
@@ -859,8 +959,10 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "rpm_delta_scale": active_settings.rpm_delta_scale
             if active_settings.action_interface == envs.actions.ActionInterface.DIRECT_RPM.value
             else None,
+            **_pid_z_metadata_fields(action_metadata),
             "include_dynamics_observation": active_settings.include_dynamics_observation,
             "include_previous_action": active_settings.include_previous_action,
+            **_initial_state_metadata_fields(action_metadata),
             "observation_dim": action_metadata.get("observation_dim"),
             "observation_components": action_metadata.get("observation_components"),
             "direct_control_limitations": envs.actions.direct_control_limitations(active_settings.action_interface),
@@ -1059,8 +1161,11 @@ def run_ppo_tracking_smoke_from_config(
         normalize_actions=settings.normalize_actions if normalize_actions is None else normalize_actions,
         action_interface=settings.action_interface if action_interface is None else action_interface,
         rpm_delta_scale=settings.rpm_delta_scale,
+        pid_target_z_min_m=settings.pid_target_z_min_m,
+        pid_target_z_max_m=settings.pid_target_z_max_m,
         include_dynamics_observation=settings.include_dynamics_observation,
         include_previous_action=settings.include_previous_action,
+        initial_state=settings.initial_state,
         termination_limits=settings.termination_limits,
         diagnostic_limits=settings.diagnostic_limits,
         wandb_mode=settings.wandb_mode if wandb_mode is None else wandb_mode,
@@ -1113,8 +1218,11 @@ def _settings_from_mapping(config: dict[str, Any], training_config_path: Path | 
         "normalize_actions": bool(config.get("normalize_actions", DEFAULT_NORMALIZE_ACTIONS)),
         "action_interface": str(config.get("action_interface") or DEFAULT_ACTION_INTERFACE),
         "rpm_delta_scale": config.get("rpm_delta_scale", envs.actions.DEFAULT_RPM_DELTA_SCALE),
+        "pid_target_z_min_m": config.get("pid_target_z_min_m", DEFAULT_PID_TARGET_Z_MIN_M),
+        "pid_target_z_max_m": config.get("pid_target_z_max_m", DEFAULT_PID_TARGET_Z_MAX_M),
         "include_dynamics_observation": bool(config.get("include_dynamics_observation", DEFAULT_INCLUDE_DYNAMICS_OBSERVATION)),
         "include_previous_action": bool(config.get("include_previous_action", DEFAULT_INCLUDE_PREVIOUS_ACTION)),
+        "initial_state": config.get("initial_state"),
         "termination_limits": config.get("termination_limits"),
         "diagnostic_limits": config.get("diagnostic_limits"),
         "wandb_mode": str(config.get("wandb_mode") or utils.wandb.WANDB_MODE_AUTO),
@@ -1806,8 +1914,10 @@ def _build_manifest(
         "real_action_type": metrics.get("real_action_type"),
         "real_action_space_bounds": metrics.get("real_action_space_bounds"),
         "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+        **_pid_z_metadata_fields(metrics),
         "include_dynamics_observation": metrics.get("include_dynamics_observation", settings.include_dynamics_observation),
         "include_previous_action": metrics.get("include_previous_action", settings.include_previous_action),
+        **_initial_state_metadata_fields(metrics),
         "observation_dim": metrics.get("observation_dim"),
         "observation_components": metrics.get("observation_components"),
         "direct_control_limitations": list(metrics.get("direct_control_limitations", [])),
@@ -1931,6 +2041,7 @@ def _build_run_manifest(
             "real_action_type": metrics.get("real_action_type"),
             "real_action_space_bounds": metrics.get("real_action_space_bounds"),
             "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+            **_pid_z_metadata_fields(metrics),
             "include_dynamics_observation": metrics.get("include_dynamics_observation", settings.include_dynamics_observation),
             "include_previous_action": metrics.get("include_previous_action", settings.include_previous_action),
             "observation_dim": metrics.get("observation_dim"),
@@ -1966,8 +2077,10 @@ def _build_run_manifest(
         "real_action_type": metrics.get("real_action_type"),
         "real_action_space_bounds": metrics.get("real_action_space_bounds"),
         "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+        **_pid_z_metadata_fields(metrics),
         "include_dynamics_observation": metrics.get("include_dynamics_observation", settings.include_dynamics_observation),
         "include_previous_action": metrics.get("include_previous_action", settings.include_previous_action),
+        **_initial_state_metadata_fields(metrics),
         "observation_dim": metrics.get("observation_dim"),
         "observation_components": metrics.get("observation_components"),
         "direct_control_limitations": list(metrics.get("direct_control_limitations", [])),
@@ -2069,8 +2182,11 @@ def _training_config_snapshot_payload(settings: PPOTrackingSmokeSettings) -> dic
         "normalize_actions": settings.normalize_actions,
         "action_interface": settings.action_interface,
         "rpm_delta_scale": settings.rpm_delta_scale,
+        "pid_target_z_min_m": settings.pid_target_z_min_m,
+        "pid_target_z_max_m": settings.pid_target_z_max_m,
         "include_dynamics_observation": settings.include_dynamics_observation,
         "include_previous_action": settings.include_previous_action,
+        "initial_state": _settings_initial_state(settings).to_dict(),
         "termination_limits": termination_limits.to_dict(),
         "diagnostic_limits": diagnostic_limits.to_dict(),
         "ppo": settings.ppo_config.to_dict(),
@@ -2177,20 +2293,60 @@ def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
         "action_std",
         "action_min",
         "action_max",
+        "action_p95",
         "action_saturation_fraction",
+        "action_upper_saturation_fraction",
+        "action_lower_saturation_fraction",
+        "action_mean_by_dim",
+        "action_min_by_dim",
+        "action_max_by_dim",
+        "action_p95_by_dim",
+        "action_saturation_fraction_by_dim",
+        "action_upper_saturation_fraction_by_dim",
+        "action_lower_saturation_fraction_by_dim",
+        "action_saturation_fraction_start_hold_by_dim",
+        "action_saturation_fraction_tracking_by_dim",
+        "action_saturation_fraction_final_hold_by_dim",
+        "normalized_action_mean_by_dim",
+        "normalized_action_min_by_dim",
+        "normalized_action_max_by_dim",
+        "normalized_action_p95_by_dim",
+        "normalized_action_saturation_fraction_by_dim",
+        "normalized_action_upper_saturation_fraction_by_dim",
+        "normalized_action_lower_saturation_fraction_by_dim",
         "real_action_mean",
         "real_action_std",
         "real_action_min",
         "real_action_max",
+        "real_action_p95",
         "real_action_saturation_fraction",
+        "real_action_upper_saturation_fraction",
+        "real_action_lower_saturation_fraction",
+        "real_action_mean_by_dim",
+        "real_action_min_by_dim",
+        "real_action_max_by_dim",
+        "real_action_p95_by_dim",
+        "real_action_saturation_fraction_by_dim",
+        "real_action_upper_saturation_fraction_by_dim",
+        "real_action_lower_saturation_fraction_by_dim",
+        "z_action_upper_saturation_fraction_tracking",
+        "z_target_minus_reference_mean",
+        "z_target_minus_reference_p95",
+        "z_error_mean_tracking",
+        "z_error_p95_tracking",
+        "z_overshoot_fraction_tracking",
+        "vertical_velocity_mean_tracking",
+        "vertical_velocity_p95_abs_tracking",
         "actions_normalized",
         "action_interface",
         "ppo_action_dim",
         "real_action_type",
         "real_action_space_bounds",
         "rpm_delta_scale",
+        *PID_Z_METADATA_KEYS,
         "include_dynamics_observation",
         "include_previous_action",
+        *INITIAL_STATE_METADATA_KEYS,
         "observation_dim",
         "observation_components",
         "policy_kwargs",
@@ -2209,6 +2365,10 @@ def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
         "project_truncation_causes",
         "direct_rpm_clipping_fraction",
         "direct_rpm_saturation_fraction",
+        "rpm_saturation_fraction_by_motor",
+        "rpm_upper_saturation_fraction_by_motor",
+        "rpm_lower_saturation_fraction_by_motor",
+        "rpm_clipped_fraction",
         "mean_abs_x_error",
         "mean_abs_y_error",
         "mean_abs_z_error",
@@ -2243,6 +2403,51 @@ def _diagnostic_manifest_fields(metrics: dict[str, Any]) -> dict[str, Any]:
         "curriculum_constraints_for_next",
     )
     return {key: metrics[key] for key in diagnostic_keys if key in metrics}
+
+
+def _settings_initial_state_metadata(settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
+    """Return static initial-state config metadata for settings-level payloads."""
+    config = _settings_initial_state(settings)
+    return {
+        "initial_state_mode": config.mode,
+        "initial_state": config.to_dict(),
+    }
+
+
+def _initial_state_metadata_fields(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Return initial-state fields present in a metrics-like mapping."""
+    return {key: source[key] for key in INITIAL_STATE_METADATA_KEYS if key in source}
+
+
+def _tracking_core_initial_state_metadata(tracking_core: Any) -> dict[str, Any]:
+    """Return initial-state metadata from a tracking env core when available."""
+    metadata = getattr(tracking_core, "_last_initial_state_diagnostics", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    return _initial_state_metadata_fields(metadata)
+
+
+def _settings_pid_z_metadata(settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
+    """Return static PID z settings, or empty metadata for direct-RPM runs."""
+    if settings.action_interface == envs.actions.ActionInterface.DIRECT_RPM.value:
+        return {}
+    return {
+        "pid_target_z_min_m": settings.pid_target_z_min_m,
+        "pid_target_z_max_m": settings.pid_target_z_max_m,
+    }
+
+
+def _pid_z_metadata_fields(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Return PID z reachability fields present in a metrics-like mapping."""
+    return {key: source[key] for key in PID_Z_METADATA_KEYS if key in source}
+
+
+def _tracking_core_pid_z_metadata(tracking_core: Any) -> dict[str, Any]:
+    """Return PID z metadata from a tracking env core when available."""
+    metadata = getattr(tracking_core, "pid_z_reachability_metadata", None)
+    if not callable(metadata):
+        return {}
+    return _pid_z_metadata_fields(metadata())
 
 
 def _settings_ppo_action_dim(settings: PPOTrackingSmokeSettings) -> int:
@@ -2334,8 +2539,10 @@ def _wandb_config(
         "real_action_type": _settings_real_action_type(settings),
         "real_action_space_bounds": _settings_real_action_space_bounds(settings),
         "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == envs.actions.ActionInterface.DIRECT_RPM.value else None,
+        **_settings_pid_z_metadata(settings),
         "include_dynamics_observation": settings.include_dynamics_observation,
         "include_previous_action": settings.include_previous_action,
+        **_settings_initial_state_metadata(settings),
         "observation_dim": _settings_observation_dim(settings),
         "observation_components": _settings_observation_components(settings),
         "direct_control_limitations": envs.actions.direct_control_limitations(settings.action_interface),
@@ -2381,8 +2588,11 @@ def _check_tracking_env(
     normalize_actions: bool = DEFAULT_NORMALIZE_ACTIONS,
     action_interface: str = DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> tuple[str, ...]:
@@ -2398,8 +2608,11 @@ def _check_tracking_env(
         record=False,
         action_interface=action_interface,
         rpm_delta_scale=rpm_delta_scale,
+        pid_target_z_min_m=pid_target_z_min_m,
+        pid_target_z_max_m=pid_target_z_max_m,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        initial_state=initial_state,
         termination_limits=termination_limits,
         diagnostic_limits=diagnostic_limits,
     )
@@ -2500,8 +2713,11 @@ def run_liftoff_diagnostics(
     include_simple_policies: bool = True,
     action_interface: str = DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
@@ -2524,10 +2740,16 @@ def run_liftoff_diagnostics(
         Explicit action interface, either ``pid_position`` or ``direct_rpm``.
     rpm_delta_scale
         Fractional RPM delta around hover used by ``direct_rpm``.
+    pid_target_z_min_m
+        Minimum z target in meters exposed by ``pid_position``.
+    pid_target_z_max_m
+        Maximum z target in meters exposed by ``pid_position``.
     include_dynamics_observation
         Whether observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether observations append the previous PPO-facing action.
+    initial_state
+        Optional initial drone spawn-position config.
     termination_limits
         Optional hard episode-control safety limits.
     diagnostic_limits
@@ -2555,8 +2777,11 @@ def run_liftoff_diagnostics(
             seed=seed,
             action_interface=action_interface,
             rpm_delta_scale=rpm_delta_scale,
+            pid_target_z_min_m=pid_target_z_min_m,
+            pid_target_z_max_m=pid_target_z_max_m,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            initial_state=initial_state,
             termination_limits=termination_limits,
             diagnostic_limits=diagnostic_limits,
         )
@@ -2568,8 +2793,11 @@ def run_liftoff_diagnostics(
             seed=seed,
             action_interface=action_interface,
             rpm_delta_scale=rpm_delta_scale,
+            pid_target_z_min_m=pid_target_z_min_m,
+            pid_target_z_max_m=pid_target_z_max_m,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            initial_state=initial_state,
             termination_limits=termination_limits,
             diagnostic_limits=diagnostic_limits,
         )
@@ -2581,8 +2809,11 @@ def run_liftoff_diagnostics(
             seed=seed,
             action_interface=action_interface,
             rpm_delta_scale=rpm_delta_scale,
+            pid_target_z_min_m=pid_target_z_min_m,
+            pid_target_z_max_m=pid_target_z_max_m,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            initial_state=initial_state,
             termination_limits=termination_limits,
             diagnostic_limits=diagnostic_limits,
         )
@@ -2594,8 +2825,11 @@ def run_liftoff_diagnostics(
             seed=seed,
             action_interface=action_interface,
             rpm_delta_scale=rpm_delta_scale,
+            pid_target_z_min_m=pid_target_z_min_m,
+            pid_target_z_max_m=pid_target_z_max_m,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            initial_state=initial_state,
             termination_limits=termination_limits,
             diagnostic_limits=diagnostic_limits,
         )
@@ -2608,8 +2842,11 @@ def run_liftoff_diagnostics(
             seed=seed,
             action_interface=action_interface,
             rpm_delta_scale=rpm_delta_scale,
+            pid_target_z_min_m=pid_target_z_min_m,
+            pid_target_z_max_m=pid_target_z_max_m,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
+            initial_state=initial_state,
             termination_limits=termination_limits,
             diagnostic_limits=diagnostic_limits,
         )
@@ -2722,8 +2959,11 @@ def _run_liftoff_rollout(
     seed: int,
     action_interface: str = DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M,
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
@@ -2735,8 +2975,11 @@ def _run_liftoff_rollout(
         max_steps=max_steps,
         action_interface=action_interface,
         rpm_delta_scale=rpm_delta_scale,
+        pid_target_z_min_m=pid_target_z_min_m,
+        pid_target_z_max_m=pid_target_z_max_m,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        initial_state=initial_state,
         termination_limits=termination_limits,
         diagnostic_limits=diagnostic_limits,
     )
@@ -2817,8 +3060,10 @@ def _run_liftoff_rollout(
             "ppo_action_dim": int(final_info.get("ppo_action_dim", 0)),
             "hover_rpm": final_info.get("hover_rpm"),
             "rpm_delta_scale": final_info.get("rpm_delta_scale"),
+            **_pid_z_metadata_fields(final_info),
             "include_dynamics_observation": bool(final_info.get("include_dynamics_observation", include_dynamics_observation)),
             "include_previous_action": bool(final_info.get("include_previous_action", include_previous_action)),
+            **_initial_state_metadata_fields(final_info),
             "observation_dim": int(final_info.get("observation_dim", 0)),
             "observation_components": [dict(component) for component in final_info.get("observation_components", [])],
             "real_motor_rpms": _array_to_jsonable(final_info.get("real_motor_rpms", [])),
@@ -2862,6 +3107,8 @@ def _tracking_env_action_metadata(tracking_env: Any) -> dict[str, Any]:
     action_interface = str(getattr(tracking_env, "action_interface", getattr(tracking_core, "action_interface", DEFAULT_ACTION_INTERFACE)))
     action_interface = envs.actions.parse_action_interface(action_interface).value
     direct_rpm = action_interface == envs.actions.ActionInterface.DIRECT_RPM.value
+    initial_state_metadata = _tracking_core_initial_state_metadata(tracking_core)
+    pid_z_metadata = {} if direct_rpm else _tracking_core_pid_z_metadata(tracking_core)
     if direct_rpm:
         rpm_min = 0.0
         rpm_max = float(getattr(base_env, "MAX_RPM", 0.0)) if base_env is not None else 0.0
@@ -2915,12 +3162,14 @@ def _tracking_env_action_metadata(tracking_env: Any) -> dict[str, Any]:
         },
         "hover_rpm": hover_rpm,
         "rpm_delta_scale": rpm_delta_scale,
+        **pid_z_metadata,
         "rpm_min": rpm_min,
         "rpm_max": rpm_max,
         "rpm_command_space_low": None if command_low is None else _array_to_jsonable(command_low),
         "rpm_command_space_high": None if command_high is None else _array_to_jsonable(command_high),
         "include_dynamics_observation": bool(getattr(tracking_core, "include_dynamics_observation", False)),
         "include_previous_action": bool(getattr(tracking_core, "include_previous_action", False)),
+        **initial_state_metadata,
         "observation_space": str(observation_space),
         "observation_space_shape": _shape_list(getattr(observation_space, "shape", ())),
         "observation_dim": int(np.prod(tuple(getattr(observation_space, "shape", ())))),

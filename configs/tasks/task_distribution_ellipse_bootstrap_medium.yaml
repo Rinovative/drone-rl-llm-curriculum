@@ -1,17 +1,11 @@
-name: delayed_altitude_polyline_bootstrap
+name: ellipse_bootstrap
+notes: Focused gentle-ellipse bootstrap distribution for LLM curriculum curve progression.
+
 task_config_role: training_distribution
 task_is_distribution: true
 sampled_per_episode: true
 constant_within_episode: true
 variation_enabled: true
-start_height_policy: standard_reference_1p0m
-base_z_range_m:
-- 0.9
-- 1.1
-height_variation_enabled: true
-start_hold_policy: uniform_reference_start_hold_1p0s
-start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
-tracking_reward_starts_after_start_hold: false
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -20,9 +14,7 @@ validation_limits:
   max_acceleration_m_s2: 5.0
   min_duration_sec: 1.0
   max_step_distance_m: 0.5
-notes: 'Focused delayed-altitude polyline: level XY motion first, then climb/descent later.'
 task_distribution:
-  name: delayed_altitude_polyline_bootstrap
   enabled: true
   mode: randomized
   seed: 0
@@ -30,63 +22,47 @@ task_distribution:
   sample_on_reset: true
   base_task:
     task_type: trajectory
-    shape: polyline
-    duration_sec: 9.5
+    shape: ellipse
+    duration_sec: 8.0
     sample_rate_hz: 10.0
-    points:
-    - - 0.0
-      - 0.0
-      - 1.0
-    - - 0.32
-      - 0.0
-      - 1.0
-    - - 0.62
-      - 0.18
-      - 0.98
-    - - 0.82
-      - 0.18
-      - 0.98
     start_hold_enabled: true
     start_hold_sec: 1.0
     exclude_start_hold_from_tracking_metrics: true
     final_hold_enabled: true
     final_hold_sec: 1.0
     exclude_final_hold_from_tracking_metrics: true
+    radius_x: 0.34
+    radius_y: 0.2
+    height: 1.0
+    center:
+    - 0.0
+    - 0.0
+    clockwise: false
     start_height_policy: standard_reference_1p0m
-    base_z_m: 1.0
-    base_z_range_m:
-    - 0.9
-    - 1.1
-    sampled_start_height_m: 1.0
     height_variation_enabled: true
     start_hold_policy: uniform_reference_start_hold_1p0s
     start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
     tracking_reward_starts_after_start_hold: false
+    base_z_m: 1.0
+    sampled_start_height_m: 1.0
     standard_reference_height_enabled: true
   family_weights:
-    delayed_altitude_polyline: 1.0
+    ellipse: 1.0
   variations:
-    delayed_altitude_polyline:
-      start_xy_radius_m: 0.12
-      heading_jitter_deg: 20.0
-      length_range_m:
-      - 0.55
-      - 1.0
-      first_segment_length_m:
-      - 0.25
-      - 0.45
-      second_segment_length_m:
-      - 0.25
-      - 0.5
-      height_delta_range_m:
-      - -0.2
-      - 0.25
+    ellipse:
+      center_xy_radius_m: 0.08
+      radius_x_range_m:
+      - 0.24
+      - 0.46
+      radius_y_range_m:
+      - 0.14
+      - 0.30
       z_range_m:
-      - 0.75
-      - 1.35
+      - 0.9
+      - 1.1
       duration_range_sec:
-      - 8.0
-      - 12.0
+      - 9.0
+      - 13.0
       start_hold_range_sec:
       - 1.0
       - 1.0
@@ -96,6 +72,7 @@ task_distribution:
       base_z_range_m:
       - 0.9
       - 1.1
+
   metadata:
     start_height_policy: standard_reference_1p0m
     base_z_range_m:
@@ -106,4 +83,12 @@ task_distribution:
     start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
     tracking_reward_starts_after_start_hold: false
     standard_reference_height_enabled: true
+start_height_policy: standard_reference_1p0m
+base_z_range_m:
+- 0.9
+- 1.1
+height_variation_enabled: true
+start_hold_policy: uniform_reference_start_hold_1p0s
+start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
+tracking_reward_starts_after_start_hold: false
 standard_reference_height_enabled: true

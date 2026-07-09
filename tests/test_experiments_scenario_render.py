@@ -101,9 +101,9 @@ def test_standard_show_scenarios_compose_with_ordered_difficulty() -> None:
         composition = scenario_render.compose_scenario_reference(settings)
         compositions.append(composition)
 
-        assert settings.start_hold_sec == 2.0
+        assert settings.start_hold_sec == 1.0
         assert composition.reference.shape == "scenario"
-        assert composition.start_hold_sec == 2.0
+        assert composition.start_hold_sec == 1.0
         assert composition.start_hold_steps > 0
         assert composition.start_hold_step_range == {"start": 0, "end": composition.start_hold_steps}
         assert composition.reference.start_hold_enabled is True

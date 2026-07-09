@@ -16,30 +16,35 @@ from src import evaluation, trajectories
 TRACE_STEP_COUNT = 3
 
 
-def _trace_records(include_action: bool = True) -> list[dict[str, object]]:
+def _trace_records(include_action: bool = True, include_real_action: bool = False, action_interface: str = "") -> list[dict[str, object]]:
     """Return a small trained-policy trace for plot tests."""
     records: list[dict[str, object]] = []
     for step_index in range(TRACE_STEP_COUNT):
         action: object = [[float(step_index), 0.0, 1.0]] if include_action else None
-        records.append(
-            {
-                "step_index": step_index,
-                "time_sec": float(step_index) * 0.1,
-                "reward": -0.1,
-                "position_error_m": 0.1,
-                "actual_position_xyz_m": [0.1 * step_index, 0.0, 1.0],
-                "reference_position_xyz_m": [0.1 * step_index, 0.1, 1.0],
-                "error_xyz_m": [0.0, -0.1, 0.0],
-                "velocity": [0.0, 0.0, 0.0],
-                "roll_pitch_yaw": [0.0, 0.0, 0.0],
-                "angular_velocity": [0.0, 0.0, 0.0],
-                "action": action,
-                "applied_action": action,
-                "terminated": False,
-                "truncated": False,
-                "termination_reason": "running",
-            }
-        )
+        record: dict[str, object] = {
+            "step_index": step_index,
+            "time_sec": float(step_index) * 0.1,
+            "reward": -0.1,
+            "position_error_m": 0.1,
+            "actual_position_xyz_m": [0.1 * step_index, 0.0, 1.0],
+            "reference_position_xyz_m": [0.1 * step_index, 0.1, 1.0],
+            "error_xyz_m": [0.0, -0.1, 0.0],
+            "velocity": [0.0, 0.0, 0.0],
+            "roll_pitch_yaw": [0.0, 0.0, 0.0],
+            "angular_velocity": [0.0, 0.0, 0.0],
+            "action": action,
+            "applied_action": action,
+            "terminated": False,
+            "truncated": False,
+            "termination_reason": "running",
+        }
+        if action_interface:
+            record["action_interface"] = action_interface
+            record["actions_normalized"] = True
+            record["real_action_type"] = "pid_target_position" if action_interface == "pid_position" else "motor_rpm"
+        if include_real_action:
+            record["real_action"] = [[0.1 * step_index, 0.0, 1.0]]
+        records.append(record)
     return records
 
 
@@ -131,7 +136,46 @@ def test_policy_rollout_trace_plots_omit_action_plot_without_action_data(tmp_pat
     result = evaluation.plots.write_policy_rollout_trace_plots(_trace_records(include_action=False), tmp_path / "plots")
 
     assert "action_trace" not in result.plot_paths
+    assert "real_action_trace" not in result.plot_paths
     assert "trajectory_xy" in result.plot_paths
+
+
+def test_policy_rollout_trace_plots_create_real_action_plot_when_available(tmp_path: Path) -> None:
+    """Verify real-action trace plots are generated when traces include real action commands."""
+    if importlib.util.find_spec("matplotlib") is None:
+        pytest.skip("matplotlib is not available")
+
+    result = evaluation.plots.write_policy_rollout_trace_plots(
+        _trace_records(include_action=True, include_real_action=True, action_interface="pid_position"),
+        tmp_path / "plots",
+    )
+
+    assert "action_trace" in result.plot_paths
+    assert "real_action_trace" in result.plot_paths
+    assert Path(result.plot_paths["real_action_trace"]).stat().st_size > 0
+
+
+def test_action_trace_labels_use_action_interface_metadata() -> None:
+    """Verify action trace legends name PID targets and direct-RPM motors."""
+    pid_records = _trace_records(include_action=True, include_real_action=True, action_interface="pid_position")
+    direct_records = _trace_records(include_action=True, action_interface="direct_rpm")
+
+    assert evaluation.plots._action_line_labels(pid_records, action_key="action", dimension_count=3) == [  # noqa: SLF001
+        "norm x target",
+        "norm y target",
+        "norm z target",
+    ]
+    assert evaluation.plots._action_line_labels(pid_records, action_key="real_action", dimension_count=3) == [  # noqa: SLF001
+        "real x target [m]",
+        "real y target [m]",
+        "real z target [m]",
+    ]
+    assert evaluation.plots._action_line_labels(direct_records, action_key="action", dimension_count=4) == [  # noqa: SLF001
+        "norm motor 0",
+        "norm motor 1",
+        "norm motor 2",
+        "norm motor 3",
+    ]
 
 
 def test_policy_rollout_trace_plots_reject_mismatched_error(tmp_path: Path) -> None:

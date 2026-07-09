@@ -307,7 +307,8 @@ def _proposal_instruction_text(mode: str) -> str:
     if mode == PROMPT_COMPACTION_MINIMAL:
         return (
             f"{prefix} Use feedback/history/catalog. Avoid immediate duplicate accepted identity. "
-            "Choose focused task-family distributions; tracking_small is fallback/consolidation only and tracking_medium is final_broad/late only. "
+            "Choose focused task-family distributions; hover and pure vertical are bootstrap/recovery only, "
+            "tracking_small is fallback/consolidation only, and tracking_medium is final_broad/late only. "
             "Prefer known safe distributions over raw geometry. Use standard reference starts around 0.9-1.1m with start_hold_sec=2.0. "
             "Output valid JSON with one allowed stage_budget_profile; never request raw timesteps."
         )
@@ -317,7 +318,8 @@ def _proposal_instruction_text(mode: str) -> str:
         "Use curriculum_history, curriculum_summary, and curriculum_feedback to avoid looping and to choose concrete, safe progressions. "
         "Use curriculum_feedback as guidance, not as an absolute command. Prefer targeted skill training over returning to hover for every problem. "
         "Use concrete metrics and trends instead of a single readiness_level; readiness_level is intentionally omitted from context. "
-        "If z/altitude is weak, consider controlled vertical, takeoff, or altitude-hold tasks. "
+        "If z/altitude is weak after a pure vertical stage, prefer angled_vertical, delayed_altitude_polyline, "
+        "or multi_height_polyline rather than another pure vertical task. "
         "If XY tracking is weak, consider shorter or slower line tasks. If turns are weak, consider slow polyline or L-shape. "
         "If curvature is weak, consider gentle ellipse or slow circle before figure-eight. "
         "If a reference was too hard, choose an easier or slower same-family variant. "
@@ -339,7 +341,8 @@ def _repair_instruction_text(mode: str) -> str:
         "Return either a concrete task with task_type and shape, or a valid task-distribution reference from the supported list "
         "using task_distribution_id or task_distribution_config_path. Use supported shapes, supported task-distribution families, "
         "concrete safe task values, and curriculum_feedback as guidance, not as an absolute command. "
-        "z_instability can be repaired with controlled vertical or takeoff tasks; XY weakness with slower/shorter lines; "
+        "z_instability can use pure vertical only for early/recovery; after vertical practice, "
+        "repair altitude gaps with angled/delayed/multi-height paths; XY weakness with slower/shorter lines; "
         "turn weakness with slow L-shape/polyline; curvature weakness with gentle ellipse/circle; "
         "repeated crash/divergence metrics are needed to confirm true instability. "
         "Do not choose broad shows, scenarios, or basic_training_show as normal LLM stages; "
@@ -377,15 +380,20 @@ def _compact_task_catalog() -> list[str]:
     rows = [
         "id | role | family | skills | difficulty | use_when",
         "hover_bootstrap | focused | hover_stabilization | settle,hold | easy | bootstrap/recovery only",
-        "vertical_bootstrap | focused | takeoff_stabilization | altitude_hold | easy | basic z control",
-        "vertical_up_down_bootstrap | focused | vertical_up_down | climb,descent | easy-medium | altitude_control gap",
-        "angled_vertical_bootstrap | focused | angled_vertical | z+xy coupling | medium | angled climb/descent",
+        "vertical_bootstrap | focused | takeoff_stabilization | altitude_hold | easy | bootstrap/recovery pure z only",
+        "vertical_up_down_bootstrap | focused | vertical_up_down | climb,descent | easy-medium | early/recovery altitude control",
+        "angled_vertical_bootstrap | focused | angled_vertical | z+xy coupling | medium | altitude gap after vertical",
         "short_line_bootstrap | focused | start_hold_then_line | xy_tracking | easy | short controlled line",
         "line_bootstrap | focused | line | xy_tracking | medium | longer line after short success",
         "polyline_bootstrap | focused | polyline | turns | medium | turn_following gap",
+        "l_shape_bootstrap | focused | l_shape | single turn | medium | one-turn progression",
+        "rectangle_bootstrap | focused | rectangle | repeated turns | medium | closed-turn progression",
         "delayed_altitude_polyline_bootstrap | focused | delayed_altitude_polyline | delayed z | medium | lateral first then climb/descent",
         "multi_height_polyline_bootstrap | focused | multi_height_polyline | varied altitude | medium | preserve altitude learning",
         "zigzag_bootstrap | focused | zigzag | repeated turns | medium | turn-following progression",
+        "triangle_bootstrap | focused | triangle | repeated turns | medium | closed-turn progression",
+        "ellipse_bootstrap | focused | ellipse | curvature | medium | gentle curve progression",
+        "circle_bootstrap | focused | circle | curvature | medium | slow curve progression",
         "tracking_small | fallback | mixed_small | consolidation | medium | fallback/consolidation only",
         "tracking_medium | final_broad | mixed_medium | broad coverage | hard | late/final broad only",
     ]
@@ -564,15 +572,26 @@ def _diagnostic_policy(compact: bool = False) -> dict[str, Any]:
         "use_concrete_metrics_and_trends": True,
         "do_not_overreact_to_single_failure_mode": True,
         "action_saturation": "difficulty_signal_not_automatic_instability",
-        "z_instability": "consider_controlled_vertical_or_altitude_hold",
+        "z_instability": "pure_vertical_only_for_early_or_recovery_then_angled_delayed_or_multi_height",
         "reference_too_fast_or_too_hard": "choose_easier_or_slower_same_family_variant",
     }
     if not compact:
         policy.update(
             {
                 "xy_weakness_next_tasks": ["short_line_bootstrap", "line_bootstrap"],
-                "turn_weakness_next_tasks": ["polyline_bootstrap", "zigzag_bootstrap"],
-                "altitude_weakness_next_tasks": ["vertical_up_down_bootstrap", "angled_vertical_bootstrap"],
+                "turn_weakness_next_tasks": [
+                    "polyline_bootstrap",
+                    "l_shape_bootstrap",
+                    "rectangle_bootstrap",
+                    "zigzag_bootstrap",
+                    "triangle_bootstrap",
+                ],
+                "curvature_weakness_next_tasks": ["ellipse_bootstrap", "circle_bootstrap"],
+                "altitude_weakness_next_tasks": [
+                    "angled_vertical_bootstrap",
+                    "delayed_altitude_polyline_bootstrap",
+                    "multi_height_polyline_bootstrap",
+                ],
             }
         )
     return policy

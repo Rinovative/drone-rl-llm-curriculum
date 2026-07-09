@@ -49,7 +49,7 @@ DEFAULT_PROPOSAL_FALLBACK_DISTRIBUTION_ID = "tracking_medium"
 DEFAULT_PROPOSAL_FALLBACK_PROFILE = "short"
 DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE = "normal"
 GENERATED_TASK_DISTRIBUTION_STRENGTH = 0.35
-GENERATED_TASK_START_HOLD_SEC = 2.0
+GENERATED_TASK_START_HOLD_SEC = 1.0
 STANDARD_REFERENCE_HEIGHT_POLICY = "standard_reference_1p0m"
 STANDARD_REFERENCE_BASE_Z_M = 1.0
 STANDARD_REFERENCE_HEIGHT_RANGE_M = (0.9, 1.1)
@@ -70,6 +70,64 @@ GENERATED_TASK_DISTRIBUTION_LABELS = {
 }
 RESOLVED_DISTRIBUTION_MAX_ATTEMPTS = 16
 MIN_ERRORS_FOR_TREND = 2
+PROGRESSION_BUCKET_HOVER = "hover"
+PROGRESSION_BUCKET_VERTICAL_ONLY = "vertical_only"
+PROGRESSION_BUCKET_XY_LINE = "xy_line"
+PROGRESSION_BUCKET_TURN_POLYLINE = "turn_polyline"
+PROGRESSION_BUCKET_CURVE = "curve"
+PROGRESSION_BUCKET_ALTITUDE_COMBINED = "altitude_combined"
+PROGRESSION_BUCKET_BROAD_FALLBACK = "broad_fallback"
+PROGRESSION_BUCKET_ORDER = (
+    PROGRESSION_BUCKET_HOVER,
+    PROGRESSION_BUCKET_VERTICAL_ONLY,
+    PROGRESSION_BUCKET_XY_LINE,
+    PROGRESSION_BUCKET_ALTITUDE_COMBINED,
+    PROGRESSION_BUCKET_TURN_POLYLINE,
+    PROGRESSION_BUCKET_CURVE,
+    PROGRESSION_BUCKET_BROAD_FALLBACK,
+)
+PROGRESSION_DISTRIBUTION_BUCKETS = {
+    "bootstrap_randomized_hover_target": PROGRESSION_BUCKET_HOVER,
+    "hover_bootstrap": PROGRESSION_BUCKET_HOVER,
+    "vertical_bootstrap": PROGRESSION_BUCKET_VERTICAL_ONLY,
+    "vertical_up_down_bootstrap": PROGRESSION_BUCKET_VERTICAL_ONLY,
+    "short_line_bootstrap": PROGRESSION_BUCKET_XY_LINE,
+    "line_bootstrap": PROGRESSION_BUCKET_XY_LINE,
+    "angled_vertical_bootstrap": PROGRESSION_BUCKET_ALTITUDE_COMBINED,
+    "delayed_altitude_polyline_bootstrap": PROGRESSION_BUCKET_ALTITUDE_COMBINED,
+    "multi_height_polyline_bootstrap": PROGRESSION_BUCKET_ALTITUDE_COMBINED,
+    "polyline_bootstrap": PROGRESSION_BUCKET_TURN_POLYLINE,
+    "l_shape_bootstrap": PROGRESSION_BUCKET_TURN_POLYLINE,
+    "zigzag_bootstrap": PROGRESSION_BUCKET_TURN_POLYLINE,
+    "triangle_bootstrap": PROGRESSION_BUCKET_TURN_POLYLINE,
+    "rectangle_bootstrap": PROGRESSION_BUCKET_TURN_POLYLINE,
+    "circle_bootstrap": PROGRESSION_BUCKET_CURVE,
+    "ellipse_bootstrap": PROGRESSION_BUCKET_CURVE,
+    "tracking_small": PROGRESSION_BUCKET_BROAD_FALLBACK,
+    "tracking_medium": PROGRESSION_BUCKET_BROAD_FALLBACK,
+    "tracking_broad": PROGRESSION_BUCKET_BROAD_FALLBACK,
+}
+PROGRESSION_DISTRIBUTION_EXPECTED_SHAPES = {
+    "bootstrap_randomized_hover_target": validation.contracts.SHAPE_HOVER_STABILIZATION,
+    "hover_bootstrap": validation.contracts.SHAPE_HOVER_STABILIZATION,
+    "vertical_bootstrap": validation.contracts.SHAPE_VERTICAL,
+    "vertical_up_down_bootstrap": validation.contracts.SHAPE_VERTICAL,
+    "short_line_bootstrap": validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE,
+    "line_bootstrap": validation.contracts.SHAPE_LINE,
+    "angled_vertical_bootstrap": validation.contracts.SHAPE_LINE,
+    "multi_height_polyline_bootstrap": validation.contracts.SHAPE_LINE,
+    "delayed_altitude_polyline_bootstrap": validation.contracts.SHAPE_POLYLINE,
+    "polyline_bootstrap": validation.contracts.SHAPE_POLYLINE,
+    "l_shape_bootstrap": validation.contracts.SHAPE_POLYLINE,
+    "zigzag_bootstrap": validation.contracts.SHAPE_POLYLINE,
+    "triangle_bootstrap": validation.contracts.SHAPE_POLYLINE,
+    "rectangle_bootstrap": validation.contracts.SHAPE_POLYLINE,
+    "circle_bootstrap": validation.contracts.SHAPE_CIRCLE,
+    "ellipse_bootstrap": validation.contracts.SHAPE_ELLIPSE,
+}
+PURE_HOVER_VERTICAL_BUCKETS = {PROGRESSION_BUCKET_HOVER, PROGRESSION_BUCKET_VERTICAL_ONLY}
+PURE_HOVER_VERTICAL_BOOTSTRAP_STAGE_LIMIT = 2
+HOVER_VERTICAL_LOOP_WINDOW_SIZE = 3
 
 
 @dataclass(frozen=True)
@@ -233,6 +291,20 @@ class LLMCurriculumStage:
         Whether this stage records a duplicate-repair path before acceptance.
     duplicate_task_repair_reason
         Human-readable duplicate repair reason, when one occurred.
+    proposal_repaired
+        Whether deterministic progression repair changed the accepted proposal before stage resolution.
+    proposal_repair_reason
+        Human-readable reason for deterministic progression repair.
+    proposal_original_distribution_id
+        Original proposed task-distribution identifier before repair, when available.
+    proposal_final_distribution_id
+        Final task-distribution identifier after repair, when available.
+    proposal_progression_rule_applied
+        Stable name of the anti-stagnation rule used for repair.
+    hover_vertical_loop_detected
+        Whether recent accepted buckets plus this proposal formed a hover/vertical loop.
+    stage_progression_bucket
+        Curriculum progression bucket used for coverage diagnostics.
     fallback_task_shape
         Concrete shape selected by fallback resolution, when fallback was used.
     proposal_type
@@ -285,6 +357,13 @@ class LLMCurriculumStage:
     accepted_stage_task_shape: str | None = None
     duplicate_task_rejected: bool = False
     duplicate_task_repair_reason: str | None = None
+    proposal_repaired: bool = False
+    proposal_repair_reason: str | None = None
+    proposal_original_distribution_id: str | None = None
+    proposal_final_distribution_id: str | None = None
+    proposal_progression_rule_applied: str | None = None
+    hover_vertical_loop_detected: bool = False
+    stage_progression_bucket: str | None = None
     fallback_task_shape: str | None = None
     proposal_type: str = llm.task_schema.PROPOSAL_KIND_TASK
     original_proposal: dict[str, Any] | None = None
@@ -693,10 +772,26 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 previous_stage_task_shape=previous_stage_task_shape,
                 context_overflow=context_overflow,
             )
-            stage = _stage_from_proposal(
+            fallback_repair = _repair_proposal_for_progression(
                 settings=settings,
                 stage_index=next_stage_index,
                 task=fallback_proposal["task"],
+                proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+                stage_entries=stage_entries,
+                latest_metrics_summary=latest_metrics_summary,
+            )
+            if fallback_repair["proposal_repaired"]:
+                _log_proposal_progression_repair(
+                    logger=proposal_logger,
+                    settings=settings,
+                    stage_index=next_stage_index,
+                    repair=fallback_repair,
+                    proposal_fallback_used=True,
+                )
+            stage = _stage_from_proposal(
+                settings=settings,
+                stage_index=next_stage_index,
+                task=fallback_repair["task"],
                 task_reason=fallback_proposal["task_reason"],
                 stage_budget_profile=fallback_proposal["stage_budget_profile"],
                 budget_rationale=fallback_proposal["budget_rationale"],
@@ -705,6 +800,7 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
                 previous_stage_task_shape=previous_stage_task_shape,
                 proposal_fallback_used=True,
                 proposal_failure_reason=str(exc),
+                progression_repair=fallback_repair,
             )
             _log_proposal_fallback(
                 logger=proposal_logger,
@@ -718,18 +814,35 @@ def run_llm_curriculum_training(settings: LLMCurriculumSettings, dry_run_proposa
             recent_rejected_tasks.extend(proposal.rejected_proposals)
             if proposal.task is None:
                 break
-            stage = _stage_from_proposal(
+            proposal_repair = _repair_proposal_for_progression(
                 settings=settings,
                 stage_index=next_stage_index,
                 task=proposal.task,
+                proposal_type=proposal.proposal_type,
+                stage_entries=stage_entries,
+                latest_metrics_summary=latest_metrics_summary,
+            )
+            if proposal_repair["proposal_repaired"]:
+                _log_proposal_progression_repair(
+                    logger=proposal_logger,
+                    settings=settings,
+                    stage_index=next_stage_index,
+                    repair=proposal_repair,
+                    proposal_fallback_used=False,
+                )
+            stage = _stage_from_proposal(
+                settings=settings,
+                stage_index=next_stage_index,
+                task=proposal_repair["task"],
                 task_reason=proposal.task_reason,
                 stage_budget_profile=proposal.stage_budget_profile,
                 budget_rationale=proposal.budget_rationale,
-                proposal_type=proposal.proposal_type,
+                proposal_type=proposal_repair["proposal_type"],
                 original_proposal=proposal.original_proposal,
                 previous_stage_task_shape=previous_stage_task_shape,
                 proposal_fallback_used=False,
                 proposal_failure_reason=None,
+                progression_repair=proposal_repair,
             )
         stage = _resolve_llm_stage_budget(
             settings=settings,
@@ -1054,6 +1167,7 @@ def _build_curriculum_summary(
     run_manifest_path = utils.artifacts.get_run_manifest_path(run_name)
     final_stage = stage_entries[-1] if stage_entries else None
     final_model_path = _stage_selected_model_path(final_stage) if final_stage is not None else None
+    coverage_summary = _curriculum_coverage_summary(stage_entries)
     return {
         "run_type": "training",
         "run_kind": "curriculum",
@@ -1073,6 +1187,12 @@ def _build_curriculum_summary(
         "proposal_fallback": _proposal_fallback_summary(settings.proposal_fallback),
         "proposal_fallback_used": any(bool(stage.get("proposal_fallback_used")) for stage in stage_entries),
         "fallback_count": sum(1 for stage in stage_entries if bool(stage.get("proposal_fallback_used"))),
+        "curriculum_coverage": coverage_summary,
+        "stage_progression_bucket_counts": coverage_summary["bucket_counts"],
+        "longest_repeated_category_run": coverage_summary["longest_repeated_category_run"],
+        "hover_vertical_loop_detected": coverage_summary["hover_vertical_loop_detected"],
+        "progression_score": coverage_summary["progression_score"],
+        "proposal_progression_repair_count": sum(1 for stage in stage_entries if bool(stage.get("proposal_repaired"))),
         "repair_count": int(proposal_stats.get("repair_attempts", 0)),
         "repair_success_count": int(proposal_stats.get("repair_successes", 0)),
         "budget_profile_counts": _budget_profile_counts(stage_entries),
@@ -1389,6 +1509,370 @@ def _stage_from_mapping(raw_stage: Mapping[str, Any], default_total_timesteps: i
     )
 
 
+def _repair_proposal_for_progression(
+    *,
+    settings: LLMCurriculumSettings,
+    stage_index: int,
+    task: Mapping[str, Any],
+    proposal_type: str | None,
+    stage_entries: Sequence[Mapping[str, Any]],
+    latest_metrics_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Repair hover/vertical loops and early broad proposals into focused progression distributions."""
+    active_type = proposal_type or str(task.get(llm.task_schema.PROPOSAL_KIND_FIELD, llm.task_schema.PROPOSAL_KIND_TASK))
+    task_payload = dict(task)
+    original_distribution_id = _proposal_distribution_id(task_payload, active_type)
+    original_bucket = _progression_bucket_for_proposal(task_payload, active_type)
+    recent_buckets = [_stage_progression_bucket_from_entry(entry) for entry in stage_entries]
+    recent_buckets = [bucket for bucket in recent_buckets if bucket]
+    previous_stage_task_shape = _latest_stage_task_shape(stage_entries)
+    hover_vertical_loop = _hover_vertical_loop_detected((*recent_buckets, original_bucket))
+    target_distribution_id: str | None = None
+    repair_reason: str | None = None
+    rule: str | None = None
+
+    recovery_needed = _latest_metrics_need_recovery(latest_metrics_summary)
+    if hover_vertical_loop:
+        target_distribution_id = _progression_repair_target_distribution_id(
+            stage_entries=stage_entries,
+            latest_metrics_summary=latest_metrics_summary,
+            previous_stage_task_shape=previous_stage_task_shape,
+            preferred_bucket=PROGRESSION_BUCKET_XY_LINE,
+        )
+        repair_reason = "recent stages would continue a hover/vertical loop"
+        rule = "hover_vertical_loop_repaired_to_progression"
+    elif original_bucket in PURE_HOVER_VERTICAL_BUCKETS and stage_index > PURE_HOVER_VERTICAL_BOOTSTRAP_STAGE_LIMIT and not recovery_needed:
+        target_distribution_id = _progression_repair_target_distribution_id(
+            stage_entries=stage_entries,
+            latest_metrics_summary=latest_metrics_summary,
+            previous_stage_task_shape=previous_stage_task_shape,
+            preferred_bucket=PROGRESSION_BUCKET_XY_LINE,
+        )
+        repair_reason = "hover and pure vertical tasks are reserved for early bootstrap or explicit recovery"
+        rule = "hover_vertical_reserved_for_early_or_recovery"
+    elif original_bucket == PROGRESSION_BUCKET_BROAD_FALLBACK and stage_index < max(settings.max_stages - 1, 3):
+        target_distribution_id = _progression_repair_target_distribution_id(
+            stage_entries=stage_entries,
+            latest_metrics_summary=latest_metrics_summary,
+            previous_stage_task_shape=previous_stage_task_shape,
+            preferred_bucket=None,
+        )
+        repair_reason = "broad tracking distribution is deferred until late curriculum coverage exists"
+        rule = "early_broad_distribution_repaired_to_focused_progression"
+
+    if target_distribution_id is None or target_distribution_id == original_distribution_id:
+        return {
+            "task": task_payload,
+            "proposal_type": active_type,
+            "proposal_repaired": False,
+            "proposal_repair_reason": None,
+            "proposal_original_distribution_id": original_distribution_id,
+            "proposal_final_distribution_id": original_distribution_id,
+            "proposal_progression_rule_applied": None,
+            "hover_vertical_loop_detected": hover_vertical_loop,
+            "stage_progression_bucket": original_bucket,
+        }
+
+    repaired_task = _task_distribution_reference(target_distribution_id)
+    return {
+        "task": repaired_task,
+        "proposal_type": llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+        "proposal_repaired": True,
+        "proposal_repair_reason": repair_reason,
+        "proposal_original_distribution_id": original_distribution_id,
+        "proposal_final_distribution_id": target_distribution_id,
+        "proposal_progression_rule_applied": rule,
+        "hover_vertical_loop_detected": hover_vertical_loop,
+        "stage_progression_bucket": _progression_bucket_for_distribution_id(target_distribution_id),
+    }
+
+
+def _stage_progression_repair_fields(
+    progression_repair: Mapping[str, Any] | None,
+    *,
+    task: Mapping[str, Any],
+    proposal_type: str,
+) -> dict[str, Any]:
+    """Return stage dataclass fields for deterministic progression repair metadata."""
+    if progression_repair is None:
+        distribution_id = _proposal_distribution_id(task, proposal_type)
+        return {
+            "proposal_repaired": False,
+            "proposal_repair_reason": None,
+            "proposal_original_distribution_id": distribution_id,
+            "proposal_final_distribution_id": distribution_id,
+            "proposal_progression_rule_applied": None,
+            "hover_vertical_loop_detected": False,
+            "stage_progression_bucket": _progression_bucket_for_proposal(task, proposal_type),
+        }
+    return {
+        "proposal_repaired": bool(progression_repair.get("proposal_repaired", False)),
+        "proposal_repair_reason": progression_repair.get("proposal_repair_reason"),
+        "proposal_original_distribution_id": progression_repair.get("proposal_original_distribution_id"),
+        "proposal_final_distribution_id": progression_repair.get("proposal_final_distribution_id"),
+        "proposal_progression_rule_applied": progression_repair.get("proposal_progression_rule_applied"),
+        "hover_vertical_loop_detected": bool(progression_repair.get("hover_vertical_loop_detected", False)),
+        "stage_progression_bucket": progression_repair.get("stage_progression_bucket"),
+    }
+
+
+def _proposal_distribution_id(task: Mapping[str, Any], proposal_type: str | None) -> str | None:
+    """Return a proposed distribution id when the proposal references one."""
+    if proposal_type == llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION or llm.task_schema.TASK_DISTRIBUTION_ID_FIELD in task:
+        value = task.get(llm.task_schema.TASK_DISTRIBUTION_ID_FIELD)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
+
+
+def _task_distribution_reference(distribution_id: str) -> dict[str, Any]:
+    """Return a known task-distribution proposal reference."""
+    return {
+        llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+        llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
+        llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[distribution_id],
+    }
+
+
+def _progression_repair_target_distribution_id(
+    *,
+    stage_entries: Sequence[Mapping[str, Any]],
+    latest_metrics_summary: Mapping[str, Any],
+    previous_stage_task_shape: str | None,
+    preferred_bucket: str | None,
+) -> str:
+    """Return the next focused distribution id for anti-stagnation repair."""
+    gaps = set(_latest_skill_gaps(latest_metrics_summary))
+    if "curvature_following" in gaps:
+        return _first_known_non_duplicate_distribution(
+            ("ellipse_bootstrap", "circle_bootstrap", "polyline_bootstrap"),
+            fallback="polyline_bootstrap",
+            previous_stage_task_shape=previous_stage_task_shape,
+        )
+    if "turn_following" in gaps or "multi_segment_tracking" in gaps:
+        return _first_known_non_duplicate_distribution(
+            ("polyline_bootstrap", "zigzag_bootstrap", "triangle_bootstrap", "ellipse_bootstrap"),
+            fallback="polyline_bootstrap",
+            previous_stage_task_shape=previous_stage_task_shape,
+        )
+    if "altitude_control" in gaps:
+        return _first_known_non_duplicate_distribution(
+            ("angled_vertical_bootstrap", "delayed_altitude_polyline_bootstrap", "multi_height_polyline_bootstrap", "polyline_bootstrap"),
+            fallback="angled_vertical_bootstrap",
+            previous_stage_task_shape=previous_stage_task_shape,
+        )
+    if "xy_tracking" in gaps or preferred_bucket == PROGRESSION_BUCKET_XY_LINE:
+        return _first_known_non_duplicate_distribution(
+            ("short_line_bootstrap", "line_bootstrap", "polyline_bootstrap"),
+            fallback="short_line_bootstrap",
+            previous_stage_task_shape=previous_stage_task_shape,
+        )
+
+    seen_buckets = {_stage_progression_bucket_from_entry(entry) for entry in stage_entries}
+    ordered_candidates = (
+        "short_line_bootstrap",
+        "line_bootstrap",
+        "angled_vertical_bootstrap",
+        "delayed_altitude_polyline_bootstrap",
+        "polyline_bootstrap",
+        "zigzag_bootstrap",
+        "triangle_bootstrap",
+        "ellipse_bootstrap",
+        "circle_bootstrap",
+    )
+    for distribution_id in ordered_candidates:
+        bucket = _progression_bucket_for_distribution_id(distribution_id)
+        if (
+            distribution_id in llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS
+            and bucket not in seen_buckets
+            and not _distribution_duplicates_previous_shape(distribution_id, previous_stage_task_shape)
+        ):
+            return distribution_id
+    return _first_known_non_duplicate_distribution(
+        ("polyline_bootstrap", "short_line_bootstrap", "ellipse_bootstrap"),
+        fallback="short_line_bootstrap",
+        previous_stage_task_shape=previous_stage_task_shape,
+    )
+
+
+def _first_known_non_duplicate_distribution(
+    candidate_ids: Sequence[str],
+    *,
+    fallback: str,
+    previous_stage_task_shape: str | None,
+) -> str:
+    """Return the first known distribution that does not repeat the previous shape family."""
+    for distribution_id in candidate_ids:
+        if distribution_id in llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS and not _distribution_duplicates_previous_shape(
+            distribution_id, previous_stage_task_shape
+        ):
+            return distribution_id
+    return _first_known_distribution(candidate_ids, fallback=fallback)
+
+
+def _first_known_distribution(candidate_ids: Sequence[str], *, fallback: str) -> str:
+    """Return the first known distribution id from candidates."""
+    for distribution_id in candidate_ids:
+        if distribution_id in llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS:
+            return distribution_id
+    return fallback
+
+
+def _distribution_duplicates_previous_shape(distribution_id: str, previous_stage_task_shape: str | None) -> bool:
+    """Return whether a distribution would resolve to the previous duplicate-prevention family."""
+    expected_shape = PROGRESSION_DISTRIBUTION_EXPECTED_SHAPES.get(distribution_id)
+    if expected_shape is None:
+        return False
+    return _is_consecutive_duplicate_stage_shape(previous_stage_task_shape, expected_shape)
+
+
+def _latest_stage_task_shape(stage_entries: Sequence[Mapping[str, Any]]) -> str | None:
+    """Return the latest accepted stage task shape from summary entries."""
+    if not stage_entries:
+        return None
+    latest = stage_entries[-1]
+    for key in ("accepted_stage_task_shape", "resolved_task_shape", "task_shape", "stage_name"):
+        value = latest.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
+
+
+def _progression_bucket_for_proposal(task: Mapping[str, Any], proposal_type: str | None) -> str:
+    """Return the progression bucket for a proposal task or distribution."""
+    distribution_id = _proposal_distribution_id(task, proposal_type)
+    if distribution_id is not None:
+        return _progression_bucket_for_distribution_id(distribution_id)
+    return _progression_bucket_for_shape(str(task.get(validation.contracts.FIELD_SHAPE) or ""))
+
+
+def _progression_bucket_for_distribution_id(distribution_id: str | None) -> str:
+    """Return the progression bucket for a known distribution id."""
+    if distribution_id is None:
+        return PROGRESSION_BUCKET_BROAD_FALLBACK
+    return PROGRESSION_DISTRIBUTION_BUCKETS.get(distribution_id, PROGRESSION_BUCKET_BROAD_FALLBACK)
+
+
+def _progression_bucket_for_shape(shape: str | None) -> str:
+    """Return the progression bucket for a concrete task shape."""
+    if shape in {validation.contracts.SHAPE_HOVER, validation.contracts.SHAPE_HOVER_STABILIZATION, validation.contracts.SHAPE_NEARBY_TARGET_HOVER}:
+        return PROGRESSION_BUCKET_HOVER
+    if shape == validation.contracts.SHAPE_VERTICAL:
+        return PROGRESSION_BUCKET_VERTICAL_ONLY
+    if shape in {validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE, validation.contracts.SHAPE_SHORT_SLOW_LINE, validation.contracts.SHAPE_LINE}:
+        return PROGRESSION_BUCKET_XY_LINE
+    if shape in {validation.contracts.SHAPE_POLYLINE, "l_shape", "zigzag", "triangle", "rectangle"}:
+        return PROGRESSION_BUCKET_TURN_POLYLINE
+    if shape in {validation.contracts.SHAPE_CIRCLE, validation.contracts.SHAPE_ELLIPSE, validation.contracts.SHAPE_FIGURE_EIGHT}:
+        return PROGRESSION_BUCKET_CURVE
+    return PROGRESSION_BUCKET_BROAD_FALLBACK
+
+
+def _stage_progression_bucket_from_entry(entry: Mapping[str, Any]) -> str:
+    """Return the progression bucket recorded or inferred for a stage summary entry."""
+    bucket = entry.get("stage_progression_bucket")
+    if isinstance(bucket, str) and bucket.strip():
+        return bucket
+    distribution_id = entry.get("task_distribution_id")
+    if isinstance(distribution_id, str) and distribution_id.strip():
+        return _progression_bucket_for_distribution_id(distribution_id)
+    shape = entry.get("resolved_task_shape") or entry.get("task_shape")
+    return _progression_bucket_for_shape(str(shape) if shape is not None else None)
+
+
+def _hover_vertical_loop_detected(buckets: Sequence[str]) -> bool:
+    """Return whether recent progression buckets form a hover/vertical loop."""
+    recent = [bucket for bucket in buckets if bucket]
+    if len(recent) < HOVER_VERTICAL_LOOP_WINDOW_SIZE:
+        return False
+    window = recent[-HOVER_VERTICAL_LOOP_WINDOW_SIZE:]
+    return all(bucket in PURE_HOVER_VERTICAL_BUCKETS for bucket in window) and len(set(window)) > 1
+
+
+def _latest_metrics_need_recovery(metrics_summary: Mapping[str, Any]) -> bool:
+    """Return whether latest metrics justify simple hover/vertical recovery tasks."""
+    status = str(metrics_summary.get("failure_overall_status") or metrics_summary.get("status") or "")
+    primary_mode = str(metrics_summary.get("failure_primary_mode") or "")
+    if status in {"unstable", "blocked", "safety_failed"}:
+        return True
+    return primary_mode in {"attitude_instability", "early_termination", "repeated_truncation", "safety_limit_violation"}
+
+
+def _curriculum_coverage_summary(stage_entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Return progression coverage diagnostics for accepted curriculum stages."""
+    buckets = [_stage_progression_bucket_from_entry(entry) for entry in stage_entries]
+    counts = dict.fromkeys(PROGRESSION_BUCKET_ORDER, 0)
+    for bucket in buckets:
+        counts[bucket] = counts.get(bucket, 0) + 1
+    repeated_run = _longest_repeated_bucket_run(buckets)
+    hover_vertical_loop = any(_hover_vertical_loop_detected(buckets[index : index + 3]) for index in range(max(len(buckets) - 2, 0)))
+    focused_count = sum(
+        counts.get(bucket, 0)
+        for bucket in (PROGRESSION_BUCKET_XY_LINE, PROGRESSION_BUCKET_TURN_POLYLINE, PROGRESSION_BUCKET_CURVE, PROGRESSION_BUCKET_ALTITUDE_COMBINED)
+    )
+    progression_score = focused_count + len({bucket for bucket in buckets if bucket not in PURE_HOVER_VERTICAL_BUCKETS})
+    return {
+        "bucket_counts": counts,
+        "hover_count": counts.get(PROGRESSION_BUCKET_HOVER, 0),
+        "vertical_only_count": counts.get(PROGRESSION_BUCKET_VERTICAL_ONLY, 0),
+        "xy_line_count": counts.get(PROGRESSION_BUCKET_XY_LINE, 0),
+        "turn_polyline_count": counts.get(PROGRESSION_BUCKET_TURN_POLYLINE, 0),
+        "curve_count": counts.get(PROGRESSION_BUCKET_CURVE, 0),
+        "altitude_combined_count": counts.get(PROGRESSION_BUCKET_ALTITUDE_COMBINED, 0),
+        "broad_fallback_count": counts.get(PROGRESSION_BUCKET_BROAD_FALLBACK, 0),
+        "longest_repeated_category_run": repeated_run,
+        "hover_vertical_loop_detected": hover_vertical_loop,
+        "progression_score": int(progression_score),
+        "bucket_sequence": buckets,
+    }
+
+
+def _longest_repeated_bucket_run(buckets: Sequence[str]) -> dict[str, Any]:
+    """Return the longest repeated progression bucket run."""
+    best_bucket = None
+    best_length = 0
+    current_bucket = None
+    current_length = 0
+    for bucket in buckets:
+        if bucket == current_bucket:
+            current_length += 1
+        else:
+            current_bucket = bucket
+            current_length = 1
+        if current_length > best_length:
+            best_bucket = current_bucket
+            best_length = current_length
+    return {"bucket": best_bucket, "length": int(best_length)}
+
+
+def _log_proposal_progression_repair(
+    *,
+    logger: llm.logging.ProposalEventLogger,
+    settings: LLMCurriculumSettings,
+    stage_index: int,
+    repair: Mapping[str, Any],
+    proposal_fallback_used: bool,
+) -> None:
+    """Append one deterministic progression-repair event to the proposal log."""
+    logger.append(
+        {
+            "event_type": "llm_proposal_progression_repair",
+            "curriculum_name": settings.curriculum_name,
+            "stage_index": stage_index,
+            "status": "accepted",
+            "proposal_fallback_used": bool(proposal_fallback_used),
+            "proposal_repaired": bool(repair.get("proposal_repaired", False)),
+            "proposal_repair_reason": repair.get("proposal_repair_reason"),
+            "proposal_original_distribution_id": repair.get("proposal_original_distribution_id"),
+            "proposal_final_distribution_id": repair.get("proposal_final_distribution_id"),
+            "proposal_progression_rule_applied": repair.get("proposal_progression_rule_applied"),
+            "hover_vertical_loop_detected": bool(repair.get("hover_vertical_loop_detected", False)),
+            "stage_progression_bucket": repair.get("stage_progression_bucket"),
+            "task_distribution_reference": dict(repair.get("task") or {}),
+        }
+    )
+
+
 def _stage_from_proposal(
     settings: LLMCurriculumSettings,
     stage_index: int,
@@ -1401,10 +1885,12 @@ def _stage_from_proposal(
     previous_stage_task_shape: str | None,
     proposal_fallback_used: bool,
     proposal_failure_reason: str | None,
+    progression_repair: Mapping[str, Any] | None = None,
 ) -> LLMCurriculumStage:
     """Return a stage from one accepted LLM proposal task or distribution reference."""
     active_proposal_type = proposal_type or str(task.get(llm.task_schema.PROPOSAL_KIND_FIELD, llm.task_schema.PROPOSAL_KIND_TASK))
     original = _json_mapping_copy(original_proposal) or dict(task)
+    repair_fields = _stage_progression_repair_fields(progression_repair, task=task, proposal_type=active_proposal_type)
     if active_proposal_type == llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION:
         resolved = _resolve_task_distribution_stage_task(
             settings=settings,
@@ -1431,6 +1917,7 @@ def _stage_from_proposal(
             previous_stage_task_shape=previous_stage_task_shape,
             requested_stage_task_shape=_proposal_requested_stage_task_shape(task),
             accepted_stage_task_shape=resolved["resolved_task_shape"],
+            **repair_fields,
             fallback_task_shape=resolved["resolved_task_shape"] if proposal_fallback_used else None,
             proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
             original_proposal=original,
@@ -1464,6 +1951,7 @@ def _stage_from_proposal(
         previous_stage_task_shape=previous_stage_task_shape,
         requested_stage_task_shape=task_shape,
         accepted_stage_task_shape=task_shape,
+        **repair_fields,
         proposal_type=llm.task_schema.PROPOSAL_KIND_TASK,
         original_proposal=original,
         task_distribution_reference=generated_distribution["task_distribution_reference"],
@@ -1602,8 +2090,8 @@ def _with_generated_task_start_hold(task: dict[str, Any]) -> dict[str, Any]:
     task.pop("base_z_offset_range_m", None)
     task["standard_reference_height_enabled"] = True
     task["start_height_policy"] = STANDARD_REFERENCE_HEIGHT_POLICY
-    task["start_hold_policy"] = "uniform_2p0s_start_hold"
-    task["start_hold_reward_policy"] = "full_tracking_reward_active_during_uniform_start_hold"
+    task["start_hold_policy"] = envs.task_distribution.STANDARD_START_HOLD_POLICY
+    task["start_hold_reward_policy"] = envs.task_distribution.STANDARD_START_HOLD_REWARD_POLICY
     task["tracking_reward_starts_after_start_hold"] = False
     if task.get(validation.contracts.FIELD_SHAPE) == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
         task[validation.contracts.FIELD_HOLD_DURATION_SEC] = max(
@@ -2125,10 +2613,19 @@ def _fallback_distribution_id(
     """Return a safe fallback distribution that avoids immediate duplicates when possible."""
     configured_id = settings.proposal_fallback.task_distribution_id
     if not context_overflow:
+        candidates: tuple[str, ...] = (
+            "short_line_bootstrap",
+            "line_bootstrap",
+            "angled_vertical_bootstrap",
+            "delayed_altitude_polyline_bootstrap",
+            "polyline_bootstrap",
+            "zigzag_bootstrap",
+            "triangle_bootstrap",
+        )
+        if stage_index >= max(settings.max_stages - 1, 1):
+            candidates = (*candidates, "tracking_small", configured_id)
         return _first_non_duplicate_distribution(
-            (configured_id, "short_line_bootstrap", "vertical_bootstrap", "polyline_bootstrap", "hover_bootstrap"),
-            configured_id=configured_id,
-            previous_stage_task_shape=previous_stage_task_shape,
+            candidates, configured_id="short_line_bootstrap", previous_stage_task_shape=previous_stage_task_shape
         )
     candidates = _context_overflow_fallback_candidates(metrics_summary or {}, previous_stage_task_shape=previous_stage_task_shape)
     if stage_index >= max(settings.max_stages - 1, 1):
@@ -2146,13 +2643,13 @@ def _context_overflow_fallback_candidates(
     """Return focused fallback candidates from latest compact skill gaps."""
     gaps = set(_latest_skill_gaps(metrics_summary))
     if "altitude_control" in gaps:
-        return ("vertical_up_down_bootstrap", "angled_vertical_bootstrap", "delayed_altitude_polyline_bootstrap", "vertical_bootstrap")
+        return ("angled_vertical_bootstrap", "delayed_altitude_polyline_bootstrap", "multi_height_polyline_bootstrap", "polyline_bootstrap")
     if "xy_tracking" in gaps:
-        return ("short_line_bootstrap", "line_bootstrap", "vertical_bootstrap")
+        return ("short_line_bootstrap", "line_bootstrap", "polyline_bootstrap")
     if "turn_following" in gaps:
         return ("polyline_bootstrap", "zigzag_bootstrap", "triangle_bootstrap", "short_line_bootstrap")
     if "curvature_following" in gaps:
-        return ("polyline_bootstrap", "zigzag_bootstrap", "short_line_bootstrap")
+        return ("ellipse_bootstrap", "circle_bootstrap", "polyline_bootstrap", "zigzag_bootstrap", "short_line_bootstrap")
     if previous_stage_task_shape is not None and _canonical_stage_task_family(previous_stage_task_shape) == validation.contracts.SHAPE_LINE:
         return ("vertical_bootstrap", "polyline_bootstrap", "short_line_bootstrap")
     return ("short_line_bootstrap", "vertical_bootstrap", "polyline_bootstrap", "hover_bootstrap")
@@ -2330,6 +2827,13 @@ def _stage_proposal_metadata(stage: LLMCurriculumStage) -> dict[str, Any]:
         "accepted_stage_task_shape": stage.accepted_stage_task_shape,
         "duplicate_task_rejected": stage.duplicate_task_rejected,
         "duplicate_task_repair_reason": stage.duplicate_task_repair_reason,
+        "proposal_repaired": stage.proposal_repaired,
+        "proposal_repair_reason": stage.proposal_repair_reason,
+        "proposal_original_distribution_id": stage.proposal_original_distribution_id,
+        "proposal_final_distribution_id": stage.proposal_final_distribution_id,
+        "proposal_progression_rule_applied": stage.proposal_progression_rule_applied,
+        "hover_vertical_loop_detected": stage.hover_vertical_loop_detected,
+        "stage_progression_bucket": stage.stage_progression_bucket,
         "fallback_task_shape": stage.fallback_task_shape,
     }
 
@@ -2505,11 +3009,16 @@ def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metr
     allowed_families = [
         family for family in envs.task_distribution.supported_task_families() if family != envs.task_distribution.FAMILY_BASIC_TRAINING_SHOW
     ]
+    coverage_summary = _curriculum_coverage_summary(stage_entries)
     return {
         "completed_stage_count": len(stage_entries),
         "previous_stage_task_family": _accepted_stage_family(stage_entries[-1]) if stage_entries else None,
         "previous_stage_task_shape": stage_entries[-1].get("task_shape") if stage_entries else None,
         "accepted_task_family_counts": family_counts,
+        "progression_coverage_summary": coverage_summary,
+        "stage_progression_bucket_counts": coverage_summary["bucket_counts"],
+        "hover_vertical_loop_detected": coverage_summary["hover_vertical_loop_detected"],
+        "progression_score": coverage_summary["progression_score"],
         "last_accepted_task_family": _accepted_stage_family(stage_entries[-1]) if stage_entries else None,
         "position_error_trend": trend,
         "trend_status": trend,
@@ -2536,8 +3045,11 @@ def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metr
             "prefer_metrics_over_readiness_label": True,
             "do_not_overreact_to_single_failure_mode": True,
             "prefer_targeted_skill_training_over_default_hover": True,
+            "hover_and_vertical_are_early_or_recovery_tools_only": True,
+            "after_vertical_altitude_gaps_prefer_angled_delayed_or_multi_height_paths": True,
+            "avoid_hover_vertical_loops": True,
             "action_saturation": "treat_as_task_difficulty_signal_unless_crash_or_divergence_confirms_instability",
-            "z_instability": "consider_controlled_vertical_takeoff_or_altitude_hold_unless_repeated_control_divergence_confirms_instability",
+            "z_instability": "pure_vertical_only_for_early_or_recovery_then_angled_delayed_or_multi_height",
             "xy_tracking": "consider_shorter_slower_line_or_start_hold_then_line",
             "turn_following": "consider_slow_l_shape_or_polyline",
             "curvature_following": "consider_gentle_ellipse_or_slow_circle_before_figure_eight",
@@ -2698,6 +3210,13 @@ def _metrics_summary_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "accepted_stage_task_shape",
         "duplicate_task_rejected",
         "duplicate_task_repair_reason",
+        "proposal_repaired",
+        "proposal_repair_reason",
+        "proposal_original_distribution_id",
+        "proposal_final_distribution_id",
+        "proposal_progression_rule_applied",
+        "hover_vertical_loop_detected",
+        "stage_progression_bucket",
         "fallback_task_shape",
         "task_distribution_mode",
         "task_distribution_strength",

@@ -33,7 +33,7 @@ def _base_line_task() -> dict[str, object]:
         "duration_sec": 4.0,
         "sample_rate_hz": 10.0,
         "start_hold_enabled": True,
-        "start_hold_sec": 2.0,
+        "start_hold_sec": 1.0,
         "exclude_start_hold_from_tracking_metrics": True,
         "start": [0.0, 0.0, 1.0],
         "end": [0.5, 0.0, 1.0],
@@ -58,7 +58,7 @@ def _settings(**overrides: object) -> envs.task_distribution.TaskDistributionSet
                 "length_range_m": [0.25, 0.7],
                 "z_range_m": [0.9, 1.1],
                 "duration_range_sec": [4.0, 7.0],
-                "start_hold_range_sec": [2.0, 2.0],
+                "start_hold_range_sec": [1.0, 1.0],
             }
         },
     }
@@ -180,7 +180,7 @@ def test_basic_training_show_distribution_samples_bounded_episode_variation() ->
     ]
     assert first["meaningful_figure_count"] == 8
     assert first["start_hold_enabled"] is True
-    assert first["start_hold_sec"] == pytest.approx(2.0)
+    assert first["start_hold_sec"] == pytest.approx(1.0)
     assert first["exclude_start_hold_from_tracking_metrics"] is True
     assert first["final_hold_enabled"] is True
     assert 0.8 <= first["final_hold_sec"] <= 1.2
@@ -193,7 +193,7 @@ def test_basic_training_show_distribution_samples_bounded_episode_variation() ->
     assert validation.tasks.validate_task(second, limits=settings.validation_limits).is_valid
 
 
-def _assert_start_hold_policy(task: dict[str, object], *, expected_sec: float = 2.0) -> None:
+def _assert_start_hold_policy(task: dict[str, object], *, expected_sec: float = 1.0) -> None:
     """Assert a task uses the active uniform start-hold metric policy."""
     assert task["start_hold_enabled"] is True
     assert float(task["start_hold_sec"]) == pytest.approx(expected_sec)
@@ -226,7 +226,7 @@ def _assert_standard_height_policy(task: dict[str, object]) -> None:
     assert "lower_start_height_enabled" not in task
     assert task.get("standard_reference_height_enabled") is True
     assert task.get("start_height_policy") == "standard_reference_1p0m"
-    assert task.get("start_hold_reward_policy") == "full_tracking_reward_active_during_uniform_start_hold"
+    assert task.get("start_hold_reward_policy") == "full_tracking_reward_active_during_uniform_reference_start_hold"
     assert task.get("tracking_reward_starts_after_start_hold") is False
     start_z = _initial_task_z(task)
     assert start_z is not None
@@ -284,7 +284,7 @@ def test_active_curriculum_configs_use_uniform_stage_start_hold_policy() -> None
                 for key in ("start_hold_sec", "hold_duration_sec"):
                     value = bounds.get(key)
                     if isinstance(value, list):
-                        assert value == [2.0, 2.0]
+                        assert value == [1.0, 1.0]
 
 
 def test_altitude_control_families_are_supported_and_registered() -> None:

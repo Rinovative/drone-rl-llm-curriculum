@@ -6,7 +6,7 @@ Define explicit action-interface contracts for trajectory-tracking environments.
 
 Responsibilities:
   - Provide canonical action-interface names used by configs and metadata
-  - Validate direct-RPM scaling and observation-extension parameters before environments are constructed
+  - Validate direct-RPM scaling, PID z target bounds, and observation-extension parameters
   - Keep action-interface semantics independent from PPO and curriculum code
 
 Design principles:
@@ -48,6 +48,10 @@ class ActionInterface(str, Enum):
 DEFAULT_ACTION_INTERFACE = ActionInterface.PID_POSITION
 DEFAULT_RPM_DELTA_SCALE = 0.05
 MAX_SAFE_RPM_DELTA_SCALE = 0.5
+DEFAULT_PID_TARGET_Z_MIN_M = 0.2
+DEFAULT_PID_TARGET_Z_MAX_M = 1.5
+MIN_SAFE_PID_TARGET_Z_MIN_M = 0.0
+MAX_SAFE_PID_TARGET_Z_MAX_M = 2.0
 DEFAULT_INCLUDE_DYNAMICS_OBSERVATION = False
 DEFAULT_INCLUDE_PREVIOUS_ACTION = False
 DIRECT_RPM_LIMITATIONS = (
@@ -67,6 +71,10 @@ class ActionInterfaceConfig:
         Canonical interface name. Supported values are ``pid_position`` and ``direct_rpm``.
     rpm_delta_scale
         Fractional per-motor RPM delta around hover used by ``direct_rpm``.
+    pid_target_z_min_m
+        Minimum PID z target in meters used by ``pid_position``.
+    pid_target_z_max_m
+        Maximum PID z target in meters used by ``pid_position``.
     include_dynamics_observation
         Whether tracking observations append velocity, attitude, and angular velocity.
     include_previous_action
@@ -76,6 +84,8 @@ class ActionInterfaceConfig:
 
     action_interface: ActionInterface | str = DEFAULT_ACTION_INTERFACE
     rpm_delta_scale: float = DEFAULT_RPM_DELTA_SCALE
+    pid_target_z_min_m: float = DEFAULT_PID_TARGET_Z_MIN_M
+    pid_target_z_max_m: float = DEFAULT_PID_TARGET_Z_MAX_M
     include_dynamics_observation: bool = DEFAULT_INCLUDE_DYNAMICS_OBSERVATION
     include_previous_action: bool = DEFAULT_INCLUDE_PREVIOUS_ACTION
 
@@ -83,6 +93,9 @@ class ActionInterfaceConfig:
         """Normalize and validate action-interface settings."""
         object.__setattr__(self, "action_interface", parse_action_interface(self.action_interface))
         object.__setattr__(self, "rpm_delta_scale", validate_rpm_delta_scale(self.rpm_delta_scale))
+        z_min, z_max = validate_pid_target_z_bounds(self.pid_target_z_min_m, self.pid_target_z_max_m)
+        object.__setattr__(self, "pid_target_z_min_m", z_min)
+        object.__setattr__(self, "pid_target_z_max_m", z_max)
         if not isinstance(self.include_dynamics_observation, bool):
             message = "include_dynamics_observation must be a boolean"
             raise TypeError(message)
@@ -105,6 +118,8 @@ class ActionInterfaceConfig:
         return {
             "action_interface": self.parsed_action_interface.value,
             "rpm_delta_scale": self.rpm_delta_scale,
+            "pid_target_z_min_m": self.pid_target_z_min_m,
+            "pid_target_z_max_m": self.pid_target_z_max_m,
             "include_dynamics_observation": self.include_dynamics_observation,
             "include_previous_action": self.include_previous_action,
         }
@@ -183,6 +198,49 @@ def validate_rpm_delta_scale(value: Any) -> float:
     return resolved
 
 
+def validate_pid_target_z_bounds(min_value: Any, max_value: Any) -> tuple[float, float]:
+    """
+    Validate configurable PID target-position z bounds.
+
+    Parameters
+    ----------
+    min_value
+        Minimum allowed PID z target in meters.
+    max_value
+        Maximum allowed PID z target in meters.
+
+    Returns
+    -------
+    tuple[float, float]
+        Validated ``(min_z_m, max_z_m)`` pair.
+
+    Raises
+    ------
+    ValueError
+        If either bound is non-finite, unsafe, or the maximum is not above the minimum.
+
+    """
+    try:
+        z_min = float(min_value)
+        z_max = float(max_value)
+    except (TypeError, ValueError) as exc:
+        message = "pid target z bounds must be finite numbers"
+        raise ValueError(message) from exc
+    if not isfinite(z_min) or not isfinite(z_max):
+        message = "pid target z bounds must be finite numbers"
+        raise ValueError(message)
+    if z_min < MIN_SAFE_PID_TARGET_Z_MIN_M:
+        message = f"pid_target_z_min_m must be greater than or equal to {MIN_SAFE_PID_TARGET_Z_MIN_M:g}"
+        raise ValueError(message)
+    if z_max > MAX_SAFE_PID_TARGET_Z_MAX_M:
+        message = f"pid_target_z_max_m must be less than or equal to {MAX_SAFE_PID_TARGET_Z_MAX_M:g}"
+        raise ValueError(message)
+    if z_max <= z_min:
+        message = "pid_target_z_max_m must be greater than pid_target_z_min_m"
+        raise ValueError(message)
+    return z_min, z_max
+
+
 def direct_control_limitations(action_interface: ActionInterface | str) -> list[str]:
     """Return human-readable limitations for experimental direct-control interfaces."""
     if parse_action_interface(action_interface) == ActionInterface.DIRECT_RPM:
@@ -194,12 +252,17 @@ __all__ = [
     "DEFAULT_ACTION_INTERFACE",
     "DEFAULT_INCLUDE_DYNAMICS_OBSERVATION",
     "DEFAULT_INCLUDE_PREVIOUS_ACTION",
+    "DEFAULT_PID_TARGET_Z_MAX_M",
+    "DEFAULT_PID_TARGET_Z_MIN_M",
     "DEFAULT_RPM_DELTA_SCALE",
     "DIRECT_RPM_LIMITATIONS",
+    "MAX_SAFE_PID_TARGET_Z_MAX_M",
+    "MIN_SAFE_PID_TARGET_Z_MIN_M",
     "ActionInterface",
     "ActionInterfaceConfig",
     "action_interface_values",
     "direct_control_limitations",
     "parse_action_interface",
+    "validate_pid_target_z_bounds",
     "validate_rpm_delta_scale",
 ]

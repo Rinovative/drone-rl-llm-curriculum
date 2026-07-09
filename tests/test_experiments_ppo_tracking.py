@@ -43,6 +43,8 @@ DIRECT_RPM_DYNAMICS_PREVIOUS_OBSERVATION_DIM = 23
 PID_ACTION_DIM = 3
 DIRECT_RPM_ACTION_DIM = 4
 DIRECT_RPM_DELTA_SCALE = 0.05
+EXPECTED_PID_TARGET_Z_MIN_M = 0.2
+EXPECTED_PID_TARGET_Z_MAX_M = 1.5
 POLICY_NET_ARCH = [128, 128]
 STRICT_TEST_LIMIT_VIOLATIONS = 2
 ACTIVE_DEFAULT_RUN_NAME = "direct_ppo_pid_dynprev_m-taskdist_medium_seed0"
@@ -882,8 +884,11 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
         seed: int,
         action_interface: str = "pid_position",
         rpm_delta_scale: float = 0.05,
+        pid_target_z_min_m: float = EXPECTED_PID_TARGET_Z_MIN_M,
+        pid_target_z_max_m: float = EXPECTED_PID_TARGET_Z_MAX_M,
         include_dynamics_observation: bool = False,
         include_previous_action: bool = False,
+        initial_state: object | None = None,
         termination_limits: object | None = None,
         diagnostic_limits: object | None = None,
     ) -> object:
@@ -892,8 +897,11 @@ def test_ppo_training_vec_env_uses_dummy_vec_env_for_single_env(monkeypatch: pyt
         assert normalize_actions is True
         assert action_interface == "direct_rpm"
         assert rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
+        assert pid_target_z_min_m == EXPECTED_PID_TARGET_Z_MIN_M
+        assert pid_target_z_max_m == EXPECTED_PID_TARGET_Z_MAX_M
         assert include_dynamics_observation is True
         assert include_previous_action is True
+        assert initial_state is None
         assert termination_limits is None
         assert diagnostic_limits is None
         factory_seeds.append(seed)
@@ -966,8 +974,11 @@ def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.Mo
         seed: int,
         action_interface: str = "pid_position",
         rpm_delta_scale: float = 0.05,
+        pid_target_z_min_m: float = EXPECTED_PID_TARGET_Z_MIN_M,
+        pid_target_z_max_m: float = EXPECTED_PID_TARGET_Z_MAX_M,
         include_dynamics_observation: bool = False,
         include_previous_action: bool = False,
+        initial_state: object | None = None,
         termination_limits: object | None = None,
         diagnostic_limits: object | None = None,
     ) -> object:
@@ -976,8 +987,11 @@ def test_ppo_training_vec_env_uses_subproc_vec_env_lazily(monkeypatch: pytest.Mo
         assert normalize_actions is False
         assert action_interface == "pid_position"
         assert rpm_delta_scale == DIRECT_RPM_DELTA_SCALE
+        assert pid_target_z_min_m == EXPECTED_PID_TARGET_Z_MIN_M
+        assert pid_target_z_max_m == EXPECTED_PID_TARGET_Z_MAX_M
         assert include_dynamics_observation is False
         assert include_previous_action is False
+        assert initial_state is None
         assert termination_limits is None
         assert diagnostic_limits is None
         factory_seeds.append(seed)

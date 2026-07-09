@@ -29,6 +29,8 @@ Current direct PPO configs are:
 
 Net128 is the default architecture for normal runs. Net256 appears only as the paired architecture comparison. Net512 and the old no-dynamics PID baseline are not scheduled.
 
+For `pid_position`, PPO still sees normalized actions in [-1, 1]. Action dim 2 is a normalized PID z target, with active PID configs using `pid_target_z_min_m: 0.2` and `pid_target_z_max_m: 1.5` so altitude-changing references above 1.0 m remain reachable with margin. For `direct_rpm`, action dim 2 remains motor 2 command; PID z reachability metadata is not part of the direct-RPM action semantics.
+
 Manual and LLM curriculum lane configs live in `configs/curricula/`:
 
 - `curriculum_pid_dynprev_m-taskdist_medium.yaml`
@@ -36,7 +38,9 @@ Manual and LLM curriculum lane configs live in `configs/curricula/`:
 - `llm_curriculum_pid_dynprev_m-taskdist_medium.yaml`
 - `llm_curriculum_directrpm_dynprev_m-taskdist_medium.yaml`
 
-Manual curriculum uses five focused stage distributions: hover, vertical, start-hold short line, polyline/L-shape, and tracking medium. LLM curriculum uses the hover bootstrap distribution for Stage 1, then accepts only validated bounded task distributions for later stages.
+Manual curriculum uses five focused stage distributions: hover, vertical, start-hold short line, polyline/L-shape, and tracking medium. The pure vertical stage is an early altitude-control diagnostic/training step, then the manual sequence moves into XY and turn-following stages.
+
+LLM curriculum uses the hover bootstrap distribution for Stage 1, then accepts only validated bounded task distributions for later stages. Progression roles are explicit: hover and pure vertical are bootstrap/recovery only, short-line/line tasks are early XY progression, angled-vertical/delayed-altitude/multi-height tasks combine XY and z, polyline/zigzag/triangle/rectangle tasks cover turns, circle/ellipse tasks cover gentle curvature, `tracking_small` is fallback/consolidation, and `tracking_medium` is late/final broad coverage. Deterministic proposal repair prevents hover/vertical loops, repeated related families, and early broad proposals; stage summaries record `proposal_repaired`, `proposal_repair_reason`, original/final distribution IDs, the applied progression rule, `hover_vertical_loop_detected`, and `stage_progression_bucket`.
 
 ## Task Sources
 
@@ -66,12 +70,17 @@ Curriculum and LLM support uses:
 - `task_distribution_multi_height_polyline_bootstrap_medium.yaml`
 - `task_distribution_triangle_bootstrap_medium.yaml`
 - `task_distribution_zigzag_bootstrap_medium.yaml`
+- `task_distribution_rectangle_bootstrap_medium.yaml`
+- `task_distribution_circle_bootstrap_medium.yaml`
+- `task_distribution_ellipse_bootstrap_medium.yaml`
 
 `task_distribution_hover_small.yaml`, `task_distribution_line_small.yaml`, `task_distribution_tracking_small.yaml`, and `task_distribution_tracking_broad.yaml` are retained as tested LLM-schema/compatibility support. They are not scheduled by the 18-experiment matrix.
 
-Active training, curriculum, representative, generalization, and scenario/show references use the standard base reference height around z=1.0 m. Level tasks use fixed z=1.0 or sampled base_z_range_m [0.9, 1.1], while altitude-control tasks stay anchored near 1.0 m and may climb or descend within validation limits. All active categories use start_hold_sec: 2.0 with start holds excluded from tracking metrics, and the held point remains the first moving tracking point so no reference discontinuity is introduced.
+Active training, curriculum, representative, generalization, and scenario/show references use the standard base reference height around z=1.0 m. Level tasks use fixed z=1.0 or sampled base_z_range_m [0.9, 1.1], while altitude-control tasks stay anchored near 1.0 m and may climb or descend within validation limits. All active categories use start_hold_sec: 1.0 with start holds excluded from tracking metrics, and the held point remains the first moving tracking point so no reference discontinuity is introduced.
 
-The tracking reward is not masked during start hold. Task metadata records `start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold` and `tracking_reward_starts_after_start_hold: false`. Later altitude learning remains active through takeoff/vertical tasks, vertical up/down, angled climb/descent, delayed-altitude polylines, and multi-height polylines.
+Active PPO training configs set `initial_state.mode: reference_start`, so `TrajectoryTrackingEnv` passes the first reference position as `HoverAviary.initial_xyzs` and refreshes `base_env.INIT_XYZS` after each sampled task-distribution reset. Manifests and traces record `initial_state_mode`, requested and actual initial XYZ, the initial reference XYZ, and spawn/reference error fields so any return to near-ground default spawning is visible.
+
+The tracking reward is not masked during start hold. Task metadata records `start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold` and `tracking_reward_starts_after_start_hold: false`. Later altitude learning remains active through takeoff/vertical tasks, vertical up/down, angled climb/descent, delayed-altitude polylines, and multi-height polylines.
 
 Where validation margins allowed it, line, polyline, zigzag, triangle, rectangle, square, circle, ellipse, figure-eight, multi-height, and show paths were enlarged moderately and durations were raised with the geometry so reference speeds remain conservative. The basic and standard shows now begin with easier horizontal/diagonal XY motion; vertical or altitude-changing movement appears later after the start/settle hold and at least one easier moving segment.
 
@@ -119,7 +128,9 @@ Run and stage manifests distinguish training source from representative source w
 - `training_task_distribution_snapshot`
 - `representative_eval_task_snapshot`
 
-Scenario evaluation reconstructs the environment from the direct run manifest or the final curriculum stage manifest, preserves trained action and observation settings, swaps only the scenario reference, and records model/env observation-space diagnostics before policy rollout.
+Scenario evaluation reconstructs the environment from the direct run manifest or the final curriculum stage manifest, preserves trained action and observation settings including PID z target bounds, swaps only the scenario reference, and records model/env observation-space diagnostics before policy rollout.
+
+PID-position manifests, traces, and diagnostics record z reachability fields such as `pid_target_z_min_m`, `pid_target_z_max_m`, `real_pid_z_target_low`, `real_pid_z_target_high`, `reference_z_min`, `reference_z_max`, `reference_z_reachable_by_pid_position`, and z margin values. Action saturation should be interpreted together with these fields: unreachable z references are action-space/configuration issues, while saturated action_2 with a reachable reference is a policy/control signal.
 
 Direct PPO runs own their detailed evaluation tree at `storage/runs/<direct_run>/evaluations/`. Curriculum runs own detailed own-task, generalization, and scenario outputs inside the relevant `stages/stageXX_<name>/evaluations/` folder. The curriculum root keeps only manifests, compact summaries, and pointers such as `final_stage_evaluation_path`; root-level duplicate `evaluations/own_task`, `evaluations/generalization`, or `evaluations/scenarios` trees are not the source of truth.
 

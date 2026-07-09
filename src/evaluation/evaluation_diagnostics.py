@@ -43,6 +43,7 @@ CURRICULUM_FEEDBACK_FILENAME = "curriculum_feedback.json"
 
 POSITION_DIMENSIONS = 3
 ROLL_PITCH_DIMENSIONS = 2
+Z_AXIS_INDEX = 2
 ARRAY_BOUNDS_MAX_NDIM = 2
 ACTION_SATURATION_TOLERANCE = 1.0e-6
 TARGET_BOUNDARY_ACTION_TOLERANCE_M = 1.0e-6
@@ -84,6 +85,40 @@ FAILURE_REFERENCE_TOO_HARD = "reference_too_fast_or_too_hard"
 FAILURE_NONE = "no_failure_detected"
 DIAGNOSTIC_EXPECTED_TARGET_BOUNDARY_ACTION = "expected_target_boundary_action"
 ACTION_AXIS_NAMES = ("x", "y", "z")
+PID_Z_REACHABILITY_KEYS = (
+    "pid_target_z_min_m",
+    "pid_target_z_max_m",
+    "base_pid_z_target_low",
+    "base_pid_z_target_high",
+    "real_pid_z_target_low",
+    "real_pid_z_target_high",
+    "reference_z_min",
+    "reference_z_max",
+    "reference_z_reachable_by_pid_position",
+    "z_reference_above_pid_high_margin",
+    "z_reference_below_pid_low_margin",
+    "pid_z_action_space_expanded",
+    "pid_z_action_space_changed",
+    "real_pid_z_target_for_normalized_action2_minus1",
+    "real_pid_z_target_for_normalized_action2_zero",
+    "real_pid_z_target_for_normalized_action2_plus1",
+    "normalized_action2_real_z_targets",
+)
+INITIAL_STATE_KEYS = (
+    "initial_state_mode",
+    "initial_state",
+    "initial_xyz",
+    "requested_initial_xyz",
+    "actual_initial_xyz",
+    "initial_xyz_source",
+    "initial_xyz_offset",
+    "initial_reference_xyz",
+    "initial_xyz_matches_reference_start",
+    "initial_position_error_m",
+    "initial_z_error_m",
+    "initial_z_error_signed_m",
+    "spawned_at_reference_start",
+)
 SKILL_ALTITUDE_CONTROL = "altitude_control"
 SKILL_XY_TRACKING = "xy_tracking"
 SKILL_SPEED_CONTROL = "speed_control"
@@ -622,6 +657,8 @@ def _make_trace_record(
         "direct_control_limitations": list(info.get("direct_control_limitations", [])),
         "real_action_space_low": _array_to_jsonable(info.get("real_action_space_low", [])),
         "real_action_space_high": _array_to_jsonable(info.get("real_action_space_high", [])),
+        **_pid_z_metadata_fields(info),
+        **_initial_state_metadata_fields(info),
         "last_action": _array_to_jsonable(info.get("last_action", [])),
         "reward": float(reward),
         "terminated": bool(terminated),
@@ -690,12 +727,14 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
     errors = np.asarray([_float(record.get("position_error_m")) for record in records], dtype=float)
     tracking_errors = np.asarray([_float(record.get("position_error_m")) for record in _tracking_metric_records(records)], dtype=float)
     axis_errors = np.abs(positions - references)
+    real_action_space = _real_action_space_from_records(records, fallback_action_space=action_space)
     action_metrics = _action_distribution_metrics(_array_field(records, "action"), action_space)
     real_action_metrics = _prefixed_action_distribution_metrics(
         _array_field(records, "real_action"),
-        _real_action_space_from_records(records, fallback_action_space=action_space),
+        real_action_space,
         prefix="real_action",
     )
+    action_audit_metrics = _action_audit_metrics(records=records, action_space=action_space, real_action_space=real_action_space)
     position_bounds = _position_bounds(positions)
     reference_bounds = _position_bounds(references)
     actual_xy_span_m = _xy_span(position_bounds)
@@ -716,6 +755,7 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
         "final_position_error_m": float(errors[-1]),
         "max_position_error_m": float(np.max(errors)),
         **_start_hold_summary(records),
+        **_initial_state_summary(records),
         "mean_abs_x_error_m": float(np.mean(axis_errors[:, 0])),
         "mean_abs_y_error_m": float(np.mean(axis_errors[:, 1])),
         "mean_abs_z_error_m": float(np.mean(axis_errors[:, 2])),
@@ -727,6 +767,7 @@ def _summarize_episode(records: Sequence[Mapping[str, Any]], action_space: Any) 
         "xy_tracking_ratio": _xy_tracking_ratio(actual_xy_span_m, reference_xy_span_m),
         **action_metrics,
         **real_action_metrics,
+        **action_audit_metrics,
         "z_min": _axis_min(position_bounds, axis=2),
         "z_max": _axis_max(position_bounds, axis=2),
         "max_abs_roll_pitch_rad": float(np.max(np.abs(roll_pitch))) if roll_pitch.size else 0.0,
@@ -769,6 +810,7 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         action_space=action_space,
         real_action_space=real_action_space,
     )
+    action_audit_metrics = _action_audit_metrics(records=records, action_space=action_space, real_action_space=real_action_space)
     roll_pitch = _array_field(records, "roll_pitch_yaw", min_width=ROLL_PITCH_DIMENSIONS)[:, :ROLL_PITCH_DIMENSIONS]
     velocities = _array_field(records, "velocity")[:, :POSITION_DIMENSIONS]
     angular_velocities = _array_field(records, "angular_velocity")[:, :POSITION_DIMENSIONS]
@@ -781,6 +823,7 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         "final_position_error_m": float(errors[-1]),
         "max_position_error_m": float(np.max(errors)),
         **_start_hold_summary(records),
+        **_initial_state_summary(records),
         "position_bounds": position_bounds,
         "reference_position_bounds": reference_bounds,
         "action_bounds": _position_bounds(_array_field(records, "action")),
@@ -823,6 +866,7 @@ def _overall_metrics(records: Sequence[Mapping[str, Any]], episode_summaries: Se
         **action_metrics,
         **real_action_metrics,
         **action_boundary_metrics,
+        **action_audit_metrics,
     }
 
 
@@ -839,6 +883,8 @@ def _trace_action_metadata(records: Sequence[Mapping[str, Any]]) -> dict[str, An
         "observation_components": [dict(component) for component in first.get("observation_components", [])],
         "direct_control_limitations": list(first.get("direct_control_limitations", [])),
     }
+    metadata.update(_pid_z_metadata_fields(first))
+    metadata.update(_initial_state_metadata_fields(first))
     for key in ("hover_rpm", "rpm_delta_scale", "rpm_min", "rpm_max", "rpm_command_space_low", "rpm_command_space_high"):
         value = first.get(key)
         if value is not None and value != []:
@@ -853,8 +899,222 @@ def _trace_action_metadata(records: Sequence[Mapping[str, Any]]) -> dict[str, An
             saturation_rows.append(saturation)
     if saturation_rows:
         saturation_array = np.vstack(saturation_rows)
-        metadata["direct_rpm_saturation_fraction"] = [float(value) for value in np.mean(saturation_array, axis=0)]
+        saturation_fraction = [float(value) for value in np.mean(saturation_array, axis=0)]
+        metadata["direct_rpm_saturation_fraction"] = saturation_fraction
+        metadata["rpm_saturation_fraction_by_motor"] = saturation_fraction
     return metadata
+
+
+def _action_audit_metrics(records: Sequence[Mapping[str, Any]], action_space: Any, real_action_space: Any) -> dict[str, Any]:
+    """Return action metrics used to audit PID z-target and direct-RPM saturation."""
+    action_values = _array_field(records, "action")
+    real_action_values = _array_field(records, "real_action")
+    action_distribution = _action_distribution_metrics(action_values, action_space)
+    real_action_distribution = _prefixed_action_distribution_metrics(real_action_values, real_action_space, prefix="real_action")
+    metrics: dict[str, Any] = {
+        "action_mean_by_dim": action_distribution["action_mean"],
+        "action_min_by_dim": action_distribution["action_min"],
+        "action_max_by_dim": action_distribution["action_max"],
+        "action_p95_by_dim": action_distribution["action_p95"],
+        "action_saturation_fraction_by_dim": action_distribution["action_saturation_fraction"],
+        "action_upper_saturation_fraction_by_dim": action_distribution["action_upper_saturation_fraction"],
+        "action_lower_saturation_fraction_by_dim": action_distribution["action_lower_saturation_fraction"],
+        "normalized_action_mean_by_dim": action_distribution["action_mean"],
+        "normalized_action_min_by_dim": action_distribution["action_min"],
+        "normalized_action_max_by_dim": action_distribution["action_max"],
+        "normalized_action_p95_by_dim": action_distribution["action_p95"],
+        "normalized_action_saturation_fraction_by_dim": action_distribution["action_saturation_fraction"],
+        "normalized_action_upper_saturation_fraction_by_dim": action_distribution["action_upper_saturation_fraction"],
+        "normalized_action_lower_saturation_fraction_by_dim": action_distribution["action_lower_saturation_fraction"],
+        "real_action_mean_by_dim": real_action_distribution["real_action_mean"],
+        "real_action_min_by_dim": real_action_distribution["real_action_min"],
+        "real_action_max_by_dim": real_action_distribution["real_action_max"],
+        "real_action_p95_by_dim": real_action_distribution["real_action_p95"],
+        "real_action_saturation_fraction_by_dim": real_action_distribution["real_action_saturation_fraction"],
+        "real_action_upper_saturation_fraction_by_dim": real_action_distribution["real_action_upper_saturation_fraction"],
+        "real_action_lower_saturation_fraction_by_dim": real_action_distribution["real_action_lower_saturation_fraction"],
+        **_phase_action_saturation_metrics(records=records, actions=action_values, action_space=action_space),
+    }
+    metrics.update(
+        _pid_z_action_metrics(records=records, action_values=action_values, real_action_values=real_action_values, action_space=action_space)
+    )
+    metrics.update(_direct_rpm_action_metrics(records=records, real_action_values=real_action_values, real_action_space=real_action_space))
+    return metrics
+
+
+def _phase_action_saturation_metrics(records: Sequence[Mapping[str, Any]], actions: np.ndarray, action_space: Any) -> dict[str, list[float]]:
+    """Return PPO-facing saturation fractions split by rollout phase."""
+    return {
+        "action_saturation_fraction_start_hold_by_dim": _masked_saturation_fraction(actions, action_space, _phase_mask(records, "start_hold")),
+        "action_saturation_fraction_tracking_by_dim": _masked_saturation_fraction(actions, action_space, _phase_mask(records, "tracking")),
+        "action_saturation_fraction_final_hold_by_dim": _masked_saturation_fraction(actions, action_space, _phase_mask(records, "final_hold")),
+    }
+
+
+def _pid_z_action_metrics(
+    records: Sequence[Mapping[str, Any]],
+    action_values: np.ndarray,
+    real_action_values: np.ndarray,
+    action_space: Any,
+) -> dict[str, Any]:
+    """Return PID z-target diagnostics for normalized action saturation audits."""
+    if not records:
+        return {}
+    first = records[0]
+    if str(first.get("action_interface", "")) != "pid_position" or str(first.get("real_action_type", "")) != "pid_target_position":
+        return {}
+    reachability_metrics = _pid_z_reachability_metrics(records)
+    if action_values.shape[1] <= Z_AXIS_INDEX or real_action_values.shape[1] <= Z_AXIS_INDEX:
+        return reachability_metrics
+    tracking_mask = _phase_mask(records, "tracking")
+    if not np.any(tracking_mask):
+        return reachability_metrics
+    positions = _array_field(records, "current_position")
+    references = _array_field(records, "reference_position")
+    velocities = _array_field(records, "velocity")
+    z_error = positions[tracking_mask, Z_AXIS_INDEX] - references[tracking_mask, Z_AXIS_INDEX]
+    z_error_abs = np.abs(z_error)
+    z_target_minus_reference = real_action_values[tracking_mask, Z_AXIS_INDEX] - references[tracking_mask, Z_AXIS_INDEX]
+    _, upper_fraction = _saturation_fraction_by_side(action_values[tracking_mask], action_space)
+    vertical_velocity = (
+        velocities[tracking_mask, Z_AXIS_INDEX] if velocities.shape[1] > Z_AXIS_INDEX else np.zeros(int(np.sum(tracking_mask)), dtype=float)
+    )
+    return {
+        **reachability_metrics,
+        "z_action_upper_saturation_fraction_tracking": _fraction_at(upper_fraction, Z_AXIS_INDEX),
+        "z_target_minus_reference_mean": float(np.mean(z_target_minus_reference)),
+        "z_target_minus_reference_p95": float(np.percentile(z_target_minus_reference, 95)),
+        "z_error_mean_tracking": float(np.mean(z_error_abs)),
+        "z_error_p95_tracking": float(np.percentile(z_error_abs, 95)),
+        "z_overshoot_fraction_tracking": float(np.mean(z_error > 0.0)),
+        "vertical_velocity_mean_tracking": float(np.mean(vertical_velocity)),
+        "vertical_velocity_p95_abs_tracking": float(np.percentile(np.abs(vertical_velocity), 95)),
+    }
+
+
+def _initial_state_metadata_fields(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Return initial-state fields present in a trace or metrics mapping."""
+    return {key: _json_ready(source[key]) for key in INITIAL_STATE_KEYS if key in source}
+
+
+def _pid_z_metadata_fields(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Return PID z reachability fields present in a trace or metrics mapping."""
+    return {key: _json_ready(source[key]) for key in PID_Z_REACHABILITY_KEYS if key in source}
+
+
+def _pid_z_reachability_metrics(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Return PID z reference reachability metrics from trace records."""
+    first = records[0]
+    references = _array_field(records, "reference_position")
+    reference_z = references[:, Z_AXIS_INDEX] if references.shape[1] > Z_AXIS_INDEX else np.asarray([], dtype=float)
+    reference_z_min = _first_numeric_field(records, "reference_z_min")
+    reference_z_max = _first_numeric_field(records, "reference_z_max")
+    if reference_z.size:
+        reference_z_min = float(np.min(reference_z)) if reference_z_min is None else min(reference_z_min, float(np.min(reference_z)))
+        reference_z_max = float(np.max(reference_z)) if reference_z_max is None else max(reference_z_max, float(np.max(reference_z)))
+    real_low_z = _first_numeric_field(records, "real_pid_z_target_low")
+    real_high_z = _first_numeric_field(records, "real_pid_z_target_high")
+    if real_low_z is None:
+        real_low_z = _record_space_axis_bound(first, "real_action_space_low", Z_AXIS_INDEX)
+    if real_high_z is None:
+        real_high_z = _record_space_axis_bound(first, "real_action_space_high", Z_AXIS_INDEX)
+    if real_low_z is None or real_high_z is None or reference_z_min is None or reference_z_max is None:
+        return _pid_z_metadata_fields(first)
+    above_margin = max(0.0, reference_z_max - real_high_z)
+    below_margin = max(0.0, real_low_z - reference_z_min)
+    metrics = _pid_z_metadata_fields(first)
+    metrics.update(
+        {
+            "real_pid_z_target_low": float(real_low_z),
+            "real_pid_z_target_high": float(real_high_z),
+            "reference_z_min": float(reference_z_min),
+            "reference_z_max": float(reference_z_max),
+            "reference_z_reachable_by_pid_position": bool(
+                above_margin <= TARGET_BOUNDARY_ACTION_TOLERANCE_M and below_margin <= TARGET_BOUNDARY_ACTION_TOLERANCE_M
+            ),
+            "z_reference_above_pid_high_margin": float(above_margin),
+            "z_reference_below_pid_low_margin": float(below_margin),
+        }
+    )
+    if "pid_target_z_min_m" not in metrics:
+        metrics["pid_target_z_min_m"] = float(real_low_z)
+    if "pid_target_z_max_m" not in metrics:
+        metrics["pid_target_z_max_m"] = float(real_high_z)
+    if "real_pid_z_target_for_normalized_action2_minus1" not in metrics:
+        metrics["real_pid_z_target_for_normalized_action2_minus1"] = float(real_low_z)
+    if "real_pid_z_target_for_normalized_action2_zero" not in metrics:
+        metrics["real_pid_z_target_for_normalized_action2_zero"] = float((real_low_z + real_high_z) / 2.0)
+    if "real_pid_z_target_for_normalized_action2_plus1" not in metrics:
+        metrics["real_pid_z_target_for_normalized_action2_plus1"] = float(real_high_z)
+    return metrics
+
+
+def _first_numeric_field(records: Sequence[Mapping[str, Any]], key: str) -> float | None:
+    """Return the first finite numeric trace field value."""
+    for record in records:
+        value = record.get(key)
+        if isinstance(value, (int, float)) and np.isfinite(float(value)):
+            return float(value)
+    return None
+
+
+def _record_space_axis_bound(record: Mapping[str, Any], key: str, axis: int) -> float | None:
+    """Return an action-space bound from one JSON-ready record."""
+    values = np.asarray(record.get(key, []), dtype=float).reshape(-1)
+    if values.size <= axis or not np.isfinite(values[axis]):
+        return None
+    return float(values[axis])
+
+
+def _direct_rpm_action_metrics(records: Sequence[Mapping[str, Any]], real_action_values: np.ndarray, real_action_space: Any) -> dict[str, Any]:
+    """Return direct-RPM motor-specific saturation and clipping diagnostics."""
+    if not records:
+        return {}
+    first = records[0]
+    if str(first.get("action_interface", "")) != "direct_rpm" or str(first.get("real_action_type", "")) != "motor_rpm":
+        return {}
+    lower_fraction, upper_fraction = _saturation_fraction_by_side(real_action_values, real_action_space)
+    saturation_fraction = _saturation_fraction(real_action_values, real_action_space)
+    clipped = np.asarray([bool(record.get("rpm_clipped", False)) for record in records], dtype=float)
+    metrics: dict[str, Any] = {
+        "rpm_saturation_fraction_by_motor": [float(value) for value in saturation_fraction],
+        "rpm_upper_saturation_fraction_by_motor": [float(value) for value in upper_fraction],
+        "rpm_lower_saturation_fraction_by_motor": [float(value) for value in lower_fraction],
+        "rpm_clipped_fraction": float(np.mean(clipped)) if clipped.size else 0.0,
+    }
+    saturation_rows = []
+    for record in records:
+        saturation = np.asarray(record.get("rpm_saturation_mask", []), dtype=float).reshape(-1)
+        if saturation.size:
+            saturation_rows.append(saturation)
+    if saturation_rows:
+        metrics["rpm_saturation_fraction_by_motor"] = [float(value) for value in np.mean(np.vstack(saturation_rows), axis=0)]
+    return metrics
+
+
+def _phase_mask(records: Sequence[Mapping[str, Any]], phase: str) -> np.ndarray:
+    """Return a boolean mask for start-hold, tracking, or final-hold trace rows."""
+    if phase == "start_hold":
+        return np.asarray([bool(record.get("is_start_hold", False)) for record in records], dtype=bool)
+    if phase == "final_hold":
+        return np.asarray([bool(record.get("is_final_hold", False)) for record in records], dtype=bool)
+    if phase == "tracking":
+        return np.asarray(
+            [
+                bool(record.get("is_tracking_phase", not bool(record.get("is_start_hold", False)) and not bool(record.get("is_final_hold", False))))
+                for record in records
+            ],
+            dtype=bool,
+        )
+    message = f"unsupported trace phase: {phase}"
+    raise ValueError(message)
+
+
+def _masked_saturation_fraction(actions: np.ndarray, action_space: Any, mask: np.ndarray) -> list[float]:
+    """Return per-dimension saturation for masked rows, or an empty list when the phase is absent."""
+    if actions.size == 0 or not np.any(mask):
+        return []
+    return [float(value) for value in _saturation_fraction(actions[mask], action_space)]
 
 
 def _action_saturation_diagnostics(records: Sequence[Mapping[str, Any]], action_space: Any, real_action_space: Any) -> dict[str, Any]:
@@ -990,16 +1250,39 @@ def _action_axis_name(dimension: int) -> str:
 
 def _saturation_fraction(actions: np.ndarray, action_space: Any) -> np.ndarray:
     """Return per-dimension fraction of actions that sit on their action-space bounds."""
-    if actions.size == 0:
-        return np.zeros(0, dtype=float)
-    action_array = np.asarray(actions, dtype=float).reshape(actions.shape[0], -1)
+    near_low, near_high = _saturation_masks(actions, action_space)
+    if near_low.shape[0] == 0:
+        return np.zeros(near_low.shape[1], dtype=float)
+    return np.mean(np.logical_or(near_low, near_high), axis=0)
+
+
+def _saturation_fraction_by_side(actions: np.ndarray, action_space: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Return lower-bound and upper-bound saturation fractions by action dimension."""
+    near_low, near_high = _saturation_masks(actions, action_space)
+    if near_low.shape[0] == 0:
+        return np.zeros(near_low.shape[1], dtype=float), np.zeros(near_high.shape[1], dtype=float)
+    return np.mean(near_low, axis=0), np.mean(near_high, axis=0)
+
+
+def _saturation_masks(actions: np.ndarray, action_space: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Return lower-bound and upper-bound saturation masks for an action array."""
+    action_input = np.asarray(actions, dtype=float)
+    if action_input.ndim == 1:
+        action_array = action_input.reshape(1, -1)
+    elif action_input.size == 0 and action_input.ndim == ARRAY_BOUNDS_MAX_NDIM:
+        action_array = action_input.reshape(0, action_input.shape[1])
+    elif action_input.size == 0:
+        action_array = np.zeros((0, 0), dtype=float)
+    else:
+        action_array = action_input.reshape(action_input.shape[0], -1)
     low = np.asarray(getattr(action_space, "low", []), dtype=float).reshape(-1)
     high = np.asarray(getattr(action_space, "high", []), dtype=float).reshape(-1)
     if low.size != action_array.shape[1] or high.size != action_array.shape[1]:
-        return np.zeros(action_array.shape[1], dtype=float)
+        zeros = np.zeros(action_array.shape, dtype=bool)
+        return zeros, zeros
     near_low = np.isclose(action_array, low, atol=ACTION_SATURATION_TOLERANCE, rtol=0.0)
     near_high = np.isclose(action_array, high, atol=ACTION_SATURATION_TOLERANCE, rtol=0.0)
-    return np.mean(np.logical_or(near_low, near_high), axis=0)
+    return near_low, near_high
 
 
 def _dimension_indices_at_threshold(fractions: np.ndarray) -> list[int]:
@@ -1104,6 +1387,13 @@ def _start_hold_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _initial_state_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Return initial-state metadata shared by one trace or episode."""
+    if not records:
+        return {}
+    return _initial_state_metadata_fields(records[0])
+
+
 def _prefixed_action_distribution_metrics(actions: np.ndarray, action_space: Any, prefix: str) -> dict[str, list[float]]:
     """Return action distribution metrics with a custom key prefix."""
     metrics = _action_distribution_metrics(actions, action_space)
@@ -1136,16 +1426,23 @@ def _action_distribution_metrics(actions: np.ndarray, action_space: Any) -> dict
             "action_std": [],
             "action_min": [],
             "action_max": [],
+            "action_p95": [],
             "action_saturation_fraction": [],
+            "action_upper_saturation_fraction": [],
+            "action_lower_saturation_fraction": [],
         }
     action_array = np.asarray(actions, dtype=float).reshape(actions.shape[0], -1)
+    lower_fraction, upper_fraction = _saturation_fraction_by_side(action_array, action_space)
     saturation_fraction = _saturation_fraction(action_array, action_space)
     return {
         "action_mean": [float(value) for value in np.mean(action_array, axis=0)],
         "action_std": [float(value) for value in np.std(action_array, axis=0)],
         "action_min": [float(value) for value in np.min(action_array, axis=0)],
         "action_max": [float(value) for value in np.max(action_array, axis=0)],
+        "action_p95": [float(value) for value in np.percentile(action_array, 95, axis=0)],
         "action_saturation_fraction": [float(value) for value in saturation_fraction],
+        "action_upper_saturation_fraction": [float(value) for value in upper_fraction],
+        "action_lower_saturation_fraction": [float(value) for value in lower_fraction],
     }
 
 
@@ -1295,6 +1592,7 @@ def _diagnostic_signal_counts(failure_modes: set[str], metrics: Mapping[str, Any
     max_action_saturation = max(action_saturations, default=0.0)
     attitude_value = _float(metrics.get("max_abs_roll_pitch_rad"))
     return {
+        "pid_z_unreachable_reference_count": int(_pid_reference_unreachable(metrics)),
         "z_instability_count": int(
             FAILURE_Z_INSTABILITY in failure_modes
             or _float(metrics.get("actual_z_span_m")) >= Z_INSTABILITY_SPAN_M
@@ -1319,7 +1617,7 @@ def _primary_skill_gaps(
 ) -> list[str]:
     """Map diagnostic signals to constructive curriculum skill gaps."""
     gaps: list[str] = []
-    if diagnostic_signals.get("z_instability_count", 0) > 0:
+    if diagnostic_signals.get("z_instability_count", 0) > 0 and diagnostic_signals.get("pid_z_unreachable_reference_count", 0) == 0:
         gaps.append(SKILL_ALTITUDE_CONTROL)
     if failure_modes & {FAILURE_HOVER_LOCK, FAILURE_INSUFFICIENT_XY_MOTION, FAILURE_OVERSHOOT} or _xy_tracking_weak(metrics):
         gaps.append(SKILL_XY_TRACKING)
@@ -1338,6 +1636,17 @@ def _primary_skill_gaps(
     }:
         gaps.append(SKILL_STABILITY_RECOVERY)
     return _dedupe(gaps)
+
+
+def _pid_reference_unreachable(metrics: Mapping[str, Any]) -> bool:
+    """Return whether diagnostics show a reference outside PID z target bounds."""
+    reachable = metrics.get("reference_z_reachable_by_pid_position")
+    if isinstance(reachable, bool):
+        return not reachable
+    return (
+        _float(metrics.get("z_reference_above_pid_high_margin")) > TARGET_BOUNDARY_ACTION_TOLERANCE_M
+        or _float(metrics.get("z_reference_below_pid_low_margin")) > TARGET_BOUNDARY_ACTION_TOLERANCE_M
+    )
 
 
 def _xy_tracking_weak(metrics: Mapping[str, Any]) -> bool:
@@ -1367,6 +1676,8 @@ def _has_policy_instability(*, failure_modes: set[str], metrics: Mapping[str, An
     if attitude_or_limits or repeated_crash_or_divergence:
         return True
     if FAILURE_Z_INSTABILITY not in failure_modes:
+        return False
+    if _pid_reference_unreachable(metrics):
         return False
     return _z_instability_severe(metrics) or trend_status == TREND_WORSENING
 
@@ -1412,6 +1723,19 @@ def _interpreted_failure_mode(
     """Return one interpreted failure-mode record."""
     evidence = _feedback_evidence(metrics)
     if mode == FAILURE_Z_INSTABILITY:
+        if _pid_reference_unreachable(metrics):
+            return _failure_mode_record(
+                name=mode,
+                severity="configuration",
+                interpretation=(
+                    "Reference altitude exceeds pid_position z target reachability; review action-space bounds "
+                    "before using another pure vertical recovery task."
+                ),
+                evidence=evidence,
+                is_policy_instability=False,
+                is_task_difficulty=False,
+                is_training_signal=False,
+            )
         is_instability = policy_instability and (_z_instability_severe(metrics) or trend_status == TREND_WORSENING)
         return _failure_mode_record(
             name=mode,
@@ -1422,6 +1746,19 @@ def _interpreted_failure_mode(
             is_task_difficulty=not is_instability,
         )
     if mode == FAILURE_ACTION_SATURATION:
+        if _pid_reference_unreachable(metrics):
+            return _failure_mode_record(
+                name=mode,
+                severity="configuration",
+                interpretation=(
+                    "PID z-target saturation is expected when the reference is outside configured pid_position z bounds; "
+                    "fix reachability before assigning policy blame."
+                ),
+                evidence=evidence,
+                is_policy_instability=False,
+                is_task_difficulty=False,
+                is_training_signal=False,
+            )
         tracking_ok = _tracking_acceptable(metrics)
         return _failure_mode_record(
             name=mode,
@@ -1492,6 +1829,7 @@ def _failure_mode_record(
     evidence: Mapping[str, Any],
     is_policy_instability: bool,
     is_task_difficulty: bool,
+    is_training_signal: bool = True,
 ) -> dict[str, Any]:
     """Return one JSON-serializable interpreted failure-mode record."""
     return {
@@ -1501,7 +1839,7 @@ def _failure_mode_record(
         "evidence": dict(evidence),
         "is_policy_instability": bool(is_policy_instability),
         "is_task_difficulty": bool(is_task_difficulty),
-        "is_training_signal": True,
+        "is_training_signal": bool(is_training_signal),
     }
 
 
@@ -1513,6 +1851,7 @@ def _feedback_evidence(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "actual_z_span_m": _float(metrics.get("actual_z_span_m")),
         "xy_tracking_ratio": metrics.get("xy_tracking_ratio"),
         "action_saturation_fraction": _float_list(metrics.get("action_saturation_fraction")),
+        **_pid_z_metadata_fields(metrics),
         "eval_terminated_count": _int(metrics.get("eval_terminated_count")),
         "eval_truncated_count": _int(metrics.get("eval_truncated_count")),
         "strict_limit_violation_count": _int(metrics.get("strict_limit_violation_count")),
@@ -1569,6 +1908,26 @@ def _recommended_next_task_families(
 ) -> list[dict[str, Any]]:
     """Return constructive next-task family recommendations."""
     recommendations: list[dict[str, Any]] = []
+    if _pid_reference_unreachable(metrics):
+        recommendations.extend(
+            [
+                _recommendation(
+                    FAMILY_START_HOLD_LINE,
+                    "Use reachable short XY tracking while PID z bounds are reviewed.",
+                    SKILL_XY_TRACKING,
+                    "low",
+                    1,
+                ),
+                _recommendation(
+                    FAMILY_LINE,
+                    "Continue bounded XY progression instead of repeating unreachable vertical references.",
+                    SKILL_XY_TRACKING,
+                    "low",
+                    2,
+                ),
+            ]
+        )
+        return _dedupe_recommendations(recommendations)
     if policy_instability:
         recommendations.extend(
             [
@@ -1812,6 +2171,13 @@ def _constraints_for_next_curriculum(
 ) -> list[dict[str, str]]:
     """Return structured next-curriculum constraints with reasons."""
     constraints: list[dict[str, str]] = []
+    if _pid_reference_unreachable(metrics):
+        constraints.append(
+            _constraint(
+                "review pid_position z target bounds before repeating vertical tasks",
+                "the reference z range is outside the configured PID target-position reachability",
+            )
+        )
     if policy_instability:
         constraints.append(
             _constraint("start with stabilization or very slow references", "control instability requires recovery before path complexity")

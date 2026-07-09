@@ -11,6 +11,13 @@ normalize_actions: true
 action_interface: direct_rpm
 include_dynamics_observation: true
 include_previous_action: true
+initial_state:
+  mode: reference_start
+  xyz: null
+  offset_xyz:
+  - 0.0
+  - 0.0
+  - 0.0
 termination_limits:
   mode: relaxed
 diagnostic_limits:

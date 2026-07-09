@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -146,8 +146,11 @@ class PolicyEvaluationSpec:
     normalize_actions: bool = True
     action_interface: str = "pid_position"
     rpm_delta_scale: float = 0.05
+    pid_target_z_min_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MIN_M
+    pid_target_z_max_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MAX_M
     include_dynamics_observation: bool = False
     include_previous_action: bool = False
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None
     source_manifest_path: Path | None = None
     evaluation_name: str | None = None
     evaluation_suite_name: str | None = None
@@ -190,6 +193,17 @@ class PolicyEvaluationSpec:
         if self.task_index < 0:
             message = "task_index must be nonnegative"
             raise ValueError(message)
+        object.__setattr__(self, "initial_state", envs.initial_state.parse_initial_state_config(self.initial_state))
+
+
+def _spec_initial_state(settings: PolicyEvaluationSpec) -> envs.initial_state.InitialStateConfig:
+    """Return the normalized initial-state config from an evaluation spec."""
+    return cast("envs.initial_state.InitialStateConfig", settings.initial_state)
+
+
+def _scenario_settings_initial_state(settings: scenario_render.ScenarioRenderSettings) -> envs.initial_state.InitialStateConfig:
+    """Return the normalized initial-state config from scenario render settings."""
+    return cast("envs.initial_state.InitialStateConfig", settings.initial_state)
 
 
 @dataclass(frozen=True)
@@ -270,8 +284,11 @@ class _ScenarioEvaluationEnvSettings:
     normalize_actions: bool
     action_interface: str
     rpm_delta_scale: float
+    pid_target_z_min_m: float
+    pid_target_z_max_m: float
     include_dynamics_observation: bool
     include_previous_action: bool
+    initial_state: envs.initial_state.InitialStateConfig
     source_manifest_path: Path | None
     training_config_path: Path | None
     final_stage_manifest_path: Path | None
@@ -383,6 +400,8 @@ def run_policy_evaluation(
         "source_manifest_path": None if spec.source_manifest_path is None else str(spec.source_manifest_path),
         "action_interface": spec.action_interface,
         "rpm_delta_scale": spec.rpm_delta_scale if spec.action_interface == "direct_rpm" else None,
+        "pid_target_z_min_m": spec.pid_target_z_min_m if spec.action_interface == "pid_position" else None,
+        "pid_target_z_max_m": spec.pid_target_z_max_m if spec.action_interface == "pid_position" else None,
         "normalize_actions": spec.normalize_actions,
         "include_dynamics_observation": spec.include_dynamics_observation,
         "include_previous_action": spec.include_previous_action,
@@ -633,8 +652,11 @@ def run_standard_scenario_evaluations(
     normalize_actions: bool | None = None,
     action_interface: str | None = None,
     rpm_delta_scale: float | None = None,
+    pid_target_z_min_m: float | None = None,
+    pid_target_z_max_m: float | None = None,
     include_dynamics_observation: bool | None = None,
     include_previous_action: bool | None = None,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     training_config_path: Path | None = None,
     final_stage_manifest_path: Path | None = None,
     output_root: Path | None = None,
@@ -649,8 +671,11 @@ def run_standard_scenario_evaluations(
         normalize_actions=normalize_actions,
         action_interface=action_interface,
         rpm_delta_scale=rpm_delta_scale,
+        pid_target_z_min_m=pid_target_z_min_m,
+        pid_target_z_max_m=pid_target_z_max_m,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        initial_state=initial_state,
         training_config_path=training_config_path,
         final_stage_manifest_path=final_stage_manifest_path,
     )
@@ -686,8 +711,11 @@ def run_standard_scenario_evaluations(
             normalize_actions=env_settings.normalize_actions,
             action_interface=env_settings.action_interface,
             rpm_delta_scale=env_settings.rpm_delta_scale,
+            pid_target_z_min_m=env_settings.pid_target_z_min_m,
+            pid_target_z_max_m=env_settings.pid_target_z_max_m,
             include_dynamics_observation=env_settings.include_dynamics_observation,
             include_previous_action=env_settings.include_previous_action,
+            initial_state=env_settings.initial_state,
             source_manifest_path=env_settings.source_manifest_path,
             training_config_path=env_settings.training_config_path,
             final_stage_manifest_path=env_settings.final_stage_manifest_path,
@@ -900,9 +928,13 @@ def _write_standard_scenario_metrics_and_diagnostics(
         "final_stage_manifest_path": None if settings.final_stage_manifest_path is None else str(settings.final_stage_manifest_path),
         "action_interface": settings.action_interface,
         "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == "direct_rpm" else None,
+        "pid_target_z_min_m": settings.pid_target_z_min_m if settings.action_interface == "pid_position" else None,
+        "pid_target_z_max_m": settings.pid_target_z_max_m if settings.action_interface == "pid_position" else None,
         "normalize_actions": bool(settings.normalize_actions),
         "include_dynamics_observation": bool(settings.include_dynamics_observation),
         "include_previous_action": bool(settings.include_previous_action),
+        "initial_state_mode": _scenario_settings_initial_state(settings).mode,
+        "initial_state": _scenario_settings_initial_state(settings).to_dict(),
         "evaluated_model_path": str(model_path),
         "evaluated_model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
         "manifest_path": scenario_result.manifest_path,
@@ -1117,8 +1149,11 @@ def _scenario_evaluation_env_settings(
     normalize_actions: bool | None,
     action_interface: str | None,
     rpm_delta_scale: float | None,
+    pid_target_z_min_m: float | None,
+    pid_target_z_max_m: float | None,
     include_dynamics_observation: bool | None,
     include_previous_action: bool | None,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None,
     training_config_path: Path | None,
     final_stage_manifest_path: Path | None,
 ) -> _ScenarioEvaluationEnvSettings:
@@ -1132,10 +1167,13 @@ def _scenario_evaluation_env_settings(
         normalize_actions=inferred.normalize_actions if normalize_actions is None else bool(normalize_actions),
         action_interface=inferred.action_interface if action_interface is None else str(action_interface),
         rpm_delta_scale=inferred.rpm_delta_scale if rpm_delta_scale is None else float(rpm_delta_scale),
+        pid_target_z_min_m=inferred.pid_target_z_min_m if pid_target_z_min_m is None else float(pid_target_z_min_m),
+        pid_target_z_max_m=inferred.pid_target_z_max_m if pid_target_z_max_m is None else float(pid_target_z_max_m),
         include_dynamics_observation=inferred.include_dynamics_observation
         if include_dynamics_observation is None
         else bool(include_dynamics_observation),
         include_previous_action=inferred.include_previous_action if include_previous_action is None else bool(include_previous_action),
+        initial_state=inferred.initial_state if initial_state is None else envs.initial_state.parse_initial_state_config(initial_state),
         source_manifest_path=inferred.source_manifest_path,
         training_config_path=inferred.training_config_path if training_config_path is None else training_config_path,
         final_stage_manifest_path=inferred.final_stage_manifest_path if final_stage_manifest_path is None else final_stage_manifest_path,
@@ -1169,8 +1207,11 @@ def _default_scenario_evaluation_env_settings(source_manifest_path: Path | None)
         normalize_actions=True,
         action_interface="pid_position",
         rpm_delta_scale=0.05,
+        pid_target_z_min_m=envs.actions.DEFAULT_PID_TARGET_Z_MIN_M,
+        pid_target_z_max_m=envs.actions.DEFAULT_PID_TARGET_Z_MAX_M,
         include_dynamics_observation=False,
         include_previous_action=False,
+        initial_state=envs.initial_state.parse_initial_state_config(None),
         source_manifest_path=source_manifest_path,
         training_config_path=None,
         final_stage_manifest_path=None,
@@ -1190,8 +1231,11 @@ def _direct_scenario_evaluation_env_settings(
         normalize_actions=bool(manifest.get("normalize_actions", config_payload.get("normalize_actions", True))),
         action_interface=str(env_kwargs["action_interface"]),
         rpm_delta_scale=float(env_kwargs["rpm_delta_scale"]),
+        pid_target_z_min_m=float(env_kwargs["pid_target_z_min_m"]),
+        pid_target_z_max_m=float(env_kwargs["pid_target_z_max_m"]),
         include_dynamics_observation=bool(env_kwargs["include_dynamics_observation"]),
         include_previous_action=bool(env_kwargs["include_previous_action"]),
+        initial_state=envs.initial_state.parse_initial_state_config(env_kwargs.get("initial_state")),
         source_manifest_path=manifest_path,
         training_config_path=_training_config_path_from_manifest_payload(manifest, run_root=run_root),
         final_stage_manifest_path=None,
@@ -1224,6 +1268,18 @@ def _curriculum_scenario_evaluation_env_settings(
         rpm_delta_scale=float(
             final_stage.get("rpm_delta_scale") or stage_manifest.get("rpm_delta_scale") or stage_config.get("rpm_delta_scale") or 0.05
         ),
+        pid_target_z_min_m=float(
+            final_stage.get("pid_target_z_min_m")
+            or stage_manifest.get("pid_target_z_min_m")
+            or stage_config.get("pid_target_z_min_m")
+            or envs.actions.DEFAULT_PID_TARGET_Z_MIN_M
+        ),
+        pid_target_z_max_m=float(
+            final_stage.get("pid_target_z_max_m")
+            or stage_manifest.get("pid_target_z_max_m")
+            or stage_config.get("pid_target_z_max_m")
+            or envs.actions.DEFAULT_PID_TARGET_Z_MAX_M
+        ),
         include_dynamics_observation=bool(
             final_stage.get(
                 "include_dynamics_observation",
@@ -1236,10 +1292,23 @@ def _curriculum_scenario_evaluation_env_settings(
                 stage_manifest.get("include_previous_action", stage_config.get("include_previous_action", False)),
             )
         ),
+        initial_state=_initial_state_config_from_sources(final_stage, stage_manifest, stage_config),
         source_manifest_path=manifest_path,
         training_config_path=_training_config_path_from_manifest_payload(stage_manifest, run_root=run_root),
         final_stage_manifest_path=stage_manifest_path,
     )
+
+
+def _initial_state_config_from_sources(*sources: Mapping[str, Any]) -> envs.initial_state.InitialStateConfig:
+    """Return the first initial-state config recorded in source mappings."""
+    for source in sources:
+        raw_initial_state = source.get("initial_state")
+        if raw_initial_state is not None:
+            return envs.initial_state.parse_initial_state_config(raw_initial_state)
+        raw_mode = source.get("initial_state_mode")
+        if raw_mode is not None:
+            return envs.initial_state.parse_initial_state_config({"mode": raw_mode})
+    return envs.initial_state.parse_initial_state_config(None)
 
 
 def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
@@ -1504,9 +1573,13 @@ def _evaluated_model_entry(result: PolicyEvaluationResult, run_root: Path, suite
         "source_manifest_path": metrics.get("source_manifest_path"),
         "action_interface": metrics.get("action_interface"),
         "rpm_delta_scale": metrics.get("rpm_delta_scale"),
+        "pid_target_z_min_m": metrics.get("pid_target_z_min_m"),
+        "pid_target_z_max_m": metrics.get("pid_target_z_max_m"),
         "normalize_actions": metrics.get("normalize_actions"),
         "include_dynamics_observation": metrics.get("include_dynamics_observation"),
         "include_previous_action": metrics.get("include_previous_action"),
+        "initial_state_mode": metrics.get("initial_state_mode"),
+        "initial_state": metrics.get("initial_state"),
         "termination_limits_mode": metrics.get("termination_limits_mode"),
         "base_truncation_policy": metrics.get("base_truncation_policy"),
         "strict_limit_violation_count": metrics.get("strict_limit_violation_count"),
@@ -1840,10 +1913,17 @@ def _evaluation_env_kwargs_from_manifest(run_manifest: Mapping[str, Any], manife
     return {
         "action_interface": str(run_manifest.get("action_interface") or config_payload.get("action_interface") or "pid_position"),
         "rpm_delta_scale": float(run_manifest.get("rpm_delta_scale") or config_payload.get("rpm_delta_scale") or 0.05),
+        "pid_target_z_min_m": float(
+            run_manifest.get("pid_target_z_min_m") or config_payload.get("pid_target_z_min_m") or envs.actions.DEFAULT_PID_TARGET_Z_MIN_M
+        ),
+        "pid_target_z_max_m": float(
+            run_manifest.get("pid_target_z_max_m") or config_payload.get("pid_target_z_max_m") or envs.actions.DEFAULT_PID_TARGET_Z_MAX_M
+        ),
         "include_dynamics_observation": bool(
             run_manifest.get("include_dynamics_observation", config_payload.get("include_dynamics_observation", False))
         ),
         "include_previous_action": bool(run_manifest.get("include_previous_action", config_payload.get("include_previous_action", False))),
+        "initial_state": _initial_state_config_from_sources(run_manifest, config_payload).to_dict(),
         "source_manifest_path": manifest_path,
     }
 
@@ -1853,8 +1933,11 @@ def _evaluation_env_kwargs_from_stage(stage: Mapping[str, Any]) -> dict[str, Any
     return {
         "action_interface": str(stage.get("action_interface") or "pid_position"),
         "rpm_delta_scale": float(stage.get("rpm_delta_scale") or 0.05),
+        "pid_target_z_min_m": float(stage.get("pid_target_z_min_m") or envs.actions.DEFAULT_PID_TARGET_Z_MIN_M),
+        "pid_target_z_max_m": float(stage.get("pid_target_z_max_m") or envs.actions.DEFAULT_PID_TARGET_Z_MAX_M),
         "include_dynamics_observation": bool(stage.get("include_dynamics_observation", False)),
         "include_previous_action": bool(stage.get("include_previous_action", False)),
+        "initial_state": _initial_state_config_from_sources(stage).to_dict(),
         "source_manifest_path": Path(str(stage["manifest_path"])) if stage.get("manifest_path") else None,
     }
 
@@ -1868,8 +1951,11 @@ def _make_policy_evaluation_env(spec: PolicyEvaluationSpec, task: Mapping[str, A
         max_steps=max_steps,
         action_interface=spec.action_interface,
         rpm_delta_scale=spec.rpm_delta_scale,
+        pid_target_z_min_m=spec.pid_target_z_min_m,
+        pid_target_z_max_m=spec.pid_target_z_max_m,
         include_dynamics_observation=spec.include_dynamics_observation,
         include_previous_action=spec.include_previous_action,
+        initial_state=spec.initial_state,
     )
     if spec.normalize_actions or envs.actions.parse_action_interface(spec.action_interface) == envs.actions.ActionInterface.DIRECT_RPM:
         return envs.tracking_env.make_normalized_action_env(real_env)
@@ -1952,8 +2038,11 @@ def _write_render_artifact(
         normalize_actions=spec.normalize_actions,
         action_interface=spec.action_interface,
         rpm_delta_scale=spec.rpm_delta_scale,
+        pid_target_z_min_m=spec.pid_target_z_min_m,
+        pid_target_z_max_m=spec.pid_target_z_max_m,
         include_dynamics_observation=spec.include_dynamics_observation,
         include_previous_action=spec.include_previous_action,
+        initial_state=spec.initial_state,
         source_manifest_path=spec.source_manifest_path,
         evaluated_model_source=spec.evaluated_model_source,
     )
@@ -2051,6 +2140,8 @@ def _manifest_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "normalize_actions",
         "include_dynamics_observation",
         "include_previous_action",
+        "initial_state_mode",
+        "initial_state",
         "termination_limits_mode",
         "termination_limits",
         "diagnostic_limits",

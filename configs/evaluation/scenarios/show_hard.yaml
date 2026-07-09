@@ -3,7 +3,14 @@ task_config_path: configs/evaluation/scenario_task_catalog.yaml
 controller: scripted_reference
 max_steps: 640
 seed: 0
-start_hold_sec: 2.0
+initial_state:
+  mode: reference_start
+  xyz: null
+  offset_xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+start_hold_sec: 1.0
 final_hold_sec: 1.5
 camera:
   mode: follow_external
@@ -137,8 +144,8 @@ phases:
     - 0.0
 start_height_policy: standard_reference_1p0m
 base_z_m: 1.0
-start_hold_policy: uniform_2p0s_start_hold
-start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
+start_hold_policy: uniform_reference_start_hold_1p0s
+start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
 tracking_reward_starts_after_start_hold: false
 exclude_start_hold_from_tracking_metrics: true
 standard_reference_height_enabled: true

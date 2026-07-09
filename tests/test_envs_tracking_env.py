@@ -15,6 +15,7 @@ PID_PREVIOUS_ACTION_OBSERVATION_DIM = 13
 DIRECT_RPM_DYNAMICS_PREVIOUS_ACTION_OBSERVATION_DIM = 23
 PID_ACTION_DIM = 3
 DIRECT_RPM_ACTION_DIM = 4
+UPSTREAM_DEFAULT_SPAWN_REFERENCE_ERROR_MIN_M = 0.2
 
 
 def _hover_task() -> dict[str, object]:
@@ -41,6 +42,24 @@ def _circle_task() -> dict[str, object]:
         contracts.FIELD_HEIGHT: 1.0,
         contracts.FIELD_CENTER: [0.0, 0.0],
     }
+
+
+def _line_task(start: list[float] | None = None, end: list[float] | None = None) -> dict[str, object]:
+    """Return a valid line task for initial-state tests."""
+    contracts = validation.contracts
+    return {
+        contracts.FIELD_TASK_TYPE: contracts.TASK_TYPE_TRAJECTORY,
+        contracts.FIELD_SHAPE: contracts.SHAPE_LINE,
+        contracts.FIELD_DURATION_SEC: 3.0,
+        contracts.FIELD_SAMPLE_RATE_HZ: 5.0,
+        contracts.FIELD_START: [0.0, 0.0, 1.0] if start is None else start,
+        contracts.FIELD_END: [0.4, 0.0, 1.0] if end is None else end,
+    }
+
+
+def _assert_xyz_close(actual: object, expected: object, *, atol: float = 1.0e-5) -> None:
+    """Assert two XYZ-like values are numerically close."""
+    assert np.allclose(np.asarray(actual, dtype=float), np.asarray(expected, dtype=float), atol=atol, rtol=0.0)
 
 
 def test_tracking_env_imports_through_package_alias() -> None:
@@ -78,6 +97,165 @@ def test_tracking_env_reset_returns_compact_observation_and_info() -> None:
         ]
     finally:
         tracking_env.close()
+
+
+def test_default_initial_state_preserves_upstream_near_ground_spawn() -> None:
+    """Verify default initial-state mode leaves HoverAviary's upstream spawn alone."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(_hover_task(), gui=False, record=False)
+    try:
+        _, info = tracking_env.reset(seed=0)
+
+        actual_initial_xyz = np.asarray(info["actual_initial_xyz"], dtype=float)
+        reference_xyz = np.asarray(info["initial_reference_xyz"], dtype=float)
+        assert info["initial_state_mode"] == "default"
+        assert info["initial_xyz_source"] == "upstream_default"
+        assert info["spawned_at_reference_start"] is False
+        assert info["initial_xyz_matches_reference_start"] is False
+        assert actual_initial_xyz[2] < reference_xyz[2] - UPSTREAM_DEFAULT_SPAWN_REFERENCE_ERROR_MIN_M
+        assert info["initial_position_error_m"] > UPSTREAM_DEFAULT_SPAWN_REFERENCE_ERROR_MIN_M
+    finally:
+        tracking_env.close()
+
+
+def test_fixed_initial_state_sets_hover_initial_xyzs_and_reset_info() -> None:
+    """Verify fixed initial-state mode passes a configured XYZ into HoverAviary."""
+    fixed_xyz = [0.1, -0.2, 1.2]
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        _hover_task(),
+        gui=False,
+        record=False,
+        initial_state={"mode": "fixed", "xyz": fixed_xyz},
+    )
+    try:
+        _, info = tracking_env.reset(seed=0)
+
+        assert info["initial_state_mode"] == "fixed"
+        assert info["initial_xyz_source"] == "configured_xyz"
+        _assert_xyz_close(info["requested_initial_xyz"], fixed_xyz)
+        _assert_xyz_close(info["actual_initial_xyz"], fixed_xyz)
+        assert np.allclose(tracking_env.base_env.INIT_XYZS, np.asarray([fixed_xyz], dtype=float))
+        assert info["spawned_at_reference_start"] is False
+    finally:
+        tracking_env.close()
+
+
+def test_reference_start_initial_state_spawns_at_first_reference_position() -> None:
+    """Verify reference-start mode resets the drone at the first reference point."""
+    reference_start = [0.25, -0.15, 1.0]
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        _line_task(start=reference_start, end=[0.55, -0.15, 1.0]),
+        gui=False,
+        record=False,
+        initial_state={"mode": "reference_start"},
+    )
+    try:
+        _, info = tracking_env.reset(seed=0)
+
+        assert info["initial_state_mode"] == "reference_start"
+        assert info["initial_xyz_source"] == "reference_start"
+        assert info["spawned_at_reference_start"] is True
+        assert info["initial_xyz_matches_reference_start"] is True
+        assert info["initial_position_error_m"] == pytest.approx(0.0, abs=1.0e-6)
+        _assert_xyz_close(info["initial_reference_xyz"], reference_start)
+        _assert_xyz_close(info["actual_initial_xyz"], reference_start)
+        assert np.allclose(tracking_env.base_env.INIT_XYZS, np.asarray([reference_start], dtype=float))
+    finally:
+        tracking_env.close()
+
+
+def test_reference_start_with_offset_initial_state_records_offset_error() -> None:
+    """Verify reference-start-with-offset mode applies the configured offset."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        _hover_task(),
+        gui=False,
+        record=False,
+        initial_state={"mode": "reference_start_with_offset", "offset_xyz": [0.0, 0.0, -0.05]},
+    )
+    try:
+        _, info = tracking_env.reset(seed=0)
+
+        expected_xyz = [0.0, 0.0, 0.95]
+        assert info["initial_state_mode"] == "reference_start_with_offset"
+        assert info["initial_xyz_source"] == "reference_start_with_offset"
+        _assert_xyz_close(info["requested_initial_xyz"], expected_xyz)
+        _assert_xyz_close(info["actual_initial_xyz"], expected_xyz)
+        assert info["initial_z_error_signed_m"] == pytest.approx(-0.05)
+        assert info["initial_z_error_m"] == pytest.approx(0.05)
+        assert info["spawned_at_reference_start"] is False
+    finally:
+        tracking_env.close()
+
+
+def test_reference_start_initial_state_is_supported_for_direct_rpm() -> None:
+    """Verify direct-RPM envs preserve motor semantics while using reference-start spawn."""
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        _hover_task(),
+        gui=False,
+        record=False,
+        action_interface="direct_rpm",
+        initial_state={"mode": "reference_start"},
+    )
+    try:
+        _, info = tracking_env.reset(seed=0)
+
+        assert info["action_interface"] == "direct_rpm"
+        assert info["real_action_type"] == "motor_rpm"
+        assert info["spawned_at_reference_start"] is True
+        _assert_xyz_close(info["actual_initial_xyz"], info["initial_reference_xyz"])
+        assert tracking_env.base_env.ACT_TYPE.value == "rpm"
+    finally:
+        tracking_env.close()
+
+
+def test_reference_start_initial_state_updates_after_randomized_reset() -> None:
+    """Verify randomized task reset samples the reference before updating INIT_XYZS."""
+    settings = envs.task_distribution.TaskDistributionSettings(
+        name="randomized_line_initial_state",
+        enabled=True,
+        mode=envs.task_distribution.MODE_RANDOMIZED,
+        seed=7,
+        strength=1.0,
+        sample_on_reset=True,
+        base_task=_line_task(),
+        family_weights={envs.task_distribution.FAMILY_LINE: 1.0},
+        variations={
+            envs.task_distribution.FAMILY_LINE: {
+                "start_xy_radius_m": 0.35,
+                "heading_jitter_deg": 90.0,
+                "length_range_m": [0.3, 0.45],
+                "base_z_range_m": [0.9, 1.1],
+                "duration_range_sec": [3.0, 3.0],
+                "start_hold_range_sec": [1.0, 1.0],
+            }
+        },
+    )
+    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+        settings,
+        gui=False,
+        record=False,
+        initial_state={"mode": "reference_start"},
+    )
+    try:
+        _, first_info = tracking_env.reset(seed=0)
+        _, second_info = tracking_env.reset(seed=1)
+
+        first_reference = np.asarray(first_info["initial_reference_xyz"], dtype=float)
+        second_reference = np.asarray(second_info["initial_reference_xyz"], dtype=float)
+        assert not np.allclose(first_reference, second_reference)
+        for info in (first_info, second_info):
+            assert info["task_distribution_sample_on_reset"] is True
+            assert info["spawned_at_reference_start"] is True
+            _assert_xyz_close(info["actual_initial_xyz"], info["initial_reference_xyz"])
+            _assert_xyz_close(info["requested_initial_xyz"], info["initial_reference_xyz"])
+        assert np.allclose(tracking_env.base_env.INIT_XYZS, second_reference.reshape(1, 3))
+    finally:
+        tracking_env.close()
+
+
+def test_invalid_initial_state_config_raises_clear_error() -> None:
+    """Verify invalid initial-state settings fail before simulator construction."""
+    with pytest.raises(ValueError, match=r"initial_state\.xyz is required"):
+        envs.tracking_env.make_trajectory_tracking_env(_hover_task(), gui=False, record=False, initial_state={"mode": "fixed"})
 
 
 def test_tracking_env_steps_once_with_sampled_action_and_diagnostics() -> None:
@@ -279,15 +457,15 @@ def test_normalized_action_wrapper_previous_action_uses_ppo_facing_action() -> N
 
 
 def test_pid_position_default_ppo_action_space_and_hover_mapping() -> None:
-    """Verify default PID PPO actions are normalized and map once into hover bounds."""
+    """Verify default PID PPO actions are normalized and map through expanded z bounds."""
     real_env = envs.tracking_env.make_trajectory_tracking_env(_hover_task(), gui=False, record=False)
     tracking_env = envs.tracking_env.make_normalized_action_env(real_env)
     try:
         tracking_env.reset(seed=0)
         hover_target = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
-        expected_low = np.array([[-0.2, -0.2, 0.5]], dtype=np.float32)
-        expected_high = np.array([[0.2, 0.2, 1.0]], dtype=np.float32)
-        normalized_hover = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
+        expected_low = np.array([[-0.2, -0.2, 0.2]], dtype=np.float32)
+        expected_high = np.array([[0.2, 0.2, 1.5]], dtype=np.float32)
+        normalized_hover = tracking_env.real_to_normalized_action(hover_target)
 
         assert tracking_env.action_interface == "pid_position"
         assert tracking_env.action_space.shape == (1, PID_ACTION_DIM)
@@ -295,7 +473,7 @@ def test_pid_position_default_ppo_action_space_and_hover_mapping() -> None:
         assert np.allclose(tracking_env.action_space.high, 1.0)
         assert np.allclose(tracking_env.real_action_space.low, expected_low)
         assert np.allclose(tracking_env.real_action_space.high, expected_high)
-        assert np.allclose(tracking_env.real_to_normalized_action(hover_target), normalized_hover)
+        assert normalized_hover[0, 2] == pytest.approx(0.23076923)
         assert np.allclose(tracking_env.normalized_to_real_action(normalized_hover), hover_target)
 
         _, _, _, _, info = tracking_env.step(normalized_hover)
@@ -304,6 +482,28 @@ def test_pid_position_default_ppo_action_space_and_hover_mapping() -> None:
         assert np.allclose(info["requested_action"], hover_target)
         assert np.allclose(info["applied_action"], hover_target)
         assert np.allclose(info["real_action"], hover_target)
+        assert info["reference_z_reachable_by_pid_position"] is True
+        assert info["pid_z_action_space_expanded"] is True
+    finally:
+        tracking_env.close()
+
+
+def test_pid_position_normalized_z_extremes_map_to_real_z_bounds() -> None:
+    """Verify PID action dim 2 maps monotonically between real z target bounds."""
+    real_env = envs.tracking_env.make_trajectory_tracking_env(_hover_task(), gui=False, record=False)
+    tracking_env = envs.tracking_env.make_normalized_action_env(real_env)
+    try:
+        tracking_env.reset(seed=0)
+        normalized_low_z = np.array([[0.0, 0.0, -1.0]], dtype=np.float32)
+        normalized_high_z = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
+        real_low_z = tracking_env.normalized_to_real_action(normalized_low_z)
+        real_high_z = tracking_env.normalized_to_real_action(normalized_high_z)
+
+        assert real_low_z[0, 2] == pytest.approx(float(tracking_env.real_action_space.low[0, 2]))
+        assert real_high_z[0, 2] == pytest.approx(float(tracking_env.real_action_space.high[0, 2]))
+        assert real_high_z[0, 2] > real_low_z[0, 2]
+        assert np.allclose(tracking_env.real_to_normalized_action(real_low_z), normalized_low_z)
+        assert np.allclose(tracking_env.real_to_normalized_action(real_high_z), normalized_high_z)
     finally:
         tracking_env.close()
 
@@ -333,6 +533,34 @@ def test_direct_rpm_env_exposes_normalized_four_motor_action_space() -> None:
         assert info["observation_dim"] == DYNAMICS_OBSERVATION_DIM
         assert tracking_env.base_env.ACT_TYPE.value == "rpm"
         assert not hasattr(tracking_env.base_env, "ctrl")
+    finally:
+        tracking_env.close()
+
+
+def test_normalized_wrapper_preserves_direct_rpm_action_metadata() -> None:
+    """Verify wrapped direct-RPM traces keep motor semantics and RPM real actions."""
+    real_env = envs.tracking_env.make_trajectory_tracking_env(
+        _hover_task(),
+        gui=False,
+        record=False,
+        action_interface="direct_rpm",
+        include_dynamics_observation=True,
+    )
+    tracking_env = envs.tracking_env.make_normalized_action_env(real_env)
+    try:
+        tracking_env.reset(seed=0)
+        action = np.array([[0.0, 0.0, 1.0, 0.0]], dtype=np.float32)
+
+        _, _, _, _, info = tracking_env.step(action)
+
+        assert tracking_env.action_interface == "direct_rpm"
+        assert info["action_interface"] == "direct_rpm"
+        assert info["real_action_type"] == "motor_rpm"
+        assert np.allclose(info["normalized_action"], action)
+        assert np.asarray(info["real_action"]).shape == (1, DIRECT_RPM_ACTION_DIM)
+        assert np.asarray(info["real_action_space_low"])[0, 0] == pytest.approx(0.0)
+        assert info["real_action"][0, 2] > info["real_action"][0, 0]
+        assert not np.allclose(info["real_action"], action)
     finally:
         tracking_env.close()
 
@@ -495,9 +723,9 @@ def test_circle_task_can_reset_headlessly() -> None:
         assert info["task_shape"] == validation.contracts.SHAPE_CIRCLE
         assert info["start_hold_enabled"] is True
         assert info["is_start_hold"] is True
-        expected_tracking_phase_start_step = 20
+        expected_tracking_phase_start_step = 10
         assert info["tracking_phase_start_step"] == expected_tracking_phase_start_step
-        assert info["start_hold_reward_policy"] == "full_tracking_reward_active_during_uniform_start_hold"
+        assert info["start_hold_reward_policy"] == "full_tracking_reward_active_during_uniform_reference_start_hold"
         assert info["tracking_reward_starts_after_start_hold"] is False
     finally:
         tracking_env.close()

@@ -39,6 +39,7 @@ CANONICAL_POLICY_PLOT_FILENAMES = {
     "trajectory_xyz": "trajectory_xyz.png",
     "position_error": "position_error.png",
     "action_trace": "action_trace.png",
+    "real_action_trace": "real_action_trace.png",
 }
 
 if TYPE_CHECKING:
@@ -195,6 +196,7 @@ def write_policy_rollout_trace_plots(
             linewidth=2.0,
             label=_trace_line_label("actual", plot_data) if segment_index == 0 else None,
         )
+    _mark_xy_initial_positions(axis, arrays)
     axis.set_xlabel("x m")
     axis.set_ylabel("y m")
     axis.set_title(_trace_plot_title("XY reference vs actual", plot_data))
@@ -249,24 +251,28 @@ def write_policy_rollout_trace_plots(
     action_array = _optional_action_array(records, key="action")
     if action_array is not None:
         action_path = resolved_dir / CANONICAL_POLICY_PLOT_FILENAMES["action_trace"]
-        figure, axis = plt.subplots(figsize=(7.0, 3.8), constrained_layout=True)
-        for action_index in range(action_array.shape[1]):
-            for segment_index, segment in enumerate(segments):
-                axis.plot(
-                    plot_data.x[segment],
-                    action_array[segment, action_index],
-                    linewidth=1.5,
-                    label=f"action {action_index}" if segment_index == 0 else None,
-                )
-        _mark_episode_boundaries(axis, plot_data=plot_data, label=True)
-        _mark_tracking_starts(axis, plot_data=plot_data, label=True)
-        axis.set_xlabel(plot_data.x_label)
-        axis.set_ylabel("action")
-        axis.set_title(_trace_plot_title("Action trace", plot_data))
-        axis.legend()
-        figure.savefig(action_path, dpi=140)
-        plt.close(figure)
+        _write_action_trace_plot(
+            plt=plt,
+            path=action_path,
+            records=records,
+            action_array=action_array,
+            plot_data=plot_data,
+            action_key="action",
+        )
         plot_paths["action_trace"] = str(action_path)
+
+    real_action_array = _optional_action_array(records, key="real_action")
+    if real_action_array is not None:
+        real_action_path = resolved_dir / CANONICAL_POLICY_PLOT_FILENAMES["real_action_trace"]
+        _write_action_trace_plot(
+            plt=plt,
+            path=real_action_path,
+            records=records,
+            action_array=real_action_array,
+            plot_data=plot_data,
+            action_key="real_action",
+        )
+        plot_paths["real_action_trace"] = str(real_action_path)
 
     return RolloutTracePlotResult(plot_paths=plot_paths, output_kind="matplotlib_png", step_count=len(records))
 
@@ -464,6 +470,150 @@ def _mark_tracking_starts(axis: Any, plot_data: _TracePlotData, label: bool) -> 
             label="tracking start" if label and not labeled else None,
         )
         labeled = True
+
+
+def _mark_xy_initial_positions(axis: Any, arrays: dict[str, np.ndarray]) -> None:
+    """Draw actual and reference start markers on the XY trace plot."""
+    reference_start = arrays["reference"][0, :2]
+    actual_start = arrays["actual"][0, :2]
+    axis.scatter(
+        reference_start[0],
+        reference_start[1],
+        color="#1f77b4",
+        marker="o",
+        s=45,
+        linewidths=0.8,
+        edgecolors="white",
+        label="reference start",
+        zorder=5,
+    )
+    axis.scatter(
+        actual_start[0],
+        actual_start[1],
+        color="#d62728",
+        marker="x",
+        s=55,
+        linewidths=1.6,
+        label="actual start",
+        zorder=6,
+    )
+
+
+def _write_action_trace_plot(
+    plt: Any,
+    path: Path,
+    records: Sequence[Mapping[str, Any]],
+    action_array: np.ndarray,
+    plot_data: _TracePlotData,
+    action_key: str,
+) -> None:
+    """Write one action trace plot with labels derived from action metadata."""
+    figure, axis = plt.subplots(figsize=(7.0, 3.8), constrained_layout=True)
+    labels = _action_line_labels(records, action_key=action_key, dimension_count=action_array.shape[1])
+    for action_index in range(action_array.shape[1]):
+        for segment_index, segment in enumerate(plot_data.segments):
+            axis.plot(
+                plot_data.x[segment],
+                action_array[segment, action_index],
+                linewidth=1.5,
+                label=labels[action_index] if segment_index == 0 else None,
+            )
+    if action_key == "real_action" and _trace_action_interface(records) == "pid_position" and action_array.shape[1] >= XYZ_DIMENSIONS:
+        _plot_pid_real_action_z_context(axis=axis, plot_data=plot_data)
+    _mark_episode_boundaries(axis, plot_data=plot_data, label=True)
+    _mark_tracking_starts(axis, plot_data=plot_data, label=True)
+    axis.set_xlabel(plot_data.x_label)
+    axis.set_ylabel(_action_y_label(records, action_key=action_key))
+    axis.set_title(_trace_plot_title(_action_plot_title(records, action_key=action_key), plot_data))
+    axis.legend()
+    figure.savefig(path, dpi=140)
+    plt.close(figure)
+
+
+def _plot_pid_real_action_z_context(axis: Any, plot_data: _TracePlotData) -> None:
+    """Overlay current/reference z on real PID target plots for altitude audits."""
+    arrays = plot_data.arrays
+    for segment_index, segment in enumerate(plot_data.segments):
+        axis.plot(
+            plot_data.x[segment],
+            arrays["reference"][segment, 2],
+            color="#1f77b4",
+            linestyle="--",
+            linewidth=1.2,
+            label="reference z [m]" if segment_index == 0 else None,
+        )
+        axis.plot(
+            plot_data.x[segment],
+            arrays["actual"][segment, 2],
+            color="#d62728",
+            linestyle=":",
+            linewidth=1.2,
+            label="current z [m]" if segment_index == 0 else None,
+        )
+
+
+def _action_line_labels(records: Sequence[Mapping[str, Any]], action_key: str, dimension_count: int) -> list[str]:
+    """Return action legend labels from trace metadata."""
+    interface = _trace_action_interface(records)
+    real_action_type = _trace_real_action_type(records)
+    if interface == "pid_position" and dimension_count == XYZ_DIMENSIONS:
+        if action_key == "real_action" or (real_action_type == "pid_target_position" and not _trace_actions_normalized(records)):
+            return ["real x target [m]", "real y target [m]", "real z target [m]"]
+        return ["norm x target", "norm y target", "norm z target"]
+    if interface == "direct_rpm":
+        prefix = (
+            "real motor"
+            if action_key == "real_action" or (real_action_type == "motor_rpm" and not _trace_actions_normalized(records))
+            else "norm motor"
+        )
+        suffix = " [rpm]" if prefix == "real motor" else ""
+        return [f"{prefix} {index}{suffix}" for index in range(dimension_count)]
+    if action_key == "real_action" and real_action_type == "motor_rpm":
+        return [f"real motor {index} [rpm]" for index in range(dimension_count)]
+    return [f"action {index}" for index in range(dimension_count)]
+
+
+def _action_y_label(records: Sequence[Mapping[str, Any]], action_key: str) -> str:
+    """Return a y-axis label for PPO-facing or real action plots."""
+    if action_key == "real_action":
+        if _trace_real_action_type(records) == "motor_rpm":
+            return "motor rpm"
+        if _trace_real_action_type(records) == "pid_target_position":
+            return "target position m"
+        return "real action"
+    return "normalized action" if _trace_actions_normalized(records) else "action"
+
+
+def _action_plot_title(records: Sequence[Mapping[str, Any]], action_key: str) -> str:
+    """Return a title that names the plotted action representation."""
+    if action_key == "real_action":
+        real_action_type = _trace_real_action_type(records)
+        if real_action_type == "pid_target_position":
+            return "Real PID target trace"
+        if real_action_type == "motor_rpm":
+            return "Real motor RPM trace"
+        return "Real action trace"
+    interface = _trace_action_interface(records)
+    if interface == "pid_position" and _trace_actions_normalized(records):
+        return "Normalized PID target action trace"
+    if interface == "direct_rpm":
+        return "Normalized direct-RPM action trace"
+    return "Action trace"
+
+
+def _trace_action_interface(records: Sequence[Mapping[str, Any]]) -> str:
+    """Return the action interface recorded in a trace, if present."""
+    return str(records[0].get("action_interface", "")) if records else ""
+
+
+def _trace_real_action_type(records: Sequence[Mapping[str, Any]]) -> str:
+    """Return the real action type recorded in a trace, if present."""
+    return str(records[0].get("real_action_type", "")) if records else ""
+
+
+def _trace_actions_normalized(records: Sequence[Mapping[str, Any]]) -> bool:
+    """Return whether trace actions are explicitly marked as normalized."""
+    return bool(records and records[0].get("actions_normalized", False))
 
 
 def _trace_plot_title(base_title: str, plot_data: _TracePlotData) -> str:

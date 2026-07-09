@@ -21,6 +21,8 @@ MEAN_ABS_Z_ERROR_M = 0.3
 ACTION_MEAN_0 = 0.1
 REAL_ACTION_SATURATION_0 = 0.5
 REAL_ACTION_MEAN_2 = 0.75
+Z_ACTION_UPPER_SATURATION_TRACKING = 0.9
+Z_TARGET_MINUS_REFERENCE_MEAN = 0.05
 EVAL_STEPS = 120
 EXPECTED_SHORT_HASH_LENGTH = 8
 EXPECTED_DISTINCT_LONG_TAG_COUNT = 2
@@ -221,6 +223,10 @@ def test_wandb_summary_metrics_group_final_diagnostics() -> None:
         "action_min": [-1.0, -0.5, 0.0],
         "action_max": [0.9, 0.8, 1.0],
         "action_saturation_fraction": [0.0, 0.25, 1.0],
+        "action_upper_saturation_fraction_by_dim": [0.0, 0.0, 1.0],
+        "action_saturation_fraction_tracking_by_dim": [0.0, 0.1, Z_ACTION_UPPER_SATURATION_TRACKING],
+        "z_action_upper_saturation_fraction_tracking": Z_ACTION_UPPER_SATURATION_TRACKING,
+        "z_target_minus_reference_mean": Z_TARGET_MINUS_REFERENCE_MEAN,
         "real_action_mean": [0.4, 0.0, REAL_ACTION_MEAN_2],
         "real_action_std": [0.1, 0.0, 0.05],
         "real_action_min": [-0.2, -0.2, 0.5],
@@ -241,6 +247,10 @@ def test_wandb_summary_metrics_group_final_diagnostics() -> None:
     assert summary["tracking/mean_position_error_m"] == MEAN_POSITION_ERROR_M
     assert summary["tracking/mean_abs_z_error_m"] == MEAN_ABS_Z_ERROR_M
     assert summary["actions/saturation_fraction_2"] == 1.0
+    assert summary["actions/upper_saturation_fraction_by_dim_2"] == 1.0
+    assert summary["actions/saturation_fraction_tracking_by_dim_2"] == Z_ACTION_UPPER_SATURATION_TRACKING
+    assert summary["tracking/z_action_upper_saturation_fraction_tracking"] == Z_ACTION_UPPER_SATURATION_TRACKING
+    assert summary["tracking/z_target_minus_reference_mean"] == Z_TARGET_MINUS_REFERENCE_MEAN
     assert summary["actions/real_saturation_fraction_0"] == REAL_ACTION_SATURATION_0
     assert summary["actions/real_mean_2"] == REAL_ACTION_MEAN_2
     assert summary["actions/mean_0"] == ACTION_MEAN_0

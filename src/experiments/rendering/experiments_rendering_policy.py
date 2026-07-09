@@ -29,13 +29,16 @@ import json
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
 from src import envs, evaluation, utils
 from src.experiments import experiments_config as config_loader
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 DEFAULT_PPO_CONFIG_PATH = Path("configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml")
 DEFAULT_MODEL_RUN_NAME = "direct_ppo_pid_dynprev_m-taskdist_medium_seed0"
@@ -147,6 +150,8 @@ class PolicyRenderSettings:
         Whether the policy observation includes velocity, attitude, and angular velocity.
     include_previous_action
         Whether the policy observation includes the previous action.
+    initial_state
+        Initial drone spawn-position policy used by the render environment.
     source_manifest_path
         Optional run or stage manifest path used for observation-shape diagnostics.
     training_config_path
@@ -184,8 +189,11 @@ class PolicyRenderSettings:
     normalize_actions: bool = True
     action_interface: str = "pid_position"
     rpm_delta_scale: float = 0.05
+    pid_target_z_min_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MIN_M
+    pid_target_z_max_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MAX_M
     include_dynamics_observation: bool = False
     include_previous_action: bool = False
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None
     source_manifest_path: Path | None = None
     training_config_path: Path | None = None
     final_stage_manifest_path: Path | None = None
@@ -220,7 +228,21 @@ class PolicyRenderSettings:
         if self.camera_mode not in SUPPORTED_CAMERA_MODES:
             message = f"camera_mode must be one of: {', '.join(SUPPORTED_CAMERA_MODES)}"
             raise ValueError(message)
-        envs.actions.parse_action_interface(self.action_interface)
+        action_config = envs.actions.ActionInterfaceConfig(
+            action_interface=self.action_interface,
+            rpm_delta_scale=self.rpm_delta_scale,
+            pid_target_z_min_m=self.pid_target_z_min_m,
+            pid_target_z_max_m=self.pid_target_z_max_m,
+            include_dynamics_observation=self.include_dynamics_observation,
+            include_previous_action=self.include_previous_action,
+        )
+        object.__setattr__(self, "action_interface", action_config.parsed_action_interface.value)
+        object.__setattr__(self, "rpm_delta_scale", action_config.rpm_delta_scale)
+        object.__setattr__(self, "pid_target_z_min_m", action_config.pid_target_z_min_m)
+        object.__setattr__(self, "pid_target_z_max_m", action_config.pid_target_z_max_m)
+        object.__setattr__(self, "include_dynamics_observation", action_config.include_dynamics_observation)
+        object.__setattr__(self, "include_previous_action", action_config.include_previous_action)
+        object.__setattr__(self, "initial_state", envs.initial_state.parse_initial_state_config(self.initial_state))
         if not np.isfinite(self.camera_distance) or self.camera_distance <= 0.0:
             message = "camera_distance must be finite and positive"
             raise ValueError(message)
@@ -239,6 +261,11 @@ class PolicyRenderSettings:
         if not self.manifest_filename.endswith(".json"):
             message = "manifest_filename must end with .json"
             raise ValueError(message)
+
+
+def _settings_initial_state(settings: PolicyRenderSettings) -> envs.initial_state.InitialStateConfig:
+    """Return the normalized initial-state config from render settings."""
+    return cast("envs.initial_state.InitialStateConfig", settings.initial_state)
 
 
 @dataclass(frozen=True)
@@ -339,8 +366,11 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         normalize_actions=ppo_settings.normalize_actions,
         action_interface=ppo_settings.action_interface,
         rpm_delta_scale=ppo_settings.rpm_delta_scale,
+        pid_target_z_min_m=ppo_settings.pid_target_z_min_m,
+        pid_target_z_max_m=ppo_settings.pid_target_z_max_m,
         include_dynamics_observation=ppo_settings.include_dynamics_observation,
         include_previous_action=ppo_settings.include_previous_action,
+        initial_state=ppo_settings.initial_state,
         training_config_path=active_settings.config_path,
     )
     tracking_env = _make_policy_render_env(
@@ -543,8 +573,11 @@ def _make_policy_render_env(task: Any, *, record: bool, max_steps: int | None, s
         max_steps=max_steps,
         action_interface=settings.action_interface,
         rpm_delta_scale=settings.rpm_delta_scale,
+        pid_target_z_min_m=settings.pid_target_z_min_m,
+        pid_target_z_max_m=settings.pid_target_z_max_m,
         include_dynamics_observation=settings.include_dynamics_observation,
         include_previous_action=settings.include_previous_action,
+        initial_state=settings.initial_state,
     )
     if settings.normalize_actions or envs.actions.parse_action_interface(settings.action_interface) == envs.actions.ActionInterface.DIRECT_RPM:
         return envs.tracking_env.make_normalized_action_env(real_env)
@@ -734,9 +767,13 @@ def _rollout_observation_metadata(
         "task_shape": task_shape,
         "action_interface": settings.action_interface,
         "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == "direct_rpm" else None,
+        "pid_target_z_min_m": settings.pid_target_z_min_m if settings.action_interface == "pid_position" else None,
+        "pid_target_z_max_m": settings.pid_target_z_max_m if settings.action_interface == "pid_position" else None,
         "normalize_actions": bool(settings.normalize_actions),
         "include_dynamics_observation": bool(settings.include_dynamics_observation),
         "include_previous_action": bool(settings.include_previous_action),
+        "initial_state_mode": _settings_initial_state(settings).mode,
+        "initial_state": _settings_initial_state(settings).to_dict(),
         "model_observation_space": str(model_space),
         "model_observation_space_shape": _space_shape(model_space),
         "env_observation_space": str(env_space),
@@ -818,7 +855,11 @@ def _build_trace_record(
     reference_position = np.asarray(info["reference_position"], dtype=float)
     error_xyz = actual_position - reference_position
     applied_action = info.get("applied_action")
+    normalized_action = info.get("normalized_action", action if action is not None else [])
+    real_action = info.get("real_action", applied_action if applied_action is not None else action if action is not None else [])
+    ppo_action_dim = info.get("ppo_action_dim", 0)
     is_start_hold = bool(info.get("is_start_hold", False))
+    is_final_hold = bool(info.get("is_final_hold", False))
     return {
         "step_index": int(step_index),
         "episode_index": 0,
@@ -834,15 +875,39 @@ def _build_trace_record(
         "roll_pitch_yaw": _array_to_jsonable(info.get("roll_pitch_yaw", [])),
         "angular_velocity": _array_to_jsonable(info.get("angular_velocity", [])),
         "action": _array_to_jsonable(action if action is not None else []),
+        "normalized_action": _array_to_jsonable(normalized_action),
+        "real_action": _array_to_jsonable(real_action),
         "applied_action": None if applied_action is None else _array_to_jsonable(applied_action),
+        "actions_normalized": bool(info.get("action_normalized", False)),
+        "action_interface": str(info.get("action_interface", "")),
+        "real_action_type": str(info.get("real_action_type", "")),
+        "ppo_action_dim": 0 if ppo_action_dim is None else int(ppo_action_dim),
+        "real_action_space_low": _array_to_jsonable(info.get("real_action_space_low", [])),
+        "real_action_space_high": _array_to_jsonable(info.get("real_action_space_high", [])),
+        **_pid_z_trace_fields(info),
+        **_initial_state_trace_fields(info),
+        "real_motor_rpms": _array_to_jsonable(info.get("real_motor_rpms", [])),
+        "rpm_saturation_mask": _array_to_jsonable(info.get("rpm_saturation_mask", [])),
+        "rpm_clipped": bool(info.get("rpm_clipped", False)),
+        "action_clipped": bool(info.get("action_clipped", False)),
+        "hover_rpm": info.get("hover_rpm"),
+        "rpm_delta_scale": info.get("rpm_delta_scale"),
+        "rpm_min": info.get("rpm_min"),
+        "rpm_max": info.get("rpm_max"),
         "task_shape": str(info.get("task_shape", "unknown")),
         "start_hold_enabled": bool(info.get("start_hold_enabled", False)),
         "start_hold_sec": float(info.get("start_hold_sec", 0.0)),
         "exclude_start_hold_from_tracking_metrics": bool(info.get("exclude_start_hold_from_tracking_metrics", False)),
         "tracking_phase_start_step": int(info.get("tracking_phase_start_step", 0)),
         "tracking_phase_start_time_sec": float(info.get("tracking_phase_start_time_sec", 0.0)),
+        "final_hold_enabled": bool(info.get("final_hold_enabled", False)),
+        "final_hold_sec": float(info.get("final_hold_sec", 0.0)),
+        "exclude_final_hold_from_tracking_metrics": bool(info.get("exclude_final_hold_from_tracking_metrics", False)),
+        "tracking_phase_end_step": int(info.get("tracking_phase_end_step", 0)),
+        "tracking_phase_end_time_sec": float(info.get("tracking_phase_end_time_sec", 0.0)),
         "is_start_hold": is_start_hold,
-        "is_tracking_phase": bool(info.get("is_tracking_phase", not is_start_hold)),
+        "is_final_hold": is_final_hold,
+        "is_tracking_phase": bool(info.get("is_tracking_phase", not is_start_hold and not is_final_hold)),
         "terminated": bool(terminated),
         "truncated": bool(truncated),
         "termination_reason": str(info.get("termination_reason", "running")),
@@ -1415,6 +1480,62 @@ def _axis_span(bounds: dict[str, list[float]], axis: int) -> float:
     if len(mins) <= axis or len(maxes) <= axis:
         return 0.0
     return float(maxes[axis] - mins[axis])
+
+
+def _initial_state_trace_fields(info: dict[str, Any]) -> dict[str, Any]:
+    """Return initial-state fields present in a rollout info mapping."""
+    keys = (
+        "initial_state_mode",
+        "initial_state",
+        "initial_xyz",
+        "requested_initial_xyz",
+        "actual_initial_xyz",
+        "initial_xyz_source",
+        "initial_xyz_offset",
+        "initial_reference_xyz",
+        "initial_xyz_matches_reference_start",
+        "initial_position_error_m",
+        "initial_z_error_m",
+        "initial_z_error_signed_m",
+        "spawned_at_reference_start",
+    )
+    return {key: info[key] for key in keys if key in info}
+
+
+def _pid_z_trace_fields(info: dict[str, Any]) -> dict[str, Any]:
+    """Return PID z reachability fields present in a rollout info mapping."""
+    keys = (
+        "pid_target_z_min_m",
+        "pid_target_z_max_m",
+        "base_pid_z_target_low",
+        "base_pid_z_target_high",
+        "real_pid_z_target_low",
+        "real_pid_z_target_high",
+        "reference_z_min",
+        "reference_z_max",
+        "reference_z_reachable_by_pid_position",
+        "z_reference_above_pid_high_margin",
+        "z_reference_below_pid_low_margin",
+        "pid_z_action_space_expanded",
+        "real_pid_z_target_for_normalized_action2_minus1",
+        "real_pid_z_target_for_normalized_action2_zero",
+        "real_pid_z_target_for_normalized_action2_plus1",
+        "normalized_action2_real_z_targets",
+    )
+    return {key: _json_ready_trace_value(info[key]) for key in keys if key in info}
+
+
+def _json_ready_trace_value(value: Any) -> Any:
+    """Return a JSON-compatible copy of a rollout trace value."""
+    if isinstance(value, np.ndarray):
+        return _array_to_jsonable(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_ready_trace_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready_trace_value(item) for item in value]
+    return value
 
 
 def _array_to_jsonable(value: Any) -> list[Any]:

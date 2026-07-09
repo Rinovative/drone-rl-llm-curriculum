@@ -313,7 +313,8 @@ def test_repair_prompt_mentions_supported_distributions_and_concrete_task_values
     assert "reference_too_fast" in content
     assert "z_instability" in content
     assert "curriculum_feedback" in content
-    assert "controlled vertical" in content
+    assert "pure vertical" in content
+    assert "angled/delayed" in content
     assert "slow L-shape/polyline" in content
     assert "gentle ellipse/circle" in content
     assert "Do not choose broad shows, scenarios, or basic_training_show" in content
@@ -350,7 +351,9 @@ def test_proposal_prompt_embeds_structured_curriculum_feedback_guidance() -> Non
     assert "curriculum_feedback" in content
     assert "guidance_not_absolute_command" in content
     assert "takeoff_stabilization" in content
-    assert "controlled vertical" in content
+    assert "pure vertical" in content
+    assert "angled_vertical" in content
+    assert "delayed_altitude" in content
     assert "shorter or slower line" in content
     assert "slow polyline or L-shape" in content
     assert "gentle ellipse or slow circle" in content

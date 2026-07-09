@@ -67,7 +67,7 @@ bootstrap:
     duration_sec: 3.0
     sample_rate_hz: 10.0
     start_hold_enabled: true
-    start_hold_sec: 2.0
+    start_hold_sec: 1.0
     exclude_start_hold_from_tracking_metrics: true
     position:
     - 0.0
@@ -75,8 +75,8 @@ bootstrap:
     - 1.0
     start_height_policy: standard_reference_1p0m
     height_variation_enabled: true
-    start_hold_policy: uniform_2p0s_start_hold
-    start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
+    start_hold_policy: uniform_reference_start_hold_1p0s
+    start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
     tracking_reward_starts_after_start_hold: false
     base_z_m: 1.0
     sampled_start_height_m: 1.0

@@ -23,7 +23,7 @@ OWN_TASK_SEED = 4
 EVAL_RPM_DELTA_SCALE = 0.07
 STANDARD_SCENARIO_LABELS = ("easy", "medium", "hard")
 STANDARD_SCENARIO_COUNT = len(STANDARD_SCENARIO_LABELS)
-STANDARD_SCENARIO_START_HOLD_SEC = 2.0
+STANDARD_SCENARIO_START_HOLD_SEC = 1.0
 OBSERVATION_MISMATCH_MESSAGE = "Observation spaces do not match: model != env"
 
 
@@ -832,8 +832,11 @@ def test_policy_evaluation_env_builder_applies_spec_action_and_observation_flags
         "max_steps": 17,
         "action_interface": "direct_rpm",
         "rpm_delta_scale": EVAL_RPM_DELTA_SCALE,
+        "pid_target_z_min_m": 0.2,
+        "pid_target_z_max_m": 1.5,
         "include_dynamics_observation": True,
         "include_previous_action": True,
+        "initial_state": policy_evaluation.envs.initial_state.parse_initial_state_config(None),
     }
     assert calls["normalized_env"] is env[1]
 

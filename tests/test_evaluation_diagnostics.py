@@ -14,6 +14,8 @@ from src import evaluation
 
 TRACE_RECORD_COUNT = 5
 EXPECTED_CURRICULUM_FEEDBACK_VERSION = 2
+PHASE_START_STEP = 2
+PHASE_END_STEP = 5
 
 
 class _ActionSpace:
@@ -82,6 +84,20 @@ def _record(
         "base_truncation_causes": [],
         "base_reason_fields": {},
     }
+
+
+def _set_trace_xyz(record: dict[str, object], actual: list[float], reference: list[float]) -> None:
+    """Update XYZ trace fields while keeping consistency checks satisfied."""
+    actual_array = np.asarray(actual, dtype=float)
+    reference_array = np.asarray(reference, dtype=float)
+    error = actual_array - reference_array
+    record["current_position"] = actual_array.tolist()
+    record["reference_position"] = reference_array.tolist()
+    record["actual_position_xyz_m"] = actual_array.tolist()
+    record["reference_position_xyz_m"] = reference_array.tolist()
+    record["axis_error_xyz"] = error.tolist()
+    record["error_xyz_m"] = error.tolist()
+    record["position_error_m"] = float(np.linalg.norm(error))
 
 
 def test_diagnostics_classify_hover_lock_and_write_artifacts(tmp_path: Path) -> None:
@@ -300,6 +316,62 @@ def test_diagnostics_keep_normalized_and_real_action_metrics_separate() -> None:
     assert diagnostics.metrics["real_action_saturation_fraction"] == [1.0, 0.0, 1.0]
     assert diagnostics.episode_summaries[0]["real_action_max"] == [1.0, 0.0, 0.5]
 
+    assert diagnostics.metrics["action_upper_saturation_fraction_by_dim"] == [1.0, 0.0, 0.0]
+    assert diagnostics.metrics["action_lower_saturation_fraction_by_dim"] == [0.0, 0.0, 1.0]
+    assert diagnostics.metrics["normalized_action_p95_by_dim"] == [1.0, 0.0, -1.0]
+    assert diagnostics.metrics["real_action_p95_by_dim"] == [1.0, 0.0, 0.5]
+
+
+def test_diagnostics_report_phase_saturation_and_pid_z_target_metrics() -> None:
+    """Verify PID z saturation diagnostics are split by rollout phase."""
+    actions = [1.0, 1.0, 1.0, 0.0, -1.0, 1.0]
+    actual_z = [1.0, 1.0, 0.9, 1.1, 1.2, 1.0]
+    real_z = [1.2, 1.2, 1.2, 1.0, 0.8, 1.2]
+    velocity_z = [0.0, 0.0, 0.2, -0.1, 0.0, 0.0]
+    records = [_record(index, current_x=0.0, reference_x=0.0, action=[0.0, 0.0, action], task_shape="line") for index, action in enumerate(actions)]
+    for index, record in enumerate(records):
+        _set_trace_xyz(record, actual=[0.0, 0.0, actual_z[index]], reference=[0.0, 0.0, 1.0])
+        record["normalized_action"] = [[0.0, 0.0, actions[index]]]
+        record["real_action"] = [[0.0, 0.0, real_z[index]]]
+        record["actions_normalized"] = True
+        record["action_interface"] = "pid_position"
+        record["real_action_type"] = "pid_target_position"
+        record["real_action_space_low"] = [[-0.2, -0.2, 0.8]]
+        record["real_action_space_high"] = [[0.2, 0.2, 1.2]]
+        record["velocity"] = [0.0, 0.0, velocity_z[index]]
+        record["start_hold_enabled"] = True
+        record["final_hold_enabled"] = True
+        record["tracking_phase_start_step"] = PHASE_START_STEP
+        record["tracking_phase_end_step"] = PHASE_END_STEP
+        record["is_start_hold"] = index < PHASE_START_STEP
+        record["is_final_hold"] = index == PHASE_END_STEP
+        record["is_tracking_phase"] = PHASE_START_STEP <= index < PHASE_END_STEP
+
+    diagnostics = evaluation.diagnostics.summarize_policy_evaluation_trace(
+        trace_records=records,
+        action_space=_ActionSpace(),
+        training_run_name="ppo_line_pid_z_audit",
+        task_shape="line",
+        total_timesteps=64,
+        eval_steps=len(records),
+        seed=0,
+    )
+
+    assert diagnostics.metrics["action_saturation_fraction_by_dim"] == [0.0, 0.0, pytest.approx(5.0 / 6.0)]
+    assert diagnostics.metrics["action_upper_saturation_fraction_by_dim"] == [0.0, 0.0, pytest.approx(4.0 / 6.0)]
+    assert diagnostics.metrics["action_lower_saturation_fraction_by_dim"] == [0.0, 0.0, pytest.approx(1.0 / 6.0)]
+    assert diagnostics.metrics["action_saturation_fraction_start_hold_by_dim"] == [0.0, 0.0, 1.0]
+    assert diagnostics.metrics["action_saturation_fraction_tracking_by_dim"] == [0.0, 0.0, pytest.approx(2.0 / 3.0)]
+    assert diagnostics.metrics["action_saturation_fraction_final_hold_by_dim"] == [0.0, 0.0, 1.0]
+    assert diagnostics.metrics["z_action_upper_saturation_fraction_tracking"] == pytest.approx(1.0 / 3.0)
+    assert diagnostics.metrics["z_target_minus_reference_mean"] == pytest.approx(0.0)
+    assert diagnostics.metrics["z_target_minus_reference_p95"] == pytest.approx(0.18)
+    assert diagnostics.metrics["z_error_mean_tracking"] == pytest.approx((0.1 + 0.1 + 0.2) / 3.0)
+    assert diagnostics.metrics["z_error_p95_tracking"] == pytest.approx(0.19)
+    assert diagnostics.metrics["z_overshoot_fraction_tracking"] == pytest.approx(2.0 / 3.0)
+    assert diagnostics.metrics["vertical_velocity_mean_tracking"] == pytest.approx(1.0 / 30.0)
+    assert diagnostics.metrics["vertical_velocity_p95_abs_tracking"] == pytest.approx(0.19)
+
 
 def test_diagnostics_treat_pid_hover_z_bound_as_expected_boundary_action() -> None:
     """Verify accurate hover at the PID z upper bound is not failed only for saturation."""
@@ -366,6 +438,11 @@ def test_diagnostics_keep_direct_rpm_saturation_as_failure() -> None:
 
     assert diagnostics.metrics["action_saturation_fraction"] == [1.0, 1.0, 1.0, 1.0]
     assert diagnostics.metrics["real_action_saturation_fraction"] == [1.0, 1.0, 1.0, 1.0]
+    assert diagnostics.metrics["rpm_saturation_fraction_by_motor"] == [1.0, 1.0, 1.0, 1.0]
+    assert diagnostics.metrics["rpm_upper_saturation_fraction_by_motor"] == [1.0, 1.0, 1.0, 1.0]
+    assert diagnostics.metrics["rpm_lower_saturation_fraction_by_motor"] == [0.0, 0.0, 0.0, 0.0]
+    assert diagnostics.metrics["rpm_clipped_fraction"] == 0.0
+    assert "z_target_minus_reference_mean" not in diagnostics.metrics
     assert diagnostics.metrics["expected_target_boundary_action"] is False
     assert diagnostics.metrics["problematic_action_saturation_dimensions"] == [0, 1, 2, 3]
     assert diagnostics.failure_report["primary_failure_mode"] == "action_saturation"

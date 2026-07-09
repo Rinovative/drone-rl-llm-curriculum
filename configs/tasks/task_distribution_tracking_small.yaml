@@ -28,12 +28,12 @@ task_distribution:
     duration_sec: 3.0
     sample_rate_hz: 10.0
     start_hold_enabled: true
-    start_hold_sec: 2.0
+    start_hold_sec: 1.0
     exclude_start_hold_from_tracking_metrics: true
     start_height_policy: standard_reference_1p0m
     height_variation_enabled: true
-    start_hold_policy: uniform_2p0s_start_hold
-    start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
+    start_hold_policy: uniform_reference_start_hold_1p0s
+    start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
     tracking_reward_starts_after_start_hold: false
     base_z_m: 1.0
     sampled_start_height_m: 1.0
@@ -67,8 +67,8 @@ task_distribution:
       - 3.0
       - 5.0
       start_hold_range_sec:
-      - 2.0
-      - 2.0
+      - 1.0
+      - 1.0
       base_z_range_m:
       - 0.9
       - 1.1
@@ -85,8 +85,8 @@ task_distribution:
       - 4.5
       - 8.0
       start_hold_range_sec:
-      - 2.0
-      - 2.0
+      - 1.0
+      - 1.0
       base_z_range_m:
       - 0.9
       - 1.1
@@ -100,8 +100,8 @@ task_distribution:
       - 0.9
       - 1.1
       hold_duration_range_sec:
-      - 2.0
-      - 2.0
+      - 1.0
+      - 1.0
       move_duration_range_sec:
       - 4.0
       - 7.5
@@ -114,8 +114,8 @@ task_distribution:
     - 0.9
     - 1.1
     height_variation_enabled: true
-    start_hold_policy: uniform_2p0s_start_hold
-    start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
+    start_hold_policy: uniform_reference_start_hold_1p0s
+    start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
     tracking_reward_starts_after_start_hold: false
     standard_reference_height_enabled: true
 start_height_policy: standard_reference_1p0m
@@ -123,7 +123,7 @@ base_z_range_m:
 - 0.9
 - 1.1
 height_variation_enabled: true
-start_hold_policy: uniform_2p0s_start_hold
-start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
+start_hold_policy: uniform_reference_start_hold_1p0s
+start_hold_reward_policy: full_tracking_reward_active_during_uniform_reference_start_hold
 tracking_reward_starts_after_start_hold: false
 standard_reference_height_enabled: true

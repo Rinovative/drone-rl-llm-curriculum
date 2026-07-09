@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -53,7 +53,7 @@ DEFAULT_MANIFEST_FILENAME = "scenario_render_manifest.json"
 DEFAULT_TRACE_FILENAME = "scenario_rollout_trace.jsonl"
 DEFAULT_PHASE_SAMPLE_RATE_HZ = 10.0
 DEFAULT_PHASE_Z_M = 1.0
-DEFAULT_START_HOLD_SEC = 2.0
+DEFAULT_START_HOLD_SEC = 1.0
 DEFAULT_FINAL_HOLD_SEC = 0.0
 SCRIPTED_REFERENCE_SCENARIO_PREFIX = "scripted_reference_"
 PPO_SCENARIO_PREFIX = "ppo_"
@@ -246,6 +246,8 @@ class ScenarioRenderSettings:
         Whether the scenario env includes dynamics observations expected by training.
     include_previous_action
         Whether the scenario env includes previous-action observations expected by training.
+    initial_state
+        Initial drone spawn-position policy used by the scenario environment.
     source_manifest_path
         Optional direct run or curriculum root manifest path used for diagnostics.
     training_config_path
@@ -282,8 +284,11 @@ class ScenarioRenderSettings:
     normalize_actions: bool = True
     action_interface: str = "pid_position"
     rpm_delta_scale: float = 0.05
+    pid_target_z_min_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MIN_M
+    pid_target_z_max_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MAX_M
     include_dynamics_observation: bool = False
     include_previous_action: bool = False
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None
     source_manifest_path: Path | None = None
     training_config_path: Path | None = None
     final_stage_manifest_path: Path | None = None
@@ -297,7 +302,21 @@ class ScenarioRenderSettings:
         if self.controller not in policy_render.SUPPORTED_CONTROLLERS:
             message = f"controller must be one of: {', '.join(policy_render.SUPPORTED_CONTROLLERS)}"
             raise ValueError(message)
-        envs.actions.parse_action_interface(self.action_interface)
+        action_config = envs.actions.ActionInterfaceConfig(
+            action_interface=self.action_interface,
+            rpm_delta_scale=self.rpm_delta_scale,
+            pid_target_z_min_m=self.pid_target_z_min_m,
+            pid_target_z_max_m=self.pid_target_z_max_m,
+            include_dynamics_observation=self.include_dynamics_observation,
+            include_previous_action=self.include_previous_action,
+        )
+        object.__setattr__(self, "action_interface", action_config.parsed_action_interface.value)
+        object.__setattr__(self, "rpm_delta_scale", action_config.rpm_delta_scale)
+        object.__setattr__(self, "pid_target_z_min_m", action_config.pid_target_z_min_m)
+        object.__setattr__(self, "pid_target_z_max_m", action_config.pid_target_z_max_m)
+        object.__setattr__(self, "include_dynamics_observation", action_config.include_dynamics_observation)
+        object.__setattr__(self, "include_previous_action", action_config.include_previous_action)
+        object.__setattr__(self, "initial_state", envs.initial_state.parse_initial_state_config(self.initial_state))
         if self.controller == policy_render.PPO_CONTROLLER and not self.model_run_name and self.model_path is None:
             message = "PPO scenario rendering requires model_run_name or model_path"
             raise ValueError(message)
@@ -343,6 +362,11 @@ class ScenarioRenderSettings:
         if not self.manifest_filename.endswith(".json"):
             message = "manifest_filename must end with .json"
             raise ValueError(message)
+
+
+def _settings_initial_state(settings: ScenarioRenderSettings) -> envs.initial_state.InitialStateConfig:
+    """Return the normalized initial-state config from scenario settings."""
+    return cast("envs.initial_state.InitialStateConfig", settings.initial_state)
 
 
 @dataclass(frozen=True)
@@ -875,8 +899,11 @@ def _settings_from_mapping(config: dict[str, Any], scenario_config_path: Path) -
         normalize_actions=bool(config.get("normalize_actions", True)),
         action_interface=str(config.get("action_interface", "pid_position")),
         rpm_delta_scale=float(config.get("rpm_delta_scale") or 0.05),
+        pid_target_z_min_m=float(config.get("pid_target_z_min_m") or envs.actions.DEFAULT_PID_TARGET_Z_MIN_M),
+        pid_target_z_max_m=float(config.get("pid_target_z_max_m") or envs.actions.DEFAULT_PID_TARGET_Z_MAX_M),
         include_dynamics_observation=bool(config.get("include_dynamics_observation", False)),
         include_previous_action=bool(config.get("include_previous_action", False)),
+        initial_state=config.get("initial_state"),
     )
 
 
@@ -1889,8 +1916,11 @@ def _make_scenario_tracking_env(
         episode_len_sec=base_time_limit_sec,
         action_interface=settings.action_interface,
         rpm_delta_scale=settings.rpm_delta_scale,
+        pid_target_z_min_m=settings.pid_target_z_min_m,
+        pid_target_z_max_m=settings.pid_target_z_max_m,
         include_dynamics_observation=settings.include_dynamics_observation,
         include_previous_action=settings.include_previous_action,
+        initial_state=settings.initial_state,
     )
     if settings.normalize_actions or envs.actions.parse_action_interface(settings.action_interface) == envs.actions.ActionInterface.DIRECT_RPM:
         return envs.tracking_env.make_normalized_action_env(real_env)
@@ -1943,8 +1973,11 @@ def _policy_settings(
         normalize_actions=active_settings.normalize_actions,
         action_interface=active_settings.action_interface,
         rpm_delta_scale=active_settings.rpm_delta_scale,
+        pid_target_z_min_m=active_settings.pid_target_z_min_m,
+        pid_target_z_max_m=active_settings.pid_target_z_max_m,
         include_dynamics_observation=active_settings.include_dynamics_observation,
         include_previous_action=active_settings.include_previous_action,
+        initial_state=active_settings.initial_state,
         source_manifest_path=active_settings.source_manifest_path,
         training_config_path=active_settings.training_config_path,
         final_stage_manifest_path=active_settings.final_stage_manifest_path,
@@ -2088,9 +2121,13 @@ def _build_scenario_metrics(
         "warnings": list(warnings),
         "action_interface": settings.action_interface,
         "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == "direct_rpm" else None,
+        "pid_target_z_min_m": settings.pid_target_z_min_m if settings.action_interface == "pid_position" else None,
+        "pid_target_z_max_m": settings.pid_target_z_max_m if settings.action_interface == "pid_position" else None,
         "normalize_actions": bool(settings.normalize_actions),
         "include_dynamics_observation": bool(settings.include_dynamics_observation),
         "include_previous_action": bool(settings.include_previous_action),
+        "initial_state_mode": _settings_initial_state(settings).mode,
+        "initial_state": _settings_initial_state(settings).to_dict(),
         "source_manifest_path": None if settings.source_manifest_path is None else str(settings.source_manifest_path),
         "training_config_path": None if settings.training_config_path is None else str(settings.training_config_path),
         "final_stage_manifest_path": None if settings.final_stage_manifest_path is None else str(settings.final_stage_manifest_path),
@@ -2160,6 +2197,8 @@ def _build_scenario_manifest(
         "final_stage_manifest_path": None if settings.final_stage_manifest_path is None else str(settings.final_stage_manifest_path),
         "action_interface": settings.action_interface,
         "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == "direct_rpm" else None,
+        "pid_target_z_min_m": settings.pid_target_z_min_m if settings.action_interface == "pid_position" else None,
+        "pid_target_z_max_m": settings.pid_target_z_max_m if settings.action_interface == "pid_position" else None,
         "normalize_actions": bool(settings.normalize_actions),
         "include_dynamics_observation": bool(settings.include_dynamics_observation),
         "include_previous_action": bool(settings.include_previous_action),

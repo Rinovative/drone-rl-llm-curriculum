@@ -9,8 +9,17 @@ seed: 0
 check_env: true
 normalize_actions: true
 action_interface: pid_position
+pid_target_z_min_m: 0.2
+pid_target_z_max_m: 1.5
 include_dynamics_observation: true
 include_previous_action: true
+initial_state:
+  mode: reference_start
+  xyz: null
+  offset_xyz:
+  - 0.0
+  - 0.0
+  - 0.0
 termination_limits:
   mode: relaxed
 diagnostic_limits:

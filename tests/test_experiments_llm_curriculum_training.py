@@ -41,6 +41,7 @@ BUDGET_TEST_CAP = 110
 BUDGET_TEST_STAGE_BUDGETS = [30, 40, 20, 20]
 TASKDIST_RESOLUTION_EFFECTIVE_SEED = 12
 FALLBACK_FAILED_PROPOSAL_COUNT = 2
+EXPECTED_PROGRESSION_REPAIR_COUNT = 2
 
 
 def test_llm_curriculum_config_loads_and_validates() -> None:
@@ -371,7 +372,7 @@ def test_llm_concrete_tasks_materialize_to_varied_bounded_distributions(tmp_path
         },
     }
 
-    minimum_generated_start_hold_sec = 2.0
+    minimum_generated_start_hold_sec = 1.0
 
     for stage_index, (stage_name, task) in enumerate(tasks.items(), start=2):
         materialized = llm_curriculum_training._materialize_concrete_task_distribution(  # noqa: SLF001
@@ -493,12 +494,17 @@ def test_llm_taskdist_reference_resolves_to_concrete_stage_task(tmp_path: Path, 
 
     assert stage["proposal_type"] == "task_distribution"
     assert stage["original_proposal"]["task_distribution_id"] == "tracking_medium"
+    assert stage["proposal_repaired"] is True
+    assert stage["proposal_original_distribution_id"] == "tracking_medium"
+    assert stage["proposal_final_distribution_id"] == "short_line_bootstrap"
+    assert stage["proposal_progression_rule_applied"] == "early_broad_distribution_repaired_to_focused_progression"
+    assert stage["stage_progression_bucket"] == "xy_line"
     assert stage["task_distribution_reference"] == {
-        "task_distribution_id": "tracking_medium",
-        "task_distribution_config_path": "configs/tasks/task_distribution_tracking_medium.yaml",
+        "task_distribution_id": "short_line_bootstrap",
+        "task_distribution_config_path": "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml",
     }
-    assert stage["task_distribution_config_path"] == "configs/tasks/task_distribution_tracking_medium.yaml"
-    assert stage["task_distribution_id"] == "tracking_medium"
+    assert stage["task_distribution_config_path"] == "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml"
+    assert stage["task_distribution_id"] == "short_line_bootstrap"
     assert stage["task"]["task_type"] == "trajectory"
     assert stage["task"].get("shape")
     assert stage["resolved_task"] == stage["task"]
@@ -573,7 +579,10 @@ def test_llm_taskdist_fallback_logs_and_resolves_concrete_task(tmp_path: Path, m
     assert stage["proposal_type"] == "task_distribution"
     assert stage["selected_stage_budget_profile"] == "short"
     assert stage["stage_budget_profile"] == "short"
-    assert stage["task_distribution_reference"]["task_distribution_id"] == "tracking_medium"
+    assert stage["task_distribution_reference"]["task_distribution_id"] == "short_line_bootstrap"
+    assert stage["proposal_repaired"] is False
+    assert stage["proposal_original_distribution_id"] == "short_line_bootstrap"
+    assert stage["proposal_final_distribution_id"] == "short_line_bootstrap"
     assert stage["task"]["task_type"] == "trajectory"
     assert stage["task"].get("shape")
     assert stage["resolved_task"] == stage["task"]
@@ -744,15 +753,23 @@ def test_llm_taskdist_stage_names_use_resolved_concrete_shapes(tmp_path: Path, m
     events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
     stage_names = [stage["stage_name"] for stage in summary["stages"]]
 
-    assert stage_names == ["line", "hover_stabilization", "polyline", "vertical"]
+    assert stage_names == ["start_hold_then_short_line", "polyline", "line", "vertical"]
+    assert summary["stages"][0]["proposal_repaired"] is True
+    assert summary["stages"][0]["proposal_final_distribution_id"] == "short_line_bootstrap"
+    assert summary["stages"][1]["proposal_final_distribution_id"] == "delayed_altitude_polyline_bootstrap"
+    assert summary["stages"][0]["stage_progression_bucket"] == "xy_line"
+    assert summary["stages"][1]["stage_progression_bucket"] == "altitude_combined"
     assert all("tracking_medium" not in stage["run_name"] for stage in summary["stages"])
-    assert summary["stage_run_names"][2] == "curriculum_llm_stage_name_unit_stage03_polyline_seed0"
-    assert summary["stages"][2]["resolved_task_shape"] == "polyline"
+    assert summary["stage_run_names"][1] == "curriculum_llm_stage_name_unit_stage02_polyline_seed0"
+    assert summary["stages"][1]["resolved_task_shape"] == "polyline"
     assert summary["stages"][3]["resolved_task_shape"] == "vertical"
+    assert summary["curriculum_coverage"]["xy_line_count"] == 1
+    assert summary["curriculum_coverage"]["altitude_combined_count"] == 1
+    assert summary["proposal_progression_repair_count"] == EXPECTED_PROGRESSION_REPAIR_COUNT
     budget_events = [event for event in events if event["event_type"] == "llm_stage_budget_decision"]
-    assert budget_events[1]["stage_name"] == "hover_stabilization"
-    assert budget_events[2]["stage_name"] == "polyline"
-    assert budget_events[2]["accepted_task"]["shape"] == "polyline"
+    assert budget_events[0]["stage_name"] == "start_hold_then_short_line"
+    assert budget_events[1]["stage_name"] == "polyline"
+    assert budget_events[1]["accepted_task"]["shape"] == "polyline"
 
 
 def test_llm_taskdist_wandb_identity_uses_resolved_stage_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -794,13 +811,14 @@ def test_llm_taskdist_wandb_identity_uses_resolved_stage_shape(tmp_path: Path, m
     summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
 
     assert len(calls) == 1
-    assert calls[0]["run_name"] == "curriculum_llm_wandb_name_unit_stage01_polyline_seed2"
-    assert "stage:polyline" in calls[0]["wandb_tags"]
-    assert "task:polyline" in calls[0]["wandb_tags"]
-    assert calls[0]["run_metadata"]["curriculum_stage_name"] == "polyline"
+    assert calls[0]["run_name"] == "curriculum_llm_wandb_name_unit_stage01_start_hold_then_short_line_seed2"
+    assert "stage:start_hold_then_short_line" in calls[0]["wandb_tags"]
+    assert "task:start_hold_then_short_line" in calls[0]["wandb_tags"]
+    assert calls[0]["run_metadata"]["curriculum_stage_name"] == "start_hold_then_short_line"
     assert calls[0]["run_metadata"]["curriculum_stage_run_name"] == calls[0]["run_name"]
-    assert calls[0]["run_metadata"]["accepted_task"]["shape"] == "polyline"
-    assert summary["stages"][0]["stage_name"] == "polyline"
+    assert calls[0]["run_metadata"]["accepted_task"]["shape"] == "start_hold_then_short_line"
+    assert summary["stages"][0]["stage_name"] == "start_hold_then_short_line"
+    assert summary["stages"][0]["proposal_final_distribution_id"] == "short_line_bootstrap"
     assert summary["stages"][0]["run_name"] == calls[0]["run_name"]
 
 
@@ -872,10 +890,12 @@ def test_llm_context_summary_uses_trends_and_diagnostic_guidance() -> None:
     assert guidance["prefer_metrics_over_readiness_label"] is True
     assert guidance["do_not_overreact_to_single_failure_mode"] is True
     assert "difficulty" in guidance["action_saturation"]
-    assert "controlled_vertical" in guidance["z_instability"]
+    assert "pure_vertical_only" in guidance["z_instability"]
     assert guidance["xy_tracking"] == "consider_shorter_slower_line_or_start_hold_then_line"
     assert guidance["turn_following"] == "consider_slow_l_shape_or_polyline"
     assert guidance["curvature_following"] == "consider_gentle_ellipse_or_slow_circle_before_figure_eight"
+    assert summary["progression_coverage_summary"]["xy_line_count"] == 1
+    assert summary["progression_coverage_summary"]["hover_vertical_loop_detected"] is False
     assert guidance["reference_too_fast_or_too_hard"] == "choose_easier_or_slower_same_family_variant"
     assert guidance["prefer_targeted_skill_training_over_default_hover"] is True
     assert summary["previous_feedback_summaries"][-1]["primary_skill_gaps"] == ["altitude_control"]
@@ -914,7 +934,7 @@ def test_context_overflow_fallback_prefers_focused_distribution_before_broad() -
         context_overflow=True,
     )
 
-    assert fallback["task"]["task_distribution_id"] == "vertical_up_down_bootstrap"
+    assert fallback["task"]["task_distribution_id"] == "delayed_altitude_polyline_bootstrap"
     assert fallback["task"]["task_distribution_id"] != "tracking_small"
     assert fallback["task"]["task_distribution_id"] != "tracking_medium"
     assert fallback["llm_request_failed_due_to_context_size"] is True

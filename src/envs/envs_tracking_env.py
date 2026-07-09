@@ -43,6 +43,7 @@ from src import envs, validation
 OBSERVATION_DIMENSIONS = 10
 DYNAMICS_OBSERVATION_DIMENSIONS = 9
 XYZ_DIMENSIONS = 3
+REFERENCE_POSITION_NDIM = 2
 PROGRESS_DIMENSIONS = 1
 RPM_MOTOR_COUNT = 4
 STATE_VECTOR_MIN_DIMENSIONS = 20
@@ -52,24 +53,32 @@ BASE_Z_TRUNCATION_LIMIT_M = 2.0
 BASE_ATTITUDE_TRUNCATION_LIMIT_RAD = 0.4
 TRACKING_ACTION_XY_MARGIN_M = 0.2
 TRACKING_ACTION_Z_MARGIN_M = 0.5
+PID_ACTION_Z_INDEX = 2
+PID_Z_REACHABILITY_TOLERANCE_M = 1.0e-6
 NORMALIZED_ACTION_LOW = -1.0
 NORMALIZED_ACTION_HIGH = 1.0
+PID_NORMALIZED_ACTION2_TARGETS = {
+    "minus1": NORMALIZED_ACTION_LOW,
+    "zero": 0.0,
+    "plus1": NORMALIZED_ACTION_HIGH,
+}
 
 
 class NormalizedActionWrapper(gym.Wrapper[np.ndarray, Any, np.ndarray, Any]):
     """
-    Map symmetric PPO actions in ``[-1, 1]`` to real PID target-position actions.
+    Map symmetric PPO actions in ``[-1, 1]`` to the wrapped environment action space.
 
     Parameters
     ----------
     env
-        Trajectory tracking environment exposing the real PID target-position action space.
+        Trajectory tracking environment exposing a bounded real action space.
 
     Notes
     -----
-    The wrapped environment physics and PID semantics are unchanged. Only the
-    action interface seen by PPO is normalized; every step forwards the mapped
-    real action to the underlying environment and records both forms in ``info``.
+    The wrapped environment physics and control semantics are unchanged. Only
+    the action interface seen by PPO is normalized; every step forwards the
+    mapped real action to the underlying environment and preserves any richer
+    action metadata that the environment reports in ``info``.
 
     """
 
@@ -83,7 +92,9 @@ class NormalizedActionWrapper(gym.Wrapper[np.ndarray, Any, np.ndarray, Any]):
             dtype=np.float32,
         )
         self.action_space = self.normalized_action_space
-        self.action_interface = envs.actions.ActionInterface.PID_POSITION.value
+        raw_action_interface = getattr(env, "action_interface", envs.actions.DEFAULT_ACTION_INTERFACE)
+        self.action_interface = envs.actions.parse_action_interface(raw_action_interface).value
+        self.real_action_type = _real_action_type_for_interface(self.action_interface)
         self.ppo_action_dim = _action_dimension(self.action_space)
 
     def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
@@ -95,14 +106,14 @@ class NormalizedActionWrapper(gym.Wrapper[np.ndarray, Any, np.ndarray, Any]):
             set_previous_action(normalized_action)
         observation, reward, terminated, truncated, info = self.env.step(real_action)
         info = dict(info)
-        info["normalized_action"] = np.array(normalized_action, dtype=float, copy=True)
-        info["real_action"] = np.array(real_action, dtype=float, copy=True)
-        info["action_normalized"] = True
-        info["action_interface"] = self.action_interface
-        info["real_action_type"] = "pid_target_position"
-        info["ppo_action_dim"] = self.ppo_action_dim
-        info["real_action_space_low"] = np.array(self.real_action_space.low, dtype=float, copy=True)
-        info["real_action_space_high"] = np.array(self.real_action_space.high, dtype=float, copy=True)
+        info.setdefault("normalized_action", np.array(normalized_action, dtype=float, copy=True))
+        info.setdefault("real_action", np.array(real_action, dtype=float, copy=True))
+        info.setdefault("action_normalized", True)
+        info.setdefault("action_interface", self.action_interface)
+        info.setdefault("real_action_type", self.real_action_type)
+        info.setdefault("ppo_action_dim", self.ppo_action_dim)
+        info.setdefault("real_action_space_low", np.array(self.real_action_space.low, dtype=float, copy=True))
+        info.setdefault("real_action_space_high", np.array(self.real_action_space.high, dtype=float, copy=True))
         return observation, float(reward), terminated, truncated, info
 
     def normalized_to_real_action(self, action: Any) -> np.ndarray:
@@ -136,10 +147,17 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         Explicit action interface, either ``pid_position`` or ``direct_rpm``.
     rpm_delta_scale
         Fractional RPM delta around hover used only by ``direct_rpm``.
+    pid_target_z_min_m
+        Minimum z target in meters exposed by the ``pid_position`` action space.
+    pid_target_z_max_m
+        Maximum z target in meters exposed by the ``pid_position`` action space.
     include_dynamics_observation
         Whether observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether observations append the previous PPO-facing action.
+    initial_state
+        Optional initial drone spawn-position config. Use ``reference_start`` to
+        spawn at the first reference point instead of the upstream near-ground default.
     termination_limits
         Optional hard episode-control safety limits. Defaults preserve upstream truncation behavior.
     diagnostic_limits
@@ -166,8 +184,11 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         episode_len_sec: float | None = None,
         action_interface: envs.actions.ActionInterface | str = envs.actions.DEFAULT_ACTION_INTERFACE,
         rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+        pid_target_z_min_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MIN_M,
+        pid_target_z_max_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MAX_M,
         include_dynamics_observation: bool = envs.actions.DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
         include_previous_action: bool = envs.actions.DEFAULT_INCLUDE_PREVIOUS_ACTION,
+        initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
         termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
         diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
     ) -> None:
@@ -181,6 +202,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         self.action_config = envs.actions.ActionInterfaceConfig(
             action_interface=action_interface,
             rpm_delta_scale=rpm_delta_scale,
+            pid_target_z_min_m=pid_target_z_min_m,
+            pid_target_z_max_m=pid_target_z_max_m,
             include_dynamics_observation=include_dynamics_observation,
             include_previous_action=include_previous_action,
         )
@@ -191,14 +214,23 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         )
         self.diagnostic_limits = envs.termination.parse_diagnostic_limits(diagnostic_limits)
         self.rpm_delta_scale = self.action_config.rpm_delta_scale
+        self.pid_target_z_min_m = self.action_config.pid_target_z_min_m
+        self.pid_target_z_max_m = self.action_config.pid_target_z_max_m
         self.include_dynamics_observation = self.action_config.include_dynamics_observation
         self.include_previous_action = self.action_config.include_previous_action
+        self.initial_state_config = envs.initial_state.parse_initial_state_config(initial_state)
+        self._last_initial_state_resolution = envs.initial_state.resolve_initial_state(
+            self.initial_state_config,
+            _reference_start_position(self.reference),
+        )
+        self._last_initial_state_diagnostics = self._last_initial_state_resolution.diagnostics()
         self.base_env = _make_tracking_base_env(
             gui=gui,
             record=record,
             episode_len_sec=episode_len_sec,
             action_interface=self.action_config.parsed_action_interface,
             rpm_delta_scale=self.rpm_delta_scale,
+            initial_xyzs=self._last_initial_state_resolution.initial_xyzs_array(),
         )
         self._use_distribution_action_space = _use_distribution_action_space(self.task_distribution_sampler)
         self._tracking_action_space = _make_tracking_action_space(
@@ -206,6 +238,8 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             self.base_env.action_space,
             self.action_config.parsed_action_interface,
             use_base_bounds=self._use_distribution_action_space,
+            pid_target_z_min_m=self.pid_target_z_min_m,
+            pid_target_z_max_m=self.pid_target_z_max_m,
         )
         self.action_space = self._tracking_action_space
         self.ppo_action_dim = _action_dimension(self.action_space)
@@ -252,6 +286,7 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         """
         super().reset(seed=seed)
         self._refresh_task_reference_for_reset()
+        self._prepare_initial_state_for_reset()
         _, base_info = self.base_env.reset(seed=seed, options=options)
         self._step_index = 0
         self._strict_limit_violation_count = 0
@@ -259,6 +294,7 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         self._reset_previous_action()
         state = self._current_state_vector()
         current_position = _state_position(state)
+        self._record_actual_initial_state(current_position)
         reference_position = envs.tracking_reward.select_reference_position(self.reference, self._step_index)
         observation = self._make_observation(
             current_position=current_position,
@@ -397,6 +433,23 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         self.reference = envs.task_adapter.make_task_reference(task, limits=self._task_reference_limits)
         self.task_distribution_metadata = _task_distribution_metadata(self.task_distribution_sampler)
 
+    def _prepare_initial_state_for_reset(self) -> None:
+        """Resolve and apply the active episode initial position before base reset."""
+        default_initial_xyz = _base_env_initial_xyz(self.base_env)
+        self._last_initial_state_resolution = envs.initial_state.resolve_initial_state(
+            self.initial_state_config,
+            _reference_start_position(self.reference),
+            default_initial_xyz=default_initial_xyz,
+        )
+        initial_xyzs = self._last_initial_state_resolution.initial_xyzs_array()
+        if initial_xyzs is not None:
+            self.base_env.INIT_XYZS = initial_xyzs
+        self._last_initial_state_diagnostics = self._last_initial_state_resolution.diagnostics()
+
+    def _record_actual_initial_state(self, current_position: np.ndarray) -> None:
+        """Store diagnostics comparing actual reset position with reference start."""
+        self._last_initial_state_diagnostics = self._last_initial_state_resolution.diagnostics(actual_initial_xyz=current_position)
+
     def _current_position(self) -> np.ndarray:
         """Extract the current drone XYZ position from the HoverAviary state vector."""
         return _state_position(self._current_state_vector())
@@ -503,16 +556,24 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
         is_start_hold = bool(self.reference.start_hold_enabled and reference_index < tracking_phase_start_step)
         is_final_hold = bool(self.reference.final_hold_enabled and reference_index >= tracking_phase_end_step)
         task_distribution_fields = _compact_task_distribution_info_fields(self.task_distribution_metadata)
+        action_space_low, action_space_high = _box_space_bounds(self.action_space, name="tracking action space")
+        base_action_space_low, base_action_space_high = _box_space_bounds(self.base_env.action_space, name="base action space")
         return {
             "action_interface": self.action_interface,
             "real_action_type": self._real_action_type(),
             "ppo_action_dim": self.ppo_action_dim,
+            "real_action_space_low": action_space_low,
+            "real_action_space_high": action_space_high,
+            "base_action_space_low": base_action_space_low,
+            "base_action_space_high": base_action_space_high,
             "include_dynamics_observation": self.include_dynamics_observation,
             "include_previous_action": self.include_previous_action,
             "observation_dim": self.observation_dim,
             "observation_components": _copy_observation_components(self.observation_components),
             "previous_action": np.array(self._previous_action, dtype=float, copy=True),
             "direct_control_limitations": envs.actions.direct_control_limitations(self.action_config.parsed_action_interface),
+            **self.pid_z_reachability_metadata(),
+            **self._last_initial_state_diagnostics,
             "termination_limits_mode": self.termination_limits.mode,
             "termination_limits": self.termination_limits.to_dict(),
             "diagnostic_limits": self.diagnostic_limits.to_dict(),
@@ -538,7 +599,9 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             "sampled_start_height_m": self.reference.task.get("sampled_start_height_m"),
             "height_variation_enabled": bool(self.reference.task.get("height_variation_enabled", False)),
             "start_hold_policy": self.reference.task.get("start_hold_policy"),
-            "start_hold_reward_policy": self.reference.task.get("start_hold_reward_policy", "full_tracking_reward_active_during_uniform_start_hold"),
+            "start_hold_reward_policy": self.reference.task.get(
+                "start_hold_reward_policy", "full_tracking_reward_active_during_uniform_reference_start_hold"
+            ),
             "tracking_reward_starts_after_start_hold": bool(self.reference.task.get("tracking_reward_starts_after_start_hold", False)),
             "tracking_phase_start_step": tracking_phase_start_step,
             "tracking_phase_start_time_sec": tracking_phase_start_time_sec,
@@ -577,6 +640,18 @@ class TrajectoryTrackingEnv(gym.Env[np.ndarray, Any]):
             "base_reason_fields": _base_reason_fields(base_info),
             "termination_reason": termination_reason,
         }
+
+    def pid_z_reachability_metadata(self) -> dict[str, Any]:
+        """Return PID z target bounds and current reference reachability diagnostics."""
+        if self.action_config.parsed_action_interface != envs.actions.ActionInterface.PID_POSITION:
+            return {}
+        return _pid_z_reachability_metadata(
+            reference=self.reference,
+            real_action_space=self._tracking_action_space,
+            base_action_space=self.base_env.action_space,
+            pid_target_z_min_m=self.pid_target_z_min_m,
+            pid_target_z_max_m=self.pid_target_z_max_m,
+        )
 
     def _direct_rpm_step_metadata(self, requested_action: np.ndarray, applied_action: np.ndarray) -> dict[str, Any]:
         """Return per-step direct-RPM metadata or an empty mapping for PID control."""
@@ -671,8 +746,11 @@ def make_trajectory_tracking_env(
     episode_len_sec: float | None = None,
     action_interface: envs.actions.ActionInterface | str = envs.actions.DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    pid_target_z_min_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MAX_M,
     include_dynamics_observation: bool = envs.actions.DEFAULT_INCLUDE_DYNAMICS_OBSERVATION,
     include_previous_action: bool = envs.actions.DEFAULT_INCLUDE_PREVIOUS_ACTION,
+    initial_state: envs.initial_state.InitialStateConfig | Mapping[str, Any] | str | None = None,
     termination_limits: envs.termination.TerminationLimitConfig | Mapping[str, Any] | str | None = None,
     diagnostic_limits: envs.termination.DiagnosticLimitConfig | Mapping[str, Any] | str | None = None,
 ) -> TrajectoryTrackingEnv:
@@ -697,10 +775,16 @@ def make_trajectory_tracking_env(
         Explicit action interface, either ``pid_position`` or ``direct_rpm``.
     rpm_delta_scale
         Fractional RPM delta around hover used only by ``direct_rpm``.
+    pid_target_z_min_m
+        Minimum z target in meters exposed by the ``pid_position`` action space.
+    pid_target_z_max_m
+        Maximum z target in meters exposed by the ``pid_position`` action space.
     include_dynamics_observation
         Whether observations append velocity, attitude, and angular velocity.
     include_previous_action
         Whether observations append the previous PPO-facing action.
+    initial_state
+        Optional initial drone spawn-position config.
     termination_limits
         Optional hard episode-control safety limits.
     diagnostic_limits
@@ -721,8 +805,11 @@ def make_trajectory_tracking_env(
         episode_len_sec=episode_len_sec,
         action_interface=action_interface,
         rpm_delta_scale=rpm_delta_scale,
+        pid_target_z_min_m=pid_target_z_min_m,
+        pid_target_z_max_m=pid_target_z_max_m,
         include_dynamics_observation=include_dynamics_observation,
         include_previous_action=include_previous_action,
+        initial_state=initial_state,
         termination_limits=termination_limits,
         diagnostic_limits=diagnostic_limits,
     )
@@ -731,6 +818,13 @@ def make_trajectory_tracking_env(
 def make_normalized_action_env(env: gym.Env[np.ndarray, Any]) -> NormalizedActionWrapper:
     """Wrap a tracking environment with a symmetric normalized action interface."""
     return NormalizedActionWrapper(env)
+
+
+def _real_action_type_for_interface(action_interface: envs.actions.ActionInterface | str) -> str:
+    """Return the real command type for an action interface."""
+    if envs.actions.parse_action_interface(action_interface) == envs.actions.ActionInterface.DIRECT_RPM:
+        return "motor_rpm"
+    return "pid_target_position"
 
 
 def normalized_to_real_action(action: Any, real_action_space: spaces.Box) -> np.ndarray:
@@ -786,22 +880,111 @@ def _make_tracking_action_space(
     base_action_space: spaces.Box,
     action_interface: envs.actions.ActionInterface,
     use_base_bounds: bool = False,
+    pid_target_z_min_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MIN_M,
+    pid_target_z_max_m: float = envs.actions.DEFAULT_PID_TARGET_Z_MAX_M,
 ) -> spaces.Box:
     """Build action bounds for the selected tracking interface."""
     base_low = np.asarray(base_action_space.low, dtype=np.float32)
     base_high = np.asarray(base_action_space.high, dtype=np.float32)
-    if action_interface == envs.actions.ActionInterface.DIRECT_RPM or use_base_bounds:
+    if action_interface == envs.actions.ActionInterface.DIRECT_RPM:
         return spaces.Box(low=base_low, high=base_high, dtype=np.float32)
-    positions = np.asarray(reference.positions, dtype=np.float32)
-    reference_min = np.min(positions, axis=0)
-    reference_max = np.max(positions, axis=0)
-    margin = np.array([TRACKING_ACTION_XY_MARGIN_M, TRACKING_ACTION_XY_MARGIN_M, TRACKING_ACTION_Z_MARGIN_M], dtype=np.float32)
-    task_low = (reference_min - margin).reshape(base_low.shape)
-    task_high = (reference_max + margin).reshape(base_high.shape)
-    low = np.maximum(base_low, task_low).astype(np.float32, copy=False)
-    high = np.minimum(base_high, task_high).astype(np.float32, copy=False)
+    low = np.array(base_low, dtype=np.float32, copy=True)
+    high = np.array(base_high, dtype=np.float32, copy=True)
+    if not use_base_bounds:
+        positions = np.asarray(reference.positions, dtype=np.float32)
+        reference_min = np.min(positions, axis=0)
+        reference_max = np.max(positions, axis=0)
+        margin = np.array([TRACKING_ACTION_XY_MARGIN_M, TRACKING_ACTION_XY_MARGIN_M, TRACKING_ACTION_Z_MARGIN_M], dtype=np.float32)
+        task_low = (reference_min - margin).reshape(base_low.shape)
+        task_high = (reference_max + margin).reshape(base_high.shape)
+        low = np.maximum(base_low, task_low).astype(np.float32, copy=False)
+        high = np.minimum(base_high, task_high).astype(np.float32, copy=False)
+    z_min, z_max = envs.actions.validate_pid_target_z_bounds(pid_target_z_min_m, pid_target_z_max_m)
+    _set_pid_z_action_bounds(low=low, high=high, z_min=z_min, z_max=z_max)
     high = np.maximum(high, low + np.finfo(np.float32).eps)
     return spaces.Box(low=low, high=high, dtype=np.float32)
+
+
+def _box_space_bounds(space: spaces.Space[Any], *, name: str) -> tuple[np.ndarray, np.ndarray]:
+    """Return low/high bounds for a Box action space."""
+    if not isinstance(space, spaces.Box):
+        message = f"{name} must be a Box space"
+        raise TypeError(message)
+    return np.array(space.low, dtype=float, copy=True), np.array(space.high, dtype=float, copy=True)
+
+
+def _set_pid_z_action_bounds(low: np.ndarray, high: np.ndarray, z_min: float, z_max: float) -> None:
+    """Set PID z target bounds on flattened action-space arrays."""
+    low_flat = low.reshape(-1)
+    high_flat = high.reshape(-1)
+    if low_flat.size <= PID_ACTION_Z_INDEX or high_flat.size <= PID_ACTION_Z_INDEX:
+        message = "pid_position action space must expose x/y/z target dimensions"
+        raise ValueError(message)
+    low_flat[PID_ACTION_Z_INDEX] = np.float32(z_min)
+    high_flat[PID_ACTION_Z_INDEX] = np.float32(z_max)
+
+
+def _pid_z_reachability_metadata(
+    *,
+    reference: envs.task_adapter.EnvironmentTaskReference,
+    real_action_space: spaces.Box,
+    base_action_space: spaces.Box,
+    pid_target_z_min_m: float,
+    pid_target_z_max_m: float,
+) -> dict[str, Any]:
+    """Return JSON-ready PID z reachability metadata for the current reference."""
+    reference_z = np.asarray(reference.positions, dtype=float)[:, 2]
+    reference_z_min = float(np.min(reference_z))
+    reference_z_max = float(np.max(reference_z))
+    real_low_z = _space_axis_bound(real_action_space, "low", axis=2)
+    real_high_z = _space_axis_bound(real_action_space, "high", axis=2)
+    base_low_z = _space_axis_bound(base_action_space, "low", axis=2)
+    base_high_z = _space_axis_bound(base_action_space, "high", axis=2)
+    above_margin = max(0.0, reference_z_max - real_high_z)
+    below_margin = max(0.0, real_low_z - reference_z_min)
+    normalized_targets = {
+        label: float(real_low_z + (normalized_value + 1.0) * 0.5 * (real_high_z - real_low_z))
+        for label, normalized_value in PID_NORMALIZED_ACTION2_TARGETS.items()
+    }
+    return {
+        "pid_target_z_min_m": float(pid_target_z_min_m),
+        "pid_target_z_max_m": float(pid_target_z_max_m),
+        "base_pid_z_target_low": base_low_z,
+        "base_pid_z_target_high": base_high_z,
+        "real_pid_z_target_low": real_low_z,
+        "real_pid_z_target_high": real_high_z,
+        "reference_z_min": reference_z_min,
+        "reference_z_max": reference_z_max,
+        "reference_z_reachable_by_pid_position": bool(
+            reference_z_min >= real_low_z - PID_Z_REACHABILITY_TOLERANCE_M and reference_z_max <= real_high_z + PID_Z_REACHABILITY_TOLERANCE_M
+        ),
+        "z_reference_above_pid_high_margin": float(above_margin),
+        "z_reference_below_pid_low_margin": float(below_margin),
+        "pid_z_action_space_expanded": bool(
+            real_high_z > base_high_z + PID_Z_REACHABILITY_TOLERANCE_M or real_low_z < base_low_z - PID_Z_REACHABILITY_TOLERANCE_M
+        ),
+        "pid_z_action_space_changed": bool(
+            not np.isclose(real_low_z, base_low_z, atol=PID_Z_REACHABILITY_TOLERANCE_M, rtol=0.0)
+            or not np.isclose(real_high_z, base_high_z, atol=PID_Z_REACHABILITY_TOLERANCE_M, rtol=0.0)
+        ),
+        "real_pid_z_target_for_normalized_action2_minus1": normalized_targets["minus1"],
+        "real_pid_z_target_for_normalized_action2_zero": normalized_targets["zero"],
+        "real_pid_z_target_for_normalized_action2_plus1": normalized_targets["plus1"],
+        "normalized_action2_real_z_targets": {
+            "-1": normalized_targets["minus1"],
+            "0": normalized_targets["zero"],
+            "+1": normalized_targets["plus1"],
+        },
+    }
+
+
+def _space_axis_bound(action_space: spaces.Box, attribute: str, axis: int) -> float:
+    """Return one flattened action-space bound."""
+    values = np.asarray(getattr(action_space, attribute), dtype=float).reshape(-1)
+    if values.size <= axis:
+        message = f"action space {attribute} must include axis {axis}"
+        raise ValueError(message)
+    return float(values[axis])
 
 
 def _clip_action_to_space(action: np.ndarray, action_space: spaces.Box) -> np.ndarray:
@@ -1055,6 +1238,7 @@ def _make_tracking_base_env(
     episode_len_sec: float | None = None,
     action_interface: envs.actions.ActionInterface = envs.actions.DEFAULT_ACTION_INTERFACE,
     rpm_delta_scale: float = envs.actions.DEFAULT_RPM_DELTA_SCALE,
+    initial_xyzs: np.ndarray | None = None,
 ) -> Any:
     """Build the HoverAviary instance used by trajectory tracking."""
     from gym_pybullet_drones.envs.HoverAviary import HoverAviary  # noqa: PLC0415
@@ -1079,22 +1263,64 @@ def _make_tracking_base_env(
                 rpm_max=_rpm_max(self),
             )
 
+    base_kwargs: dict[str, Any] = {
+        "gui": gui,
+        "record": record,
+        "obs": ObservationType.KIN,
+    }
+    if initial_xyzs is not None:
+        base_kwargs["initial_xyzs"] = _coerce_initial_xyzs(initial_xyzs)
     if action_interface == envs.actions.ActionInterface.DIRECT_RPM:
         base_env = ConfigurableDirectRPMHoverAviary(
-            gui=gui,
-            record=record,
-            obs=ObservationType.KIN,
+            **base_kwargs,
             act=ActionType.RPM,
             direct_rpm_delta_scale=rpm_delta_scale,
         )
     else:
-        base_env = HoverAviary(gui=gui, record=record, obs=ObservationType.KIN, act=ActionType.PID)
+        base_env = HoverAviary(**base_kwargs, act=ActionType.PID)
     if episode_len_sec is not None:
         if not np.isfinite(float(episode_len_sec)) or float(episode_len_sec) <= 0.0:
             message = "episode_len_sec must be finite and positive when provided"
             raise ValueError(message)
         base_env.EPISODE_LEN_SEC = float(episode_len_sec)
     return base_env
+
+
+def _reference_start_position(reference: envs.task_adapter.EnvironmentTaskReference) -> np.ndarray:
+    """Return the first finite reference XYZ position."""
+    positions = np.asarray(reference.positions, dtype=float)
+    if positions.ndim != REFERENCE_POSITION_NDIM or positions.shape[0] == 0 or positions.shape[1] != XYZ_DIMENSIONS:
+        message = "reference positions must be a finite shape-(N, 3) array"
+        raise RuntimeError(message)
+    start = np.array(positions[0], dtype=float, copy=True)
+    if not np.all(np.isfinite(start)):
+        message = "reference start position must contain only finite values"
+        raise RuntimeError(message)
+    return start
+
+
+def _base_env_initial_xyz(base_env: Any) -> np.ndarray | None:
+    """Return the first base-env initial XYZ when the upstream default is available."""
+    initial_xyzs = getattr(base_env, "INIT_XYZS", None)
+    if initial_xyzs is None:
+        return None
+    array = np.asarray(initial_xyzs, dtype=float)
+    if array.shape != (1, XYZ_DIMENSIONS) or not np.all(np.isfinite(array)):
+        message = "base_env.INIT_XYZS must be a finite shape-(1, 3) array"
+        raise RuntimeError(message)
+    return np.array(array[0], dtype=float, copy=True)
+
+
+def _coerce_initial_xyzs(initial_xyzs: np.ndarray) -> np.ndarray:
+    """Validate the single-drone HoverAviary initial_xyzs payload."""
+    array = np.asarray(initial_xyzs, dtype=float)
+    if array.shape != (1, XYZ_DIMENSIONS):
+        message = "initial_xyzs must be a finite shape-(1, 3) array"
+        raise ValueError(message)
+    if not np.all(np.isfinite(array)):
+        message = "initial_xyzs must contain only finite values"
+        raise ValueError(message)
+    return np.array(array, dtype=float, copy=True)
 
 
 def _hover_rpm(base_env: Any) -> float:
