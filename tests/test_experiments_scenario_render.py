@@ -101,13 +101,13 @@ def test_standard_show_scenarios_compose_with_ordered_difficulty() -> None:
         composition = scenario_render.compose_scenario_reference(settings)
         compositions.append(composition)
 
-        assert settings.start_hold_sec == 2.5
+        assert settings.start_hold_sec == 2.0
         assert composition.reference.shape == "scenario"
-        assert composition.start_hold_sec == 2.5
+        assert composition.start_hold_sec == 2.0
         assert composition.start_hold_steps > 0
         assert composition.start_hold_step_range == {"start": 0, "end": composition.start_hold_steps}
         assert composition.reference.start_hold_enabled is True
-        assert 0.7 <= float(composition.reference.positions[0, 2]) <= 0.95
+        assert 0.9 <= float(composition.reference.positions[0, 2]) <= 1.1
         assert composition.reference.tracking_phase_start_step == composition.start_hold_steps
         np.testing.assert_allclose(composition.reference.positions[0], composition.reference.positions[composition.start_hold_steps])
         assert composition.final_hold_sec > 0.0
@@ -151,8 +151,8 @@ def test_compose_line_phase_uses_custom_delta_position() -> None:
 
     composition = scenario_render.compose_scenario_reference(settings)
 
-    assert np.allclose(composition.phase_start_positions[0], [0.0, 0.0, 0.8])
-    assert np.allclose(composition.phase_end_positions[0], [0.25, 0.75, 0.8])
+    assert np.allclose(composition.phase_start_positions[0], [0.0, 0.0, 1.0])
+    assert np.allclose(composition.phase_end_positions[0], [0.25, 0.75, 1.0])
     assert composition.phase_geometry[0]["delta_position"] == [0.25, 0.75, 0.0]
 
 

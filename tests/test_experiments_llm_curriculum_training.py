@@ -35,7 +35,7 @@ EXPECTED_LLM_BUDGET_PROFILES = {
 }
 EXPECTED_LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recovery": 0.65, "extend": 0.8}
 EXPECTED_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml")
-EXPECTED_BOOTSTRAP_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 0.95]}
+EXPECTED_BOOTSTRAP_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.9, 1.1]}
 BUDGET_TEST_STAGE_COUNT = 4
 BUDGET_TEST_CAP = 110
 BUDGET_TEST_STAGE_BUDGETS = [30, 40, 20, 20]
@@ -371,7 +371,7 @@ def test_llm_concrete_tasks_materialize_to_varied_bounded_distributions(tmp_path
         },
     }
 
-    minimum_generated_start_hold_sec = 1.2
+    minimum_generated_start_hold_sec = 2.0
 
     for stage_index, (stage_name, task) in enumerate(tasks.items(), start=2):
         materialized = llm_curriculum_training._materialize_concrete_task_distribution(  # noqa: SLF001

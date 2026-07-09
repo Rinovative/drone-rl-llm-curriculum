@@ -42,7 +42,7 @@ POLYLINE_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_p
 TRACKING_MEDIUM_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_tracking_medium.yaml")
 BASIC_TRAINING_SHOW_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_basic_training_show.yaml")
 BASIC_TRAINING_SHOW_TASK_INDEX = 3
-BOOTSTRAP_HOVER_TARGET_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 0.95]}
+BOOTSTRAP_HOVER_TARGET_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.9, 1.1]}
 MANUAL_STAGE_DISTRIBUTION_CONFIGS = (
     BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG,
     VERTICAL_BOOTSTRAP_DISTRIBUTION_CONFIG,
@@ -166,8 +166,8 @@ def _assert_manual_medium_curriculum_stage_distributions(settings: manual_traini
     assert stage1.bootstrap_task_shape == "hover_stabilization"
     assert stage1.bootstrap_target_sampling_bounds == BOOTSTRAP_HOVER_TARGET_BOUNDS
     assert stage1.stage_sampling_bounds == {"target_position": BOOTSTRAP_HOVER_TARGET_BOUNDS}
-    assert stage2.stage_sampling_bounds["start_height"] == [0.7, 0.9]
-    assert stage2.stage_sampling_bounds["end_height"] == [0.9, 1.25]
+    assert stage2.stage_sampling_bounds["start_height"] == [0.9, 1.1]
+    assert stage2.stage_sampling_bounds["end_height"] == [1.0, 1.35]
     assert stage3.stage_sampling_bounds["line_length_m"] == [0.3, 0.7]
     assert stage3.stage_sampling_bounds["direction_angle_deg"] == [-45.0, 45.0]
     assert stage4.stage_sampling_bounds["first_segment_length_m"] == [0.38, 0.75]

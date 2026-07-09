@@ -229,7 +229,7 @@ def test_generalization_suite_contains_optional_non_line_tasks() -> None:
         "square_basic",
     }
     assert all(task.task["start_hold_enabled"] is True for task in suite.tasks)
-    assert all(task.task["start_hold_sec"] == 1.8 for task in suite.tasks)
+    assert all(task.task["start_hold_sec"] == 2.0 for task in suite.tasks)
     assert all(task.task["exclude_start_hold_from_tracking_metrics"] is True for task in suite.tasks)
     assert all(task.task["final_hold_enabled"] is True for task in suite.tasks)
     assert all(task.task["final_hold_sec"] == 1.0 for task in suite.tasks)

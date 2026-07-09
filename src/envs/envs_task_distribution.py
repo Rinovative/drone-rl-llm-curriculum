@@ -43,15 +43,18 @@ MODE_RANDOMIZED = "randomized"
 SUPPORTED_MODES = (MODE_FIXED, MODE_RANDOMIZED)
 DEFAULT_SAMPLE_RATE_HZ = 10.0
 DEFAULT_DURATION_SEC = 3.0
-DEFAULT_Z_M = 0.8
-DEFAULT_START_HOLD_SEC = 1.2
+DEFAULT_Z_M = 1.0
+DEFAULT_START_HOLD_SEC = 2.0
 DEFAULT_FINAL_HOLD_SEC = 1.0
+STANDARD_REFERENCE_HEIGHT_POLICY = "standard_reference_1p0m"
+STANDARD_REFERENCE_HEIGHT_RANGE_M = (0.9, 1.1)
+STANDARD_START_HOLD_POLICY = "uniform_2p0s_start_hold"
+STANDARD_START_HOLD_REWARD_POLICY = "full_tracking_reward_active_during_uniform_start_hold"
 MAX_SAMPLE_ATTEMPTS = 64
 RANK_SEED_STRIDE = 1
 COIN_FLIP_PROBABILITY = 0.5
 RANGE_PAIR_LENGTH = 2
 MIN_VERTICAL_HEIGHT_DELTA_M = 0.08
-LOWER_START_METADATA_MAX_M = 0.95
 
 FAMILY_HOVER = "hover_stabilization"
 FAMILY_TAKEOFF = "takeoff_stabilization"
@@ -685,14 +688,15 @@ def _basic_training_show_metadata(
         "start_hold_enabled": True,
         "start_hold_sec": _round(start_hold_sec),
         "exclude_start_hold_from_tracking_metrics": True,
-        "lower_start_height_enabled": True,
-        "start_height_policy": "adjusted_lower_reference_0p70_0p95m",
-        "base_z_range_m": _range_metadata(variation.get("base_z_range_m", variation.get("z_range_m"))),
-        "base_z_offset_range_m": _range_metadata(variation.get("base_z_offset_range_m", variation.get("z_offset_range_m"))),
+        "standard_reference_height_enabled": True,
+        "start_height_policy": STANDARD_REFERENCE_HEIGHT_POLICY,
+        "base_z_m": _round(float(np.asarray(segments[0][validation.contracts.FIELD_SEGMENT_START], dtype=float)[2])),
+        "base_z_range_m": _range_metadata(variation.get("base_z_range_m", variation.get("z_range_m")))
+        or [float(STANDARD_REFERENCE_HEIGHT_RANGE_M[0]), float(STANDARD_REFERENCE_HEIGHT_RANGE_M[1])],
         "sampled_start_height_m": _round(float(np.asarray(segments[0][validation.contracts.FIELD_SEGMENT_START], dtype=float)[2])),
         "height_variation_enabled": _height_variation_enabled(variation),
-        "start_hold_policy": "training_1p2s_after_adjusted_lower_reference",
-        "start_hold_reward_policy": "full_tracking_reward_active_during_short_lower_start_hold",
+        "start_hold_policy": STANDARD_START_HOLD_POLICY,
+        "start_hold_reward_policy": STANDARD_START_HOLD_REWARD_POLICY,
         "tracking_reward_starts_after_start_hold": False,
         "final_hold_enabled": True,
         "final_hold_sec": _round(final_hold_sec),
@@ -762,9 +766,9 @@ def _sample_takeoff_task(settings: TaskDistributionSettings, rng: np.random.Gene
     base = settings.base_task
     base_xy = np.asarray(base.get(validation.contracts.FIELD_XY, _base_position(base)[:2]), dtype=float)
     xy = base_xy + _sample_xy_offset(rng, _float_value(variation.get("xy_radius_m", 0.0)) * settings.strength)
-    start_height = _sample_range(rng, variation.get("start_z_range_m"), default=(0.70, 0.90), anchor=0.80, strength=settings.strength)
+    start_height = _sample_range(rng, variation.get("start_z_range_m"), default=(0.90, 1.10), anchor=1.0, strength=settings.strength)
     end_anchor = float(base.get(validation.contracts.FIELD_END_HEIGHT, _base_position(base)[2]))
-    end_height = _sample_range(rng, variation.get("z_range_m"), default=(0.90, 1.30), anchor=end_anchor, strength=settings.strength)
+    end_height = _sample_range(rng, variation.get("z_range_m"), default=(1.0, 1.35), anchor=end_anchor, strength=settings.strength)
     duration = _sample_range(rng, variation.get("duration_range_sec"), default=(3.0, 4.5), anchor=3.0, strength=settings.strength)
     task = {
         validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
@@ -779,7 +783,7 @@ def _sample_takeoff_task(settings: TaskDistributionSettings, rng: np.random.Gene
 
 
 def _sample_vertical_up_down_task(settings: TaskDistributionSettings, rng: np.random.Generator) -> dict[str, Any]:
-    """Sample a lower-start vertical task that can climb or descend."""
+    """Sample a standard-height vertical task that can climb or descend."""
     variation = settings.variations.get(FAMILY_VERTICAL_UP_DOWN, {})
     base = settings.base_task
     base_xy = np.asarray(base.get(validation.contracts.FIELD_XY, _base_position(base)[:2]), dtype=float)
@@ -788,7 +792,7 @@ def _sample_vertical_up_down_task(settings: TaskDistributionSettings, rng: np.ra
     start_height = _sample_range(
         rng,
         variation.get("start_z_range_m", variation.get("base_z_range_m")),
-        default=(0.70, 0.95),
+        default=STANDARD_REFERENCE_HEIGHT_RANGE_M,
         anchor=start_anchor,
         strength=settings.strength,
     )
@@ -806,7 +810,7 @@ def _sample_vertical_up_down_task(settings: TaskDistributionSettings, rng: np.ra
         sign = -1.0
     else:
         sign = 1.0 if rng.random() < COIN_FLIP_PROBABILITY else -1.0
-    end_low, end_high = _coerce_range(variation.get("end_z_range_m", variation.get("z_range_m")), default=(0.60, 1.30))
+    end_low, end_high = _coerce_range(variation.get("end_z_range_m", variation.get("z_range_m")), default=(0.75, 1.35))
     end_height = float(np.clip(start_height + sign * delta, end_low, end_high))
     if abs(end_height - start_height) < MIN_VERTICAL_HEIGHT_DELTA_M:
         end_height = float(np.clip(start_height - sign * delta, end_low, end_high))
@@ -830,7 +834,7 @@ def _sample_vertical_up_down_task(settings: TaskDistributionSettings, rng: np.ra
 
 
 def _sample_angled_vertical_task(settings: TaskDistributionSettings, rng: np.random.Generator) -> dict[str, Any]:
-    """Sample a lower-start diagonal climb or descent with lateral motion."""
+    """Sample a standard-height diagonal climb or descent with lateral motion."""
     variation = settings.variations.get(FAMILY_ANGLED_VERTICAL, {})
     base = settings.base_task
     start_base, _ = _base_line_points(base)
@@ -840,7 +844,7 @@ def _sample_angled_vertical_task(settings: TaskDistributionSettings, rng: np.ran
     start[2] = _sample_range(
         rng,
         variation.get("start_z_range_m", variation.get("base_z_range_m")),
-        default=(0.70, 0.95),
+        default=STANDARD_REFERENCE_HEIGHT_RANGE_M,
         anchor=float(start_base[2]),
         strength=settings.strength,
     )
@@ -870,7 +874,7 @@ def _sample_angled_vertical_task(settings: TaskDistributionSettings, rng: np.ran
     heading_deg += _float_value(variation.get("heading_jitter_deg", 6.0)) * settings.strength * float(rng.uniform(-1.0, 1.0))
     heading = math.radians(heading_deg)
     end = start + np.array([lateral * math.cos(heading), lateral * math.sin(heading), vertical_sign * delta], dtype=float)
-    z_low, z_high = _coerce_range(variation.get("z_range_m"), default=(0.60, 1.35))
+    z_low, z_high = _coerce_range(variation.get("z_range_m"), default=(0.75, 1.35))
     end[2] = min(max(float(end[2]), z_low), z_high)
     duration = _sample_range(
         rng,
@@ -923,7 +927,7 @@ def _sample_start_hold_line_task(settings: TaskDistributionSettings, rng: np.ran
     hold_duration = _sample_range(
         rng,
         variation.get("hold_duration_range_sec", variation.get("start_hold_range_sec")),
-        default=(0.5, 1.5),
+        default=(DEFAULT_START_HOLD_SEC, DEFAULT_START_HOLD_SEC),
         anchor=hold_anchor,
         strength=settings.strength,
     )
@@ -1109,7 +1113,7 @@ def _sample_multi_height_polyline_task(settings: TaskDistributionSettings, rng: 
 
 
 def _sample_delayed_altitude_polyline_task(settings: TaskDistributionSettings, rng: np.random.Generator) -> dict[str, Any]:
-    """Sample a polyline with lower-level XY motion before an altitude change."""
+    """Sample a polyline with near-level XY motion before an altitude change."""
     variation = settings.variations.get(FAMILY_DELAYED_ALTITUDE_POLYLINE, {})
     start_base, end_base = _base_line_points(settings.base_task)
     start, _, length = _sample_segment(settings=settings, rng=rng, variation=variation, start_base=start_base, end_base=end_base)
@@ -1146,7 +1150,7 @@ def _sample_delayed_altitude_polyline_task(settings: TaskDistributionSettings, r
     p2 = p1 + second_length * forward + 0.35 * second_length * turn_direction * lateral + np.array([0.0, 0.0, height_delta], dtype=float)
     p3 = p2 + 0.35 * second_length * forward
     p3[2] = p2[2]
-    z_low, z_high = _coerce_range(variation.get("z_range_m"), default=(0.60, 1.30))
+    z_low, z_high = _coerce_range(variation.get("z_range_m"), default=(0.75, 1.35))
     for point in (p0, p1, p2, p3):
         point[2] = min(max(float(point[2]), z_low), z_high)
     p1[2] = p0[2]
@@ -1352,7 +1356,7 @@ def _with_start_hold(
         hold_sec = _sample_range(
             rng,
             variation.get("start_hold_range_sec", variation.get(validation.contracts.FIELD_START_HOLD_SEC)),
-            default=(0.5, 1.5),
+            default=(DEFAULT_START_HOLD_SEC, DEFAULT_START_HOLD_SEC),
             anchor=float(base_task.get(validation.contracts.FIELD_START_HOLD_SEC, DEFAULT_START_HOLD_SEC)),
             strength=strength,
         )
@@ -1436,28 +1440,35 @@ def _task_initial_reference_height(task: Mapping[str, Any]) -> float:
 
 
 def _with_policy_metadata(task: dict[str, Any], base_task: Mapping[str, Any], variation: Mapping[str, Any]) -> dict[str, Any]:
-    """Attach lower-start and start-hold reward policy metadata to sampled tasks."""
+    """Attach standard-height and start-hold reward policy metadata to sampled tasks."""
     start_height = _task_initial_reference_height(task)
-    lower_enabled = bool(start_height <= LOWER_START_METADATA_MAX_M or base_task.get("lower_start_height_enabled", False))
-    task.setdefault("lower_start_height_enabled", lower_enabled)
-    task.setdefault("start_height_policy", base_task.get("start_height_policy", "adjusted_lower_reference_0p70_0p95m"))
+    task.setdefault("standard_reference_height_enabled", True)
+    task.setdefault("start_height_policy", _standard_policy_value(base_task.get("start_height_policy"), STANDARD_REFERENCE_HEIGHT_POLICY))
     range_source = variation.get("base_z_range_m", variation.get("start_z_range_m", variation.get("z_range_m")))
     range_metadata = _range_metadata(range_source)
-    if range_metadata is not None:
-        task.setdefault("base_z_range_m", range_metadata)
-    offset_metadata = _range_metadata(variation.get("base_z_offset_range_m"))
-    if offset_metadata is not None:
-        task.setdefault("base_z_offset_range_m", offset_metadata)
+    if range_metadata is None:
+        range_metadata = [float(STANDARD_REFERENCE_HEIGHT_RANGE_M[0]), float(STANDARD_REFERENCE_HEIGHT_RANGE_M[1])]
+    task.setdefault("base_z_range_m", range_metadata)
     task.setdefault("base_z_m", _round(start_height))
     task.setdefault("sampled_start_height_m", _round(start_height))
     task.setdefault("height_variation_enabled", _height_variation_enabled(variation))
-    task.setdefault("start_hold_policy", base_task.get("start_hold_policy", "training_1p2s_after_adjusted_lower_reference"))
+    task.setdefault("start_hold_policy", _standard_policy_value(base_task.get("start_hold_policy"), STANDARD_START_HOLD_POLICY))
     task.setdefault(
         "start_hold_reward_policy",
-        base_task.get("start_hold_reward_policy", "full_tracking_reward_active_during_short_lower_start_hold"),
+        _standard_policy_value(base_task.get("start_hold_reward_policy"), STANDARD_START_HOLD_REWARD_POLICY),
     )
     task.setdefault("tracking_reward_starts_after_start_hold", bool(base_task.get("tracking_reward_starts_after_start_hold", False)))
     return task
+
+
+def _standard_policy_value(value: Any, default: str) -> str:
+    """Return a current policy string, replacing stale lower-start policy names."""
+    if not isinstance(value, str):
+        return default
+    stale_markers = ("lower_start", "lower_reference", "adjusted_lower_reference", "short_lower_start_hold", "1p2s", "1p8s", "2p5s")
+    if any(marker in value for marker in stale_markers):
+        return default
+    return value
 
 
 def _range_metadata(raw_range: Any) -> list[float] | None:

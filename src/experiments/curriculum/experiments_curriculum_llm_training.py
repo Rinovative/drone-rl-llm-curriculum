@@ -49,11 +49,11 @@ DEFAULT_PROPOSAL_FALLBACK_DISTRIBUTION_ID = "tracking_medium"
 DEFAULT_PROPOSAL_FALLBACK_PROFILE = "short"
 DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE = "normal"
 GENERATED_TASK_DISTRIBUTION_STRENGTH = 0.35
-GENERATED_TASK_START_HOLD_SEC = 1.2
-ADJUSTED_LOWER_REFERENCE_POLICY = "adjusted_lower_reference_0p70_0p95m"
-ADJUSTED_LOWER_REFERENCE_OFFSET_M = 0.25
-ADJUSTED_LOWER_REFERENCE_MAX_START_M = 0.95
-PREVIOUS_LOWER_REFERENCE_MAX_START_M = 0.75
+GENERATED_TASK_START_HOLD_SEC = 2.0
+STANDARD_REFERENCE_HEIGHT_POLICY = "standard_reference_1p0m"
+STANDARD_REFERENCE_BASE_Z_M = 1.0
+STANDARD_REFERENCE_HEIGHT_RANGE_M = (0.9, 1.1)
+SUBSTANDARD_REFERENCE_MAX_START_M = 0.95
 XYZ_VECTOR_LENGTH = 3
 GENERATED_TASK_DISTRIBUTION_LABELS = {
     validation.contracts.SHAPE_HOVER: "hover",
@@ -1590,19 +1590,21 @@ def _materialize_concrete_task_distribution(
 
 
 def _with_generated_task_start_hold(task: dict[str, Any]) -> dict[str, Any]:
-    """Apply the LLM curriculum start-hold policy to a materialized concrete task."""
-    task = _with_adjusted_generated_reference_height(task)
+    """Apply the uniform LLM curriculum start-hold policy to a materialized concrete task."""
+    task = _with_standard_generated_reference_height(task)
     task[validation.contracts.FIELD_START_HOLD_ENABLED] = True
     task[validation.contracts.FIELD_START_HOLD_SEC] = max(
         float(task.get(validation.contracts.FIELD_START_HOLD_SEC, GENERATED_TASK_START_HOLD_SEC)),
         GENERATED_TASK_START_HOLD_SEC,
     )
     task[validation.contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS] = True
-    task.setdefault("lower_start_height_enabled", True)
-    task.setdefault("start_height_policy", ADJUSTED_LOWER_REFERENCE_POLICY)
-    task.setdefault("start_hold_policy", "training_1p2s_after_adjusted_lower_reference")
-    task.setdefault("start_hold_reward_policy", "full_tracking_reward_active_during_short_lower_start_hold")
-    task.setdefault("tracking_reward_starts_after_start_hold", False)
+    task.pop("lower_start_height_enabled", None)
+    task.pop("base_z_offset_range_m", None)
+    task["standard_reference_height_enabled"] = True
+    task["start_height_policy"] = STANDARD_REFERENCE_HEIGHT_POLICY
+    task["start_hold_policy"] = "uniform_2p0s_start_hold"
+    task["start_hold_reward_policy"] = "full_tracking_reward_active_during_uniform_start_hold"
+    task["tracking_reward_starts_after_start_hold"] = False
     if task.get(validation.contracts.FIELD_SHAPE) == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
         task[validation.contracts.FIELD_HOLD_DURATION_SEC] = max(
             float(task.get(validation.contracts.FIELD_HOLD_DURATION_SEC, GENERATED_TASK_START_HOLD_SEC)),
@@ -1611,44 +1613,41 @@ def _with_generated_task_start_hold(task: dict[str, Any]) -> dict[str, Any]:
     return task
 
 
-def _with_adjusted_generated_reference_height(task: dict[str, Any]) -> dict[str, Any]:
-    """Raise old lower-reference concrete proposals into the adjusted active band."""
-    offset = _generated_reference_raise_offset(task)
-    if offset <= 0.0:
-        return task
-    if validation.contracts.FIELD_POSITION in task:
-        task[validation.contracts.FIELD_POSITION] = _raised_xyz(task[validation.contracts.FIELD_POSITION], offset)
-    if validation.contracts.FIELD_START in task:
-        task[validation.contracts.FIELD_START] = _raised_xyz(task[validation.contracts.FIELD_START], offset)
-    if validation.contracts.FIELD_END in task:
-        task[validation.contracts.FIELD_END] = _raised_xyz(task[validation.contracts.FIELD_END], offset)
-    if validation.contracts.FIELD_POINTS in task:
-        task[validation.contracts.FIELD_POINTS] = [_raised_xyz(point, offset) for point in task[validation.contracts.FIELD_POINTS]]
-    if validation.contracts.FIELD_START_HEIGHT in task:
-        task[validation.contracts.FIELD_START_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_START_HEIGHT]) + offset)
-    if validation.contracts.FIELD_END_HEIGHT in task:
-        task[validation.contracts.FIELD_END_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_END_HEIGHT]) + offset)
-    if validation.contracts.FIELD_HEIGHT in task:
-        task[validation.contracts.FIELD_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_HEIGHT]) + offset)
-    task["base_z_m"] = _round_height(_task_z_anchor(task) or ADJUSTED_LOWER_REFERENCE_MAX_START_M)
+def _with_standard_generated_reference_height(task: dict[str, Any]) -> dict[str, Any]:
+    """Shift sub-standard concrete proposals up to the standard 1.0m reference height."""
+    offset = _generated_reference_standard_height_offset(task)
+    if offset > 0.0:
+        if validation.contracts.FIELD_POSITION in task:
+            task[validation.contracts.FIELD_POSITION] = _raised_xyz(task[validation.contracts.FIELD_POSITION], offset)
+        if validation.contracts.FIELD_START in task:
+            task[validation.contracts.FIELD_START] = _raised_xyz(task[validation.contracts.FIELD_START], offset)
+        if validation.contracts.FIELD_END in task:
+            task[validation.contracts.FIELD_END] = _raised_xyz(task[validation.contracts.FIELD_END], offset)
+        if validation.contracts.FIELD_POINTS in task:
+            task[validation.contracts.FIELD_POINTS] = [_raised_xyz(point, offset) for point in task[validation.contracts.FIELD_POINTS]]
+        if validation.contracts.FIELD_START_HEIGHT in task:
+            task[validation.contracts.FIELD_START_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_START_HEIGHT]) + offset)
+        if validation.contracts.FIELD_END_HEIGHT in task:
+            task[validation.contracts.FIELD_END_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_END_HEIGHT]) + offset)
+        if validation.contracts.FIELD_HEIGHT in task:
+            task[validation.contracts.FIELD_HEIGHT] = _round_height(float(task[validation.contracts.FIELD_HEIGHT]) + offset)
+    task["base_z_m"] = _round_height(_task_z_anchor(task) or STANDARD_REFERENCE_BASE_Z_M)
     task["sampled_start_height_m"] = task["base_z_m"]
-    task["base_z_range_m"] = [0.70, 0.95]
-    task["base_z_offset_range_m"] = [-0.30, -0.05]
+    task["base_z_range_m"] = [float(STANDARD_REFERENCE_HEIGHT_RANGE_M[0]), float(STANDARD_REFERENCE_HEIGHT_RANGE_M[1])]
     task["height_variation_enabled"] = True
     return task
 
 
-def _generated_reference_raise_offset(task: Mapping[str, Any]) -> float:
-    """Return +0.25m only for concrete proposals still in the old lowered band."""
+def _generated_reference_standard_height_offset(task: Mapping[str, Any]) -> float:
+    """Return the upward shift needed for concrete proposals below the standard active band."""
     anchor = _task_z_anchor(task)
-    if anchor is None or anchor > PREVIOUS_LOWER_REFERENCE_MAX_START_M:
+    if anchor is None or anchor >= STANDARD_REFERENCE_BASE_Z_M or anchor > SUBSTANDARD_REFERENCE_MAX_START_M:
         return 0.0
-    raised_start = min(anchor + ADJUSTED_LOWER_REFERENCE_OFFSET_M, ADJUSTED_LOWER_REFERENCE_MAX_START_M)
-    return max(0.0, raised_start - anchor)
+    return max(0.0, STANDARD_REFERENCE_BASE_Z_M - anchor)
 
 
 def _raised_xyz(value: Any, offset: float) -> list[float]:
-    """Return an XYZ vector with z raised by ``offset``."""
+    """Return an XYZ vector with z shifted upward by ``offset``."""
     vector = [float(component) for component in value]
     if len(vector) != XYZ_VECTOR_LENGTH:
         message = "reference point must contain exactly three values"
@@ -1672,7 +1671,8 @@ def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]
     }
     z_anchor = _task_z_anchor(task)
     if z_anchor is not None:
-        variation["z_range_m"] = _bounded_range(z_anchor, 0.12, lower=0.3, upper=1.8)
+        variation["base_z_range_m"] = [float(STANDARD_REFERENCE_HEIGHT_RANGE_M[0]), float(STANDARD_REFERENCE_HEIGHT_RANGE_M[1])]
+        variation["z_range_m"] = _bounded_range(z_anchor, 0.10, lower=0.9, upper=1.1)
     if family == envs.task_distribution.FAMILY_HOVER:
         variation.update({"xy_radius_m": 0.12})
     elif family == envs.task_distribution.FAMILY_TAKEOFF:
@@ -1681,8 +1681,8 @@ def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]
         variation.update(
             {
                 "xy_radius_m": 0.08,
-                "start_z_range_m": _bounded_range(start_height, 0.08, lower=0.70, upper=1.6),
-                "z_range_m": _bounded_range(end_height, 0.12, lower=0.60, upper=1.8),
+                "start_z_range_m": _bounded_range(start_height, 0.08, lower=0.9, upper=1.1),
+                "z_range_m": _bounded_range(end_height, 0.12, lower=0.75, upper=1.35),
             }
         )
     elif family in {envs.task_distribution.FAMILY_LINE, envs.task_distribution.FAMILY_START_HOLD_LINE}:

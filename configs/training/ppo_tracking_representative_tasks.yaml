@@ -22,72 +22,72 @@ tasks:
   duration_sec: 3.8
   sample_rate_hz: 10.0
   start_hold_enabled: true
-  start_hold_sec: 1.8
+  start_hold_sec: 2.0
   exclude_start_hold_from_tracking_metrics: true
   start:
   - 0.0
   - 0.0
-  - 0.8
+  - 1.0
   end:
   - 1.2
   - 0.0
-  - 0.8
-  lower_start_height_enabled: true
-  start_height_policy: adjusted_lower_reference_0p70_0p95m
+  - 1.0
+  start_height_policy: standard_reference_1p0m
   height_variation_enabled: true
-  start_hold_policy: evaluation_1p8s_after_adjusted_lower_reference
-  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  start_hold_policy: uniform_2p0s_start_hold
+  start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
   tracking_reward_starts_after_start_hold: false
-  base_z_m: 0.8
-  sampled_start_height_m: 0.8
+  base_z_m: 1.0
+  sampled_start_height_m: 1.0
+  standard_reference_height_enabled: true
 - task_name: line_long_final
   task_type: trajectory
   shape: line
   duration_sec: 6.2
   sample_rate_hz: 10.0
   start_hold_enabled: true
-  start_hold_sec: 1.8
+  start_hold_sec: 2.0
   exclude_start_hold_from_tracking_metrics: true
   start:
   - 0.0
   - 0.0
-  - 0.8
+  - 1.0
   end:
   - 1.8
   - 0.0
-  - 0.8
-  lower_start_height_enabled: true
-  start_height_policy: adjusted_lower_reference_0p70_0p95m
+  - 1.0
+  start_height_policy: standard_reference_1p0m
   height_variation_enabled: true
-  start_hold_policy: evaluation_1p8s_after_adjusted_lower_reference
-  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  start_hold_policy: uniform_2p0s_start_hold
+  start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
   tracking_reward_starts_after_start_hold: false
-  base_z_m: 0.8
-  sampled_start_height_m: 0.8
+  base_z_m: 1.0
+  sampled_start_height_m: 1.0
+  standard_reference_height_enabled: true
 - task_name: line_diagonal_validation
   task_type: trajectory
   shape: line
   duration_sec: 5.0
   sample_rate_hz: 10.0
   start_hold_enabled: true
-  start_hold_sec: 1.8
+  start_hold_sec: 2.0
   exclude_start_hold_from_tracking_metrics: true
   start:
   - 0.0
   - 0.0
-  - 0.8
+  - 1.0
   end:
   - 1.0
   - 0.75
-  - 0.8
-  lower_start_height_enabled: true
-  start_height_policy: adjusted_lower_reference_0p70_0p95m
+  - 1.0
+  start_height_policy: standard_reference_1p0m
   height_variation_enabled: true
-  start_hold_policy: evaluation_1p8s_after_adjusted_lower_reference
-  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  start_hold_policy: uniform_2p0s_start_hold
+  start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
   tracking_reward_starts_after_start_hold: false
-  base_z_m: 0.8
-  sampled_start_height_m: 0.8
+  base_z_m: 1.0
+  sampled_start_height_m: 1.0
+  standard_reference_height_enabled: true
 - task_name: basic_training_show
   task_type: trajectory
   shape: basic_training_show
@@ -96,7 +96,7 @@ tasks:
   duration_sec: 20.8
   sample_rate_hz: 10.0
   start_hold_enabled: true
-  start_hold_sec: 1.8
+  start_hold_sec: 2.0
   exclude_start_hold_from_tracking_metrics: true
   final_hold_enabled: true
   final_hold_sec: 1.0
@@ -121,55 +121,55 @@ tasks:
     segment_start:
     - 0.0
     - 0.0
-    - 0.7
+    - 1.0
     segment_end:
     - 0.0
     - 0.0
-    - 0.7
+    - 1.0
     segment_duration_sec: 1.2
   - segment_name: horizontal_line
     segment_shape: horizontal_line
     segment_start:
     - 0.0
     - 0.0
-    - 0.7
+    - 1.0
     segment_end:
     - 0.42
     - 0.0
-    - 0.7
+    - 1.0
     segment_duration_sec: 2.1
   - segment_name: diagonal_line
     segment_shape: diagonal_line
     segment_start:
     - 0.42
     - 0.0
-    - 0.7
+    - 1.0
     segment_end:
     - 0.7
     - 0.22
-    - 0.72
+    - 1.02
     segment_duration_sec: 2.2
   - segment_name: vertical_lift
     segment_shape: vertical
     segment_start:
     - 0.7
     - 0.22
-    - 0.72
+    - 1.02
     segment_end:
     - 0.7
     - 0.22
-    - 0.94
+    - 1.24
     segment_duration_sec: 1.8
   - segment_name: ellipse_loop
     segment_shape: ellipse
     segment_start:
     - 0.7
     - 0.22
-    - 0.94
+    - 1.24
     segment_end:
     - 0.7
     - 0.22
-    - 0.94
+    - 1.24
     segment_duration_sec: 3.6
     radius_x_m: 0.16
     radius_y_m: 0.11
@@ -179,63 +179,63 @@ tasks:
     segment_start:
     - 0.7
     - 0.22
-    - 0.94
+    - 1.24
     segment_end:
     - 1.02
     - 0.52
-    - 0.9
+    - 1.2
     segment_duration_sec: 2.8
     segment_points:
     - - 0.7
       - 0.22
-      - 0.94
+      - 1.24
     - - 0.7
       - 0.52
-      - 0.94
+      - 1.24
     - - 1.02
       - 0.52
-      - 0.9
+      - 1.2
   - segment_name: zigzag_finish
     segment_shape: zigzag
     segment_start:
     - 1.02
     - 0.52
-    - 0.9
+    - 1.2
     segment_end:
     - 1.55
     - 0.58
-    - 0.86
+    - 1.16
     segment_duration_sec: 3.6
     segment_points:
     - - 1.02
       - 0.52
-      - 0.9
+      - 1.2
     - - 1.2
       - 0.66
-      - 0.9
+      - 1.2
     - - 1.38
       - 0.4
-      - 0.86
+      - 1.16
     - - 1.55
       - 0.58
-      - 0.86
+      - 1.16
   - segment_name: final_hold
     segment_shape: final_hold
     segment_start:
     - 1.55
     - 0.58
-    - 0.86
+    - 1.16
     segment_end:
     - 1.55
     - 0.58
-    - 0.86
+    - 1.16
     segment_duration_sec: 1.0
     segment_final_hold_sec: 1.0
-  lower_start_height_enabled: true
-  start_height_policy: adjusted_lower_reference_0p70_0p95m
+  start_height_policy: standard_reference_1p0m
   height_variation_enabled: true
-  start_hold_policy: evaluation_1p8s_after_adjusted_lower_reference
-  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  start_hold_policy: uniform_2p0s_start_hold
+  start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
   tracking_reward_starts_after_start_hold: false
-  base_z_m: 0.7
-  sampled_start_height_m: 0.7
+  base_z_m: 1.0
+  sampled_start_height_m: 1.0
+  standard_reference_height_enabled: true

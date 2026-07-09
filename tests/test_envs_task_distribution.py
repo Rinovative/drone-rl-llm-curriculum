@@ -21,7 +21,7 @@ def _base_hover_task() -> dict[str, object]:
         "shape": "hover_stabilization",
         "duration_sec": 3.0,
         "sample_rate_hz": 10.0,
-        "position": [0.0, 0.0, 0.8],
+        "position": [0.0, 0.0, 1.0],
     }
 
 
@@ -33,10 +33,10 @@ def _base_line_task() -> dict[str, object]:
         "duration_sec": 4.0,
         "sample_rate_hz": 10.0,
         "start_hold_enabled": True,
-        "start_hold_sec": 1.2,
+        "start_hold_sec": 2.0,
         "exclude_start_hold_from_tracking_metrics": True,
-        "start": [0.0, 0.0, 0.8],
-        "end": [0.5, 0.0, 0.8],
+        "start": [0.0, 0.0, 1.0],
+        "end": [0.5, 0.0, 1.0],
     }
 
 
@@ -56,9 +56,9 @@ def _settings(**overrides: object) -> envs.task_distribution.TaskDistributionSet
                 "start_xy_radius_m": 0.1,
                 "heading_jitter_deg": 20,
                 "length_range_m": [0.25, 0.7],
-                "z_range_m": [0.7, 0.95],
+                "z_range_m": [0.9, 1.1],
                 "duration_range_sec": [4.0, 7.0],
-                "start_hold_range_sec": [1.2, 1.2],
+                "start_hold_range_sec": [2.0, 2.0],
             }
         },
     }
@@ -180,11 +180,11 @@ def test_basic_training_show_distribution_samples_bounded_episode_variation() ->
     ]
     assert first["meaningful_figure_count"] == 8
     assert first["start_hold_enabled"] is True
-    assert first["start_hold_sec"] == pytest.approx(1.2)
+    assert first["start_hold_sec"] == pytest.approx(2.0)
     assert first["exclude_start_hold_from_tracking_metrics"] is True
     assert first["final_hold_enabled"] is True
     assert 0.8 <= first["final_hold_sec"] <= 1.2
-    assert first["duration_range_sec"][0] < 21.0
+    assert first["duration_range_sec"][0] < 22.0
     assert "ellipse" in first["segment_shapes"]
     assert "zigzag" in first["segment_shapes"]
     assert first != second
@@ -193,13 +193,13 @@ def test_basic_training_show_distribution_samples_bounded_episode_variation() ->
     assert validation.tasks.validate_task(second, limits=settings.validation_limits).is_valid
 
 
-def _assert_start_hold_policy(task: dict[str, object], *, minimum_sec: float) -> None:
-    """Assert a task uses the active start-hold metric policy."""
+def _assert_start_hold_policy(task: dict[str, object], *, expected_sec: float = 2.0) -> None:
+    """Assert a task uses the active uniform start-hold metric policy."""
     assert task["start_hold_enabled"] is True
-    assert float(task["start_hold_sec"]) >= minimum_sec
+    assert float(task["start_hold_sec"]) == pytest.approx(expected_sec)
     assert task["exclude_start_hold_from_tracking_metrics"] is True
     if task.get("shape") == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
-        assert float(task["hold_duration_sec"]) >= minimum_sec
+        assert float(task["hold_duration_sec"]) == pytest.approx(expected_sec)
 
 
 def _initial_task_z(task: dict[str, object]) -> float | None:
@@ -221,27 +221,28 @@ def _initial_task_z(task: dict[str, object]) -> float | None:
     return None
 
 
-def _assert_lower_start_policy(task: dict[str, object]) -> None:
-    """Assert a task exposes and follows the lower-start policy metadata."""
-    assert task.get("lower_start_height_enabled") is True
-    assert task.get("start_height_policy") == "adjusted_lower_reference_0p70_0p95m"
-    assert task.get("start_hold_reward_policy") == "full_tracking_reward_active_during_short_lower_start_hold"
+def _assert_standard_height_policy(task: dict[str, object]) -> None:
+    """Assert a task exposes and follows the standard reference-height metadata."""
+    assert "lower_start_height_enabled" not in task
+    assert task.get("standard_reference_height_enabled") is True
+    assert task.get("start_height_policy") == "standard_reference_1p0m"
+    assert task.get("start_hold_reward_policy") == "full_tracking_reward_active_during_uniform_start_hold"
     assert task.get("tracking_reward_starts_after_start_hold") is False
     start_z = _initial_task_z(task)
     assert start_z is not None
-    assert 0.65 <= start_z <= 1.0
+    assert 0.9 <= start_z <= 1.1
 
 
-def test_active_training_distributions_use_reduced_start_hold_policy() -> None:
-    """Verify active sampled training distributions use the reduced lower-reference hold."""
+def test_active_training_distributions_use_standard_height_and_uniform_start_hold_policy() -> None:
+    """Verify active sampled training distributions use standard height and uniform hold."""
     for path in sorted(Path("configs/tasks").glob("task_distribution_*.yaml")):
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
         settings = envs.task_distribution.load_task_distribution_settings(path)
-        _assert_start_hold_policy(settings.base_task, minimum_sec=1.2)
-        _assert_lower_start_policy(settings.base_task)
+        _assert_start_hold_policy(settings.base_task)
+        _assert_standard_height_policy(settings.base_task)
         representative = payload.get("own_task_representative") if isinstance(payload, dict) else None
         if isinstance(representative, dict):
-            _assert_start_hold_policy(representative, minimum_sec=1.8)
+            _assert_start_hold_policy(representative)
         for family in settings.family_weights:
             family_settings = envs.task_distribution.TaskDistributionSettings(
                 name=settings.name,
@@ -257,13 +258,13 @@ def test_active_training_distributions_use_reduced_start_hold_policy() -> None:
                 config_path=settings.config_path,
             )
             sampled = envs.task_distribution.sample_task(family_settings)
-            _assert_start_hold_policy(sampled, minimum_sec=1.2)
-            _assert_lower_start_policy(sampled)
+            _assert_start_hold_policy(sampled)
+            _assert_standard_height_policy(sampled)
             assert validation.tasks.validate_task(sampled, limits=settings.validation_limits).is_valid
 
 
-def test_active_curriculum_configs_use_reduced_stage_start_hold_policy() -> None:
-    """Verify manual and LLM curriculum stage tasks expose the reduced hold policy."""
+def test_active_curriculum_configs_use_uniform_stage_start_hold_policy() -> None:
+    """Verify manual and LLM curriculum stage tasks expose the uniform hold policy."""
     config_paths = [
         *sorted(Path("configs/curricula").glob("curriculum_*_m-taskdist_medium.yaml")),
         *sorted(Path("configs/curricula").glob("llm_curriculum_*_m-taskdist_medium.yaml")),
@@ -277,17 +278,17 @@ def test_active_curriculum_configs_use_reduced_stage_start_hold_policy() -> None
             for key in ("task", "evaluation_task"):
                 task = stage.get(key) if isinstance(stage, dict) else None
                 if isinstance(task, dict):
-                    _assert_start_hold_policy(task, minimum_sec=1.2)
+                    _assert_start_hold_policy(task)
             bounds = stage.get("stage_sampling_bounds") if isinstance(stage, dict) else None
             if isinstance(bounds, dict):
                 for key in ("start_hold_sec", "hold_duration_sec"):
                     value = bounds.get(key)
                     if isinstance(value, list):
-                        assert min(float(item) for item in value) >= 1.2
+                        assert value == [2.0, 2.0]
 
 
 def test_altitude_control_families_are_supported_and_registered() -> None:
-    """Verify named lower-start altitude-control families remain in the sampler catalog."""
+    """Verify named altitude-control families remain in the sampler catalog."""
     expected = {
         "vertical_up_down",
         "angled_vertical",
@@ -319,7 +320,7 @@ def test_vertical_up_down_distribution_samples_climbs_and_descents() -> None:
         )
         task = envs.task_distribution.sample_task(seeded)
         deltas.append(float(task["end_height"]) - float(task["start_height"]))
-        _assert_lower_start_policy(task)
+        _assert_standard_height_policy(task)
         assert validation.tasks.validate_task(task, limits=settings.validation_limits).is_valid
     assert any(delta > 0.0 for delta in deltas)
     assert any(delta < 0.0 for delta in deltas)
@@ -332,7 +333,7 @@ def test_angled_and_delayed_altitude_distributions_keep_altitude_change_later() 
     assert angled["shape"] == "line"
     assert angled["start"][2] != pytest.approx(angled["end"][2])
     assert angled["start"][:2] != angled["end"][:2]
-    _assert_lower_start_policy(angled)
+    _assert_standard_height_policy(angled)
     assert validation.tasks.validate_task(angled, limits=angled_settings.validation_limits).is_valid
 
     delayed_settings = envs.task_distribution.load_task_distribution_settings(
@@ -342,7 +343,7 @@ def test_angled_and_delayed_altitude_distributions_keep_altitude_change_later() 
     points = delayed["points"]
     assert points[0][2] == pytest.approx(points[1][2])
     assert any(point[2] != pytest.approx(points[0][2]) for point in points[2:])
-    _assert_lower_start_policy(delayed)
+    _assert_standard_height_policy(delayed)
     assert validation.tasks.validate_task(delayed, limits=delayed_settings.validation_limits).is_valid
 
 

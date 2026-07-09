@@ -57,8 +57,8 @@ bootstrap:
     - -0.5
     - 0.5
     z:
-    - 0.7
-    - 0.95
+    - 0.9
+    - 1.1
   task_distribution_id: bootstrap_randomized_hover_target
   task_distribution_config_path: configs/tasks/task_distribution_hover_bootstrap_medium.yaml
   task:
@@ -67,20 +67,20 @@ bootstrap:
     duration_sec: 3.0
     sample_rate_hz: 10.0
     start_hold_enabled: true
-    start_hold_sec: 1.2
+    start_hold_sec: 2.0
     exclude_start_hold_from_tracking_metrics: true
     position:
     - 0.0
     - 0.0
-    - 0.8
-    lower_start_height_enabled: true
-    start_height_policy: adjusted_lower_reference_0p70_0p95m
+    - 1.0
+    start_height_policy: standard_reference_1p0m
     height_variation_enabled: true
-    start_hold_policy: training_1p2s_after_adjusted_lower_reference
-    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    start_hold_policy: uniform_2p0s_start_hold
+    start_hold_reward_policy: full_tracking_reward_active_during_uniform_start_hold
     tracking_reward_starts_after_start_hold: false
-    base_z_m: 0.8
-    sampled_start_height_m: 0.8
+    base_z_m: 1.0
+    sampled_start_height_m: 1.0
+    standard_reference_height_enabled: true
 llm:
   provider: openai_compatible
   api_base: http://127.0.0.1:18080/v1
