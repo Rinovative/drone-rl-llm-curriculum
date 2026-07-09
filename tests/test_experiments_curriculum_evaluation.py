@@ -279,10 +279,10 @@ def _fake_policy_evaluation(spec: object, artifacts: object) -> policy_evaluatio
         "eval_steps": spec.eval_steps,
         "seed": spec.seed,
         "start_hold_enabled": True,
-        "start_hold_sec": 1.0,
+        "start_hold_sec": 2.0,
         "exclude_start_hold_from_tracking_metrics": True,
-        "tracking_phase_start_step": 10,
-        "tracking_phase_start_time_sec": 1.0,
+        "tracking_phase_start_step": 20,
+        "tracking_phase_start_time_sec": 2.0,
         "mean_position_error_m": 0.1,
         "mean_position_error_tracking_m": 0.08,
         "final_position_error_m": 0.2,
@@ -369,8 +369,10 @@ def _fake_scenario_evaluation(**kwargs: object) -> policy_evaluation.PolicyScena
     run_name = str(kwargs["run_name"])
     model_scope = str(kwargs["model_scope"])
     run_manifest_path = Path(kwargs["run_manifest_path"])
-    metrics_path = run_root / "evaluations" / "scenarios" / "metrics" / f"{run_name}_scenarios_metrics.json"
-    manifest_path = run_root / "evaluations" / "scenarios" / "manifests" / f"{run_name}_scenarios_manifest.json"
+    output_root = Path(kwargs.get("output_root") or run_root / "evaluations" / "scenarios")
+    source_stage = kwargs.get("source_stage")
+    metrics_path = output_root / "metrics" / f"{run_name}_scenarios_metrics.json"
+    manifest_path = output_root / "manifests" / f"{run_name}_scenarios_manifest.json"
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     metrics = {
@@ -381,6 +383,10 @@ def _fake_scenario_evaluation(**kwargs: object) -> policy_evaluation.PolicyScena
         "scenario_labels": ["easy", "medium", "hard"],
         "entry_count": 3,
         "evaluated_models": [],
+        "source_stage": source_stage,
+        "final_stage_evaluation_path": str(output_root),
+        "final_stage_evaluation_path_relative": output_root.relative_to(run_root).as_posix(),
+        "root_evaluation_outputs_duplicated": False,
         "summary_metrics_path": str(metrics_path),
         "summary_manifest_path": str(manifest_path),
     }
@@ -396,9 +402,13 @@ def _fake_scenario_evaluation(**kwargs: object) -> policy_evaluation.PolicyScena
             "evaluation_name": "scenarios",
             "model_scope": model_scope,
             "aggregate_metrics_path": str(metrics_path),
-            "aggregate_metrics_path_relative": "evaluations/scenarios/metrics/" + metrics_path.name,
+            "aggregate_metrics_path_relative": metrics_path.relative_to(run_root).as_posix(),
             "evaluation_manifest_path": str(manifest_path),
-            "evaluation_manifest_path_relative": "evaluations/scenarios/manifests/" + manifest_path.name,
+            "evaluation_manifest_path_relative": manifest_path.relative_to(run_root).as_posix(),
+            "source_stage": source_stage,
+            "final_stage_evaluation_path": str(output_root),
+            "final_stage_evaluation_path_relative": output_root.relative_to(run_root).as_posix(),
+            "root_evaluation_outputs_duplicated": False,
             "task_names": ["easy", "medium", "hard"],
             "evaluated_models": [],
         },
@@ -803,7 +813,8 @@ def test_curriculum_standard_evaluation_runs_stage_owned_default_profile(
         ]
         assert any(path.startswith(f"stages/stage01_hover_stabilization/evaluations/{evaluation_name}") for path in evaluation_dirs)
         assert any(path.startswith(f"stages/stage02_line/evaluations/{evaluation_name}") for path in evaluation_dirs)
-    assert (summary_path.parent / "evaluations" / "scenarios").exists()
+    assert not (summary_path.parent / "evaluations" / "scenarios").exists()
+    assert (summary_path.parent / "stages" / "stage02_line" / "evaluations" / "scenarios").exists()
 
 
 def test_curriculum_standard_evaluation_final_stage_scope_narrows_every_default_evaluation(
@@ -840,7 +851,8 @@ def test_curriculum_standard_evaluation_final_stage_scope_narrows_every_default_
     ]
     stage_models = [model for entry in summary_payload["evaluations"] for model in entry["evaluated_models"] if "stage_index" in model]
     assert all(model["stage_index"] == 2 for model in stage_models)
-    assert (summary_path.parent / "evaluations" / "scenarios").exists()
+    assert not (summary_path.parent / "evaluations" / "scenarios").exists()
+    assert (summary_path.parent / "stages" / "stage02_line" / "evaluations" / "scenarios").exists()
 
 
 def test_curriculum_explicit_suite_runs_only_requested_suite(

@@ -101,12 +101,13 @@ def test_standard_show_scenarios_compose_with_ordered_difficulty() -> None:
         composition = scenario_render.compose_scenario_reference(settings)
         compositions.append(composition)
 
-        assert settings.start_hold_sec == 2.0
+        assert settings.start_hold_sec == 2.5
         assert composition.reference.shape == "scenario"
-        assert composition.start_hold_sec == 2.0
+        assert composition.start_hold_sec == 2.5
         assert composition.start_hold_steps > 0
         assert composition.start_hold_step_range == {"start": 0, "end": composition.start_hold_steps}
         assert composition.reference.start_hold_enabled is True
+        assert float(composition.reference.positions[0, 2]) <= 0.65
         assert composition.reference.tracking_phase_start_step == composition.start_hold_steps
         np.testing.assert_allclose(composition.reference.positions[0], composition.reference.positions[composition.start_hold_steps])
         assert composition.final_hold_sec > 0.0
@@ -119,7 +120,12 @@ def test_standard_show_scenarios_compose_with_ordered_difficulty() -> None:
     easy_shapes = [phase.phase_type for phase in easy.phases]
     medium_shapes = [phase.phase_type for phase in medium.phases]
     hard_shapes = [phase.phase_type for phase in hard.phases]
-    assert easy_shapes == ["hover", "vertical", "line", "line", "ellipse", "polyline"]
+    assert easy_shapes == ["hover", "line", "line", "vertical", "ellipse", "polyline"]
+    first_moving_shapes = [next(phase.phase_type for phase in composition.phases if phase.phase_type != "hover") for composition in compositions]
+    assert first_moving_shapes == ["line", "line", "line"]
+    for shapes in (easy_shapes, medium_shapes, hard_shapes):
+        assert "vertical" in shapes
+        assert shapes.index("vertical") > 0
     assert len(easy.phases) + 1 >= 5
     assert 7 <= len(medium.phases) + 1 <= 9
     assert 10 <= len(hard.phases) + 1 <= 15
@@ -145,8 +151,8 @@ def test_compose_line_phase_uses_custom_delta_position() -> None:
 
     composition = scenario_render.compose_scenario_reference(settings)
 
-    assert np.allclose(composition.phase_start_positions[0], [0.0, 0.0, 1.0])
-    assert np.allclose(composition.phase_end_positions[0], [0.25, 0.75, 1.0])
+    assert np.allclose(composition.phase_start_positions[0], [0.0, 0.0, 0.55])
+    assert np.allclose(composition.phase_end_positions[0], [0.25, 0.75, 0.55])
     assert composition.phase_geometry[0]["delta_position"] == [0.25, 0.75, 0.0]
 
 

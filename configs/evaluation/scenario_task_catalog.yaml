@@ -19,7 +19,11 @@ tasks:
   position:
   - 0.0
   - 0.0
-  - 1.0
+  - 0.55
+  lower_start_height_enabled: true
+  start_height_policy: lower_active_reference_0p45_0p75m
+  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  tracking_reward_starts_after_start_hold: false
 - task_type: trajectory
   shape: line
   duration_sec: 3.0
@@ -27,11 +31,15 @@ tasks:
   start:
   - 0.0
   - 0.0
-  - 1.0
+  - 0.55
   end:
   - 1.0
   - 0.0
-  - 1.0
+  - 0.55
+  lower_start_height_enabled: true
+  start_height_policy: lower_active_reference_0p45_0p75m
+  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  tracking_reward_starts_after_start_hold: false
 - task_type: trajectory
   shape: vertical
   duration_sec: 3.0
@@ -39,38 +47,54 @@ tasks:
   xy:
   - 0.25
   - -0.25
-  start_height: 0.8
-  end_height: 1.4
+  start_height: 0.45
+  end_height: 0.95
+  lower_start_height_enabled: true
+  start_height_policy: lower_active_reference_0p45_0p75m
+  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  tracking_reward_starts_after_start_hold: false
 - task_type: trajectory
   shape: circle
   duration_sec: 8.0
   sample_rate_hz: 10.0
   radius: 0.5
-  height: 1.0
+  height: 0.55
   center:
   - 0.0
   - 0.0
   clockwise: false
+  lower_start_height_enabled: true
+  start_height_policy: lower_active_reference_0p45_0p75m
+  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  tracking_reward_starts_after_start_hold: false
 - task_type: trajectory
   shape: ellipse
   duration_sec: 8.0
   sample_rate_hz: 10.0
   radius_x: 0.3
   radius_y: 0.18
-  height: 1.0
+  height: 0.55
   center:
   - 0.0
   - 0.0
+  lower_start_height_enabled: true
+  start_height_policy: lower_active_reference_0p45_0p75m
+  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  tracking_reward_starts_after_start_hold: false
 - task_type: trajectory
   shape: figure_eight
   duration_sec: 8.5
   sample_rate_hz: 10.0
   radius_x: 0.24
   radius_y: 0.15
-  height: 1.0
+  height: 0.55
   center:
   - 0.0
   - 0.0
+  lower_start_height_enabled: true
+  start_height_policy: lower_active_reference_0p45_0p75m
+  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  tracking_reward_starts_after_start_hold: false
 - task_type: trajectory
   shape: polyline
   duration_sec: 6.0
@@ -78,10 +102,19 @@ tasks:
   points:
   - - 0.0
     - 0.0
-    - 1.0
+    - 0.55
   - - 0.5
     - 0.0
-    - 1.1
+    - 0.65
   - - 0.5
     - 0.5
-    - 1.0
+    - 0.55
+  lower_start_height_enabled: true
+  start_height_policy: lower_active_reference_0p45_0p75m
+  start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+  tracking_reward_starts_after_start_hold: false
+lower_start_height_enabled: true
+start_height_policy: lower_active_reference_0p45_0p75m
+base_z_range_m:
+- 0.45
+- 0.75

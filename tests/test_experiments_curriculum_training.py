@@ -192,7 +192,7 @@ def test_manual_curriculum_stage_distribution_path_is_passed_to_ppo(tmp_path: Pa
                     "training_task_distribution_config_path": str(HOVER_BOOTSTRAP_DISTRIBUTION_CONFIG),
                     "sampled_task_family": "hover_stabilization",
                     "sampled_task_shape": "hover_stabilization",
-                    "stage_sampling_bounds": {"target_position": {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 1.4]}},
+                    "stage_sampling_bounds": {"target_position": {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.45, 0.75]}},
                     "task": representative_task,
                     "evaluation_task": representative_task,
                 }

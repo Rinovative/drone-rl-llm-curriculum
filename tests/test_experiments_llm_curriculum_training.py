@@ -35,7 +35,7 @@ EXPECTED_LLM_BUDGET_PROFILES = {
 }
 EXPECTED_LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recovery": 0.65, "extend": 0.8}
 EXPECTED_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml")
-EXPECTED_BOOTSTRAP_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 1.4]}
+EXPECTED_BOOTSTRAP_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.45, 0.75]}
 BUDGET_TEST_STAGE_COUNT = 4
 BUDGET_TEST_CAP = 110
 BUDGET_TEST_STAGE_BUDGETS = [30, 40, 20, 20]
@@ -371,6 +371,8 @@ def test_llm_concrete_tasks_materialize_to_varied_bounded_distributions(tmp_path
         },
     }
 
+    minimum_generated_start_hold_sec = 1.2
+
     for stage_index, (stage_name, task) in enumerate(tasks.items(), start=2):
         materialized = llm_curriculum_training._materialize_concrete_task_distribution(  # noqa: SLF001
             settings=settings,
@@ -389,10 +391,18 @@ def test_llm_concrete_tasks_materialize_to_varied_bounded_distributions(tmp_path
         assert distribution_settings.mode == envs.task_distribution.MODE_RANDOMIZED
         assert distribution_settings.sample_on_reset is True
         assert distribution_settings.strength > 0.0
+        assert distribution_settings.base_task[validation.contracts.FIELD_START_HOLD_ENABLED] is True
+        assert distribution_settings.base_task[validation.contracts.FIELD_START_HOLD_SEC] == pytest.approx(minimum_generated_start_hold_sec)
+        assert distribution_settings.base_task[validation.contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS] is True
+        variation = distribution_settings.variations[next(iter(distribution_settings.family_weights))]
+        assert variation["start_hold_range_sec"] == [minimum_generated_start_hold_sec, minimum_generated_start_hold_sec]
         assert first_samples == repeated_samples
         assert len({json.dumps(sample, sort_keys=True, default=str) for sample in first_samples}) > 1
         assert {sample[validation.contracts.FIELD_SHAPE] for sample in first_samples} == {task[validation.contracts.FIELD_SHAPE]}
         for sample in first_samples:
+            assert sample[validation.contracts.FIELD_START_HOLD_ENABLED] is True
+            assert sample[validation.contracts.FIELD_START_HOLD_SEC] >= minimum_generated_start_hold_sec
+            assert sample[validation.contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS] is True
             assert validation.tasks.validate_task(sample, limits=distribution_settings.validation_limits).is_valid
 
 
@@ -734,15 +744,15 @@ def test_llm_taskdist_stage_names_use_resolved_concrete_shapes(tmp_path: Path, m
     events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
     stage_names = [stage["stage_name"] for stage in summary["stages"]]
 
-    assert stage_names == ["line", "hover_stabilization", "figure_eight", "vertical"]
+    assert stage_names == ["line", "hover_stabilization", "polyline", "vertical"]
     assert all("tracking_medium" not in stage["run_name"] for stage in summary["stages"])
-    assert summary["stage_run_names"][2] == "curriculum_llm_stage_name_unit_stage03_figure_eight_seed0"
-    assert summary["stages"][2]["resolved_task_shape"] == "figure_eight"
+    assert summary["stage_run_names"][2] == "curriculum_llm_stage_name_unit_stage03_polyline_seed0"
+    assert summary["stages"][2]["resolved_task_shape"] == "polyline"
     assert summary["stages"][3]["resolved_task_shape"] == "vertical"
     budget_events = [event for event in events if event["event_type"] == "llm_stage_budget_decision"]
     assert budget_events[1]["stage_name"] == "hover_stabilization"
-    assert budget_events[2]["stage_name"] == "figure_eight"
-    assert budget_events[2]["accepted_task"]["shape"] == "figure_eight"
+    assert budget_events[2]["stage_name"] == "polyline"
+    assert budget_events[2]["accepted_task"]["shape"] == "polyline"
 
 
 def test_llm_taskdist_wandb_identity_uses_resolved_stage_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -784,13 +794,13 @@ def test_llm_taskdist_wandb_identity_uses_resolved_stage_shape(tmp_path: Path, m
     summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
 
     assert len(calls) == 1
-    assert calls[0]["run_name"] == "curriculum_llm_wandb_name_unit_stage01_figure_eight_seed2"
-    assert "stage:figure_eight" in calls[0]["wandb_tags"]
-    assert "task:figure_eight" in calls[0]["wandb_tags"]
-    assert calls[0]["run_metadata"]["curriculum_stage_name"] == "figure_eight"
+    assert calls[0]["run_name"] == "curriculum_llm_wandb_name_unit_stage01_polyline_seed2"
+    assert "stage:polyline" in calls[0]["wandb_tags"]
+    assert "task:polyline" in calls[0]["wandb_tags"]
+    assert calls[0]["run_metadata"]["curriculum_stage_name"] == "polyline"
     assert calls[0]["run_metadata"]["curriculum_stage_run_name"] == calls[0]["run_name"]
-    assert calls[0]["run_metadata"]["accepted_task"]["shape"] == "figure_eight"
-    assert summary["stages"][0]["stage_name"] == "figure_eight"
+    assert calls[0]["run_metadata"]["accepted_task"]["shape"] == "polyline"
+    assert summary["stages"][0]["stage_name"] == "polyline"
     assert summary["stages"][0]["run_name"] == calls[0]["run_name"]
 
 

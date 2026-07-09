@@ -1,10 +1,21 @@
-name: triangle_bootstrap
+name: delayed_altitude_polyline_bootstrap
 task_config_role: training_distribution
 task_is_distribution: true
 sampled_per_episode: true
 constant_within_episode: true
 variation_enabled: true
-notes: Bounded triangular polyline bootstrap distribution for LLM curriculum stages.
+lower_start_height_enabled: true
+start_height_policy: lower_active_reference_0p45_0p75m
+base_z_range_m:
+- 0.45
+- 0.75
+base_z_offset_range_m:
+- -0.55
+- -0.25
+height_variation_enabled: true
+start_hold_policy: training_1p2s_after_lower_reference
+start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+tracking_reward_starts_after_start_hold: false
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -13,7 +24,10 @@ validation_limits:
   max_acceleration_m_s2: 5.0
   min_duration_sec: 1.0
   max_step_distance_m: 0.5
+notes: 'Focused delayed-altitude polyline: level XY motion first, then climb/descent
+  later.'
 task_distribution:
+  name: delayed_altitude_polyline_bootstrap
   enabled: true
   mode: randomized
   seed: 0
@@ -21,43 +35,60 @@ task_distribution:
   sample_on_reset: true
   base_task:
     task_type: trajectory
-    shape: line
-    duration_sec: 4.0
+    shape: polyline
+    duration_sec: 9.5
     sample_rate_hz: 10.0
+    points:
+    - - 0.0
+      - 0.0
+      - 0.55
+    - - 0.32
+      - 0.0
+      - 0.55
+    - - 0.62
+      - 0.18
+      - 0.78
+    - - 0.82
+      - 0.18
+      - 0.78
     start_hold_enabled: true
     start_hold_sec: 1.2
     exclude_start_hold_from_tracking_metrics: true
     final_hold_enabled: true
     final_hold_sec: 1.0
     exclude_final_hold_from_tracking_metrics: true
-    start:
-    - 0.0
-    - 0.0
-    - 0.55
-    end:
-    - 0.65
-    - 0.0
-    - 0.55
     lower_start_height_enabled: true
     start_height_policy: lower_active_reference_0p45_0p75m
+    base_z_m: 0.55
+    base_z_range_m:
+    - 0.45
+    - 0.75
+    sampled_start_height_m: 0.55
     height_variation_enabled: true
     start_hold_policy: training_1p2s_after_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false
-    base_z_m: 0.55
-    sampled_start_height_m: 0.55
   family_weights:
-    triangle: 1.0
+    delayed_altitude_polyline: 1.0
   variations:
-    triangle:
-      center_xy_radius_m: 0.1
-      heading_jitter_deg: 30
-      side_range_m:
-      - 0.32
-      - 0.58
-      z_range_m:
+    delayed_altitude_polyline:
+      start_xy_radius_m: 0.12
+      heading_jitter_deg: 20.0
+      length_range_m:
+      - 0.55
+      - 1.0
+      first_segment_length_m:
+      - 0.25
       - 0.45
-      - 0.75
+      second_segment_length_m:
+      - 0.25
+      - 0.5
+      height_delta_range_m:
+      - -0.2
+      - 0.25
+      z_range_m:
+      - 0.4
+      - 1.05
       duration_range_sec:
       - 8.0
       - 12.0
@@ -83,15 +114,3 @@ task_distribution:
     start_hold_policy: training_1p2s_after_lower_reference
     start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
     tracking_reward_starts_after_start_hold: false
-lower_start_height_enabled: true
-start_height_policy: lower_active_reference_0p45_0p75m
-base_z_range_m:
-- 0.45
-- 0.75
-base_z_offset_range_m:
-- -0.55
-- -0.25
-height_variation_enabled: true
-start_hold_policy: training_1p2s_after_lower_reference
-start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
-tracking_reward_starts_after_start_hold: false

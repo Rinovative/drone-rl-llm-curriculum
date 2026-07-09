@@ -44,6 +44,9 @@ KNOWN_TASK_DISTRIBUTION_CONFIGS = {
     "hover_bootstrap": "configs/tasks/task_distribution_hover_bootstrap_medium.yaml",
     "short_line_bootstrap": "configs/tasks/task_distribution_short_line_bootstrap_medium.yaml",
     "vertical_bootstrap": "configs/tasks/task_distribution_vertical_bootstrap_medium.yaml",
+    "vertical_up_down_bootstrap": "configs/tasks/task_distribution_vertical_up_down_bootstrap_medium.yaml",
+    "angled_vertical_bootstrap": "configs/tasks/task_distribution_angled_vertical_bootstrap_medium.yaml",
+    "delayed_altitude_polyline_bootstrap": "configs/tasks/task_distribution_delayed_altitude_polyline_bootstrap_medium.yaml",
     "polyline_bootstrap": "configs/tasks/task_distribution_polyline_bootstrap_medium.yaml",
     "zigzag_bootstrap": "configs/tasks/task_distribution_zigzag_bootstrap_medium.yaml",
     "triangle_bootstrap": "configs/tasks/task_distribution_triangle_bootstrap_medium.yaml",
@@ -135,12 +138,14 @@ def build_task_prompt_contract() -> str:
         "The LLM may not propose arbitrary sampling bounds; choose a concrete validated task or one known distribution id/path. "
         "For stages after stage 1, do not repeat the immediately previous task family or shape; "
         "choose a controlled variation or a different focused distribution. "
-        "Concrete tasks may leave final_hold_enabled implicit or set final_hold_sec near 1.0 with final-hold metrics excluded. "
+        "Concrete tasks should use lower starts around 0.45-0.75m where safe, start_hold_enabled=true, start_hold_sec=1.2, "
+        "exclude_start_hold_from_tracking_metrics=true, and may leave final_hold_enabled implicit "
+        "or set final_hold_sec near 1.0 with final-hold metrics excluded. "
         f"Known task distribution ids and paths: {distribution_ids}. "
         f"Supported task-distribution families: {supported_families}. "
         f"Unsupported broad families for now: {unsupported_families}. "
         "Evaluation remains fixed and deterministic. Prefer PID with dynamics and previous-action observations; direct-RPM is experimental. "
-        "For overnight screening prefer tracking_small or tracking_medium; "
+        "For overnight screening prefer focused lower-start distributions such as tracking_small, tracking_medium, and altitude-control bootstraps; "
         "tracking_broad is experimental and only after simpler distributions are stable. "
         f"Optional stage budget metadata: {STAGE_BUDGET_PROFILE_FIELD} must be one of {budget_profiles}; "
         f"{BUDGET_RATIONALE_FIELD} may briefly justify the selected profile. "

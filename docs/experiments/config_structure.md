@@ -57,6 +57,9 @@ Curriculum and LLM support uses:
 
 - `task_distribution_hover_bootstrap_medium.yaml`
 - `task_distribution_vertical_bootstrap_medium.yaml`
+- `task_distribution_vertical_up_down_bootstrap_medium.yaml`
+- `task_distribution_angled_vertical_bootstrap_medium.yaml`
+- `task_distribution_delayed_altitude_polyline_bootstrap_medium.yaml`
 - `task_distribution_short_line_bootstrap_medium.yaml`
 - `task_distribution_polyline_bootstrap_medium.yaml`
 - `task_distribution_tracking_medium.yaml`
@@ -65,6 +68,12 @@ Curriculum and LLM support uses:
 - `task_distribution_zigzag_bootstrap_medium.yaml`
 
 `task_distribution_hover_small.yaml`, `task_distribution_line_small.yaml`, `task_distribution_tracking_small.yaml`, and `task_distribution_tracking_broad.yaml` are retained as tested LLM-schema/compatibility support. They are not scheduled by the 18-experiment matrix.
+
+Active training and curriculum distributions use lower initial reference heights to avoid rewarding an immediate climb before trajectory tracking. Common level-task starts now sit around 0.45-0.60 m instead of the old 0.9-1.0 m anchors; altitude-control tasks may start up to about 0.75 m when needed for descents or height variation. Training, manual curriculum, LLM bootstrap, and materialized LLM distributions use a 1.2 second start hold; representative own-task and generalization configs use 1.8 seconds; standard scenario/show evaluations use 2.5 seconds. Start holds remain excluded from tracking metrics, and the held point is still the first tracking point so no reference discontinuity is introduced.
+
+The tracking reward is not masked during start hold in this pass. Instead, the start-hold reward policy is explicit in task metadata as `full_tracking_reward_active_during_short_lower_start_hold`: with lower initial references and moderate 1.2 second training holds, the start phase should no longer dominate learning. Later altitude learning remains active through takeoff/vertical tasks, vertical up/down, angled climb/descent, delayed-altitude polylines, and multi-height polylines.
+
+Where validation margins allowed it, line, polyline, zigzag, triangle, rectangle, square, circle, ellipse, figure-eight, multi-height, and show paths were enlarged moderately and durations were raised with the geometry so reference speeds remain conservative. The basic and standard shows now begin with easier horizontal/diagonal XY motion; vertical or altitude-changing movement appears later after the start/settle hold and at least one easier moving segment.
 
 ## Representative Evaluation Tasks
 
@@ -111,6 +120,8 @@ Run and stage manifests distinguish training source from representative source w
 - `representative_eval_task_snapshot`
 
 Scenario evaluation reconstructs the environment from the direct run manifest or the final curriculum stage manifest, preserves trained action and observation settings, swaps only the scenario reference, and records model/env observation-space diagnostics before policy rollout.
+
+Direct PPO runs own their detailed evaluation tree at `storage/runs/<direct_run>/evaluations/`. Curriculum runs own detailed own-task, generalization, and scenario outputs inside the relevant `stages/stageXX_<name>/evaluations/` folder. The curriculum root keeps only manifests, compact summaries, and pointers such as `final_stage_evaluation_path`; root-level duplicate `evaluations/own_task`, `evaluations/generalization`, or `evaluations/scenarios` trees are not the source of truth.
 
 ## Removed Active Legacy Configs
 

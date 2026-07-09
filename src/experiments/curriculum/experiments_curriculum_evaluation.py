@@ -134,6 +134,17 @@ def run_curriculum_standard_evaluation(
     final_stage = stages[-1]
     final_model_path, final_model_source = _stage_model_path_and_source(final_stage)
     curriculum_run_name = _curriculum_run_name(summary)
+    storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
+    final_stage_index = int(final_stage["stage_index"])
+    final_stage_name = str(final_stage["stage_name"])
+    final_stage_source = {"stage_index": final_stage_index, "stage_name": final_stage_name}
+    final_stage_scenario_output_root = utils.artifacts.get_curriculum_stage_evaluation_dir(
+        curriculum_run_name,
+        final_stage_index,
+        final_stage_name,
+        STANDARD_SCENARIO_EVALUATION_NAME,
+        storage_root=storage_root,
+    )
     scenario_result = policy_evaluation.run_standard_scenario_evaluations(
         run_root=run_root,
         run_name=curriculum_run_name,
@@ -144,16 +155,24 @@ def run_curriculum_standard_evaluation(
         model_scope="final-stage",
         evaluated_model_source=final_model_source,
         run_manifest_path=run_manifest_path,
+        final_stage_manifest_path=Path(str(final_stage["manifest_path"])) if final_stage.get("manifest_path") else None,
+        output_root=final_stage_scenario_output_root,
+        source_stage=final_stage_source,
     )
     results.append(_standard_profile_result_entry(STANDARD_SCENARIO_EVALUATION_NAME, "final-stage", scenario_result))
 
     run_name = curriculum_run_name
-    storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
     evaluation_summary_path = utils.artifacts.get_run_evaluation_summary_path(run_name, storage_root=storage_root)
     scenario_summary_entry = {
         **scenario_result.metrics,
         "curriculum_run_name": run_name,
         "model_scope": "final-stage",
+        "final_stage_index": final_stage_index,
+        "final_stage_name": final_stage_name,
+        "final_stage_evaluation_path": str(final_stage_scenario_output_root),
+        "final_stage_evaluation_path_relative": utils.artifacts.path_relative_to(final_stage_scenario_output_root, run_root),
+        "evaluated_model_source": final_model_source,
+        "root_evaluation_outputs_duplicated": False,
         "index_key": f"curriculum_evaluation:{STANDARD_SCENARIO_EVALUATION_NAME}:final-stage",
     }
     _update_curriculum_evaluation_summary(
@@ -340,6 +359,7 @@ def run_curriculum_evaluation(
         "summary_role": "derived_aggregate_link_summary",
         "canonical_evaluation_owner": "curriculum_stage",
         "detailed_stage_artifacts_duplicated_at_run_root": False,
+        "root_evaluation_outputs_duplicated": False,
         "evaluated_models": evaluated_models,
         "canonical_stage_evaluation_manifest_paths": _stage_manifest_paths(evaluated_models),
         "canonical_stage_evaluation_manifest_paths_relative": _stage_manifest_paths_relative(evaluated_models),
@@ -912,6 +932,15 @@ def _update_curriculum_evaluation_index(
     final_stage = _stages(summary)[-1]
     final_model_path, final_model_source = _stage_model_path_and_source(final_stage)
     final_model_path_relative = _stage_model_path_relative(final_stage) or utils.artifacts.path_relative_to(final_model_path, run_root)
+    final_stage_manifest_path = Path(str(final_stage["manifest_path"])) if final_stage.get("manifest_path") else None
+    storage_root = utils.artifacts.storage_root_from_run_dir(run_root)
+    final_stage_evaluation_path = utils.artifacts.get_curriculum_stage_evaluation_dir(
+        _curriculum_run_name(summary),
+        int(final_stage["stage_index"]),
+        str(final_stage["stage_name"]),
+        evaluation_name,
+        storage_root=storage_root,
+    )
     index_entry = {
         "index_key": f"curriculum_evaluation:{evaluation_name}:{model_scope}",
         "run_name": _curriculum_run_name(summary),
@@ -944,6 +973,13 @@ def _update_curriculum_evaluation_index(
         "summary_role": "derived_aggregate_link_summary",
         "canonical_evaluation_owner": "curriculum_stage",
         "detailed_stage_artifacts_duplicated_at_run_root": False,
+        "root_evaluation_outputs_duplicated": False,
+        "final_stage_manifest_path": None if final_stage_manifest_path is None else str(final_stage_manifest_path),
+        "final_stage_manifest_path_relative": None
+        if final_stage_manifest_path is None
+        else utils.artifacts.path_relative_to(final_stage_manifest_path, run_root),
+        "final_stage_evaluation_path": str(final_stage_evaluation_path),
+        "final_stage_evaluation_path_relative": utils.artifacts.path_relative_to(final_stage_evaluation_path, run_root),
         "canonical_stage_evaluation_manifest_paths": _stage_manifest_paths(evaluated_models),
         "canonical_stage_evaluation_manifest_paths_relative": _stage_manifest_paths_relative(evaluated_models),
         "final_stage_index": int(final_stage["stage_index"]),
@@ -1014,6 +1050,11 @@ def _update_curriculum_manifest_evaluation_links(
         "evaluation_manifest_path_relative": index_entry.get("evaluation_manifest_path_relative"),
         "canonical_stage_evaluation_manifest_paths": index_entry.get("canonical_stage_evaluation_manifest_paths", []),
         "canonical_stage_evaluation_manifest_paths_relative": index_entry.get("canonical_stage_evaluation_manifest_paths_relative", []),
+        "final_stage_manifest_path": index_entry.get("final_stage_manifest_path"),
+        "final_stage_manifest_path_relative": index_entry.get("final_stage_manifest_path_relative"),
+        "final_stage_evaluation_path": index_entry.get("final_stage_evaluation_path"),
+        "final_stage_evaluation_path_relative": index_entry.get("final_stage_evaluation_path_relative"),
+        "root_evaluation_outputs_duplicated": False,
         "suite_config_snapshot_path": index_entry.get("suite_config_snapshot_path"),
         "suite_config_snapshot_path_relative": index_entry.get("suite_config_snapshot_path_relative"),
         "suite_config_sha256": index_entry.get("suite_config_sha256"),
@@ -1027,6 +1068,8 @@ def _update_curriculum_manifest_evaluation_links(
             "final_model_path": str(final_model_path),
             "final_model_path_relative": final_model_path_relative,
             "final_model_source": final_model_source,
+            "evaluated_model_source": final_model_source,
+            "root_evaluation_outputs_duplicated": False,
         }
     elif index_entry.get("model_scope") == "all-stages":
         existing = manifest.get("all_stage_evaluations")

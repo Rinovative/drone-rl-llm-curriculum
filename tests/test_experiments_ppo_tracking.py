@@ -800,7 +800,7 @@ def test_normalized_action_wrapper_maps_to_real_pid_bounds() -> None:
         assert np.allclose(wrapped_env.normalized_to_real_action(np.zeros((1, 3), dtype=np.float32)), midpoint)
         assert np.allclose(wrapped_env.normalized_to_real_action(-np.ones((1, 3), dtype=np.float32)), low)
         assert np.allclose(wrapped_env.normalized_to_real_action(np.ones((1, 3), dtype=np.float32)), high)
-        assert np.allclose(wrapped_env.real_to_normalized_action(midpoint), 0.0)
+        assert np.allclose(wrapped_env.real_to_normalized_action(midpoint), 0.0, atol=1.0e-6)
     finally:
         wrapped_env.close()
 

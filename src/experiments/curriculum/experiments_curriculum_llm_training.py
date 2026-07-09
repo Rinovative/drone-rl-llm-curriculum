@@ -49,6 +49,7 @@ DEFAULT_PROPOSAL_FALLBACK_DISTRIBUTION_ID = "tracking_medium"
 DEFAULT_PROPOSAL_FALLBACK_PROFILE = "short"
 DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE = "normal"
 GENERATED_TASK_DISTRIBUTION_STRENGTH = 0.35
+GENERATED_TASK_START_HOLD_SEC = 1.2
 GENERATED_TASK_DISTRIBUTION_LABELS = {
     validation.contracts.SHAPE_HOVER: "hover",
     validation.contracts.SHAPE_HOVER_STABILIZATION: "hover",
@@ -1532,7 +1533,7 @@ def _materialize_concrete_task_distribution(
     task: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Write a run-scoped bounded distribution config for one concrete LLM task."""
-    task_payload = dict(task)
+    task_payload = _with_generated_task_start_hold(dict(task))
     curriculum_run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
     config_dir = utils.artifacts.get_run_config_dir(curriculum_run_name)
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -1578,11 +1579,33 @@ def _materialize_concrete_task_distribution(
     }
 
 
+def _with_generated_task_start_hold(task: dict[str, Any]) -> dict[str, Any]:
+    """Apply the LLM curriculum start-hold policy to a materialized concrete task."""
+    task[validation.contracts.FIELD_START_HOLD_ENABLED] = True
+    task[validation.contracts.FIELD_START_HOLD_SEC] = max(
+        float(task.get(validation.contracts.FIELD_START_HOLD_SEC, GENERATED_TASK_START_HOLD_SEC)),
+        GENERATED_TASK_START_HOLD_SEC,
+    )
+    task[validation.contracts.FIELD_EXCLUDE_START_HOLD_FROM_TRACKING_METRICS] = True
+    task.setdefault("lower_start_height_enabled", True)
+    task.setdefault("start_height_policy", "lower_active_reference_0p45_0p75m")
+    task.setdefault("start_hold_policy", "reduced_training_hold_after_lower_reference")
+    task.setdefault("start_hold_reward_policy", "full_tracking_reward_active_during_short_lower_start_hold")
+    task.setdefault("tracking_reward_starts_after_start_hold", False)
+    if task.get(validation.contracts.FIELD_SHAPE) == validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE:
+        task[validation.contracts.FIELD_HOLD_DURATION_SEC] = max(
+            float(task.get(validation.contracts.FIELD_HOLD_DURATION_SEC, GENERATED_TASK_START_HOLD_SEC)),
+            GENERATED_TASK_START_HOLD_SEC,
+        )
+    return task
+
+
 def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]) -> dict[str, Any]:
     """Return conservative variation bounds around one validated concrete task."""
     duration = _task_duration_sec(task)
     variation: dict[str, Any] = {
         "duration_range_sec": _positive_range(duration, max(0.5, duration * 0.2), lower=1.0, upper=20.0),
+        "start_hold_range_sec": [GENERATED_TASK_START_HOLD_SEC, GENERATED_TASK_START_HOLD_SEC],
         "final_hold_range_sec": [0.75, 1.0],
     }
     z_anchor = _task_z_anchor(task)
@@ -1596,7 +1619,7 @@ def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]
         variation.update(
             {
                 "xy_radius_m": 0.08,
-                "start_z_range_m": _bounded_range(start_height, 0.08, lower=0.25, upper=1.6),
+                "start_z_range_m": _bounded_range(start_height, 0.08, lower=0.45, upper=1.6),
                 "z_range_m": _bounded_range(end_height, 0.12, lower=0.4, upper=1.8),
             }
         )
@@ -1607,7 +1630,7 @@ def _bounded_variation_for_concrete_task(*, family: str, task: Mapping[str, Any]
                 "start_xy_radius_m": 0.08,
                 "length_range_m": _positive_range(length, max(0.08, length * 0.25), lower=0.15, upper=0.9),
                 "heading_jitter_deg": 12.0,
-                "start_hold_range_sec": [0.75, 1.0],
+                "start_hold_range_sec": [GENERATED_TASK_START_HOLD_SEC, GENERATED_TASK_START_HOLD_SEC],
             }
         )
     elif family in {

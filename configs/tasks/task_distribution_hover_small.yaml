@@ -24,17 +24,56 @@ task_distribution:
     position:
     - 0.0
     - 0.0
-    - 1.0
+    - 0.55
     duration_sec: 3.0
     sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.2
+    exclude_start_hold_from_tracking_metrics: true
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
   family_weights:
     hover_stabilization: 1.0
   variations:
     hover_stabilization:
       xy_radius_m: 0.2
       z_range_m:
-      - 0.8
-      - 1.2
+      - 0.45
+      - 0.75
       duration_range_sec:
       - 2.0
       - 5.0
+      base_z_range_m:
+      - 0.45
+      - 0.75
+  metadata:
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    base_z_range_m:
+    - 0.45
+    - 0.75
+    base_z_offset_range_m:
+    - -0.55
+    - -0.25
+    height_variation_enabled: true
+    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+lower_start_height_enabled: true
+start_height_policy: lower_active_reference_0p45_0p75m
+base_z_range_m:
+- 0.45
+- 0.75
+base_z_offset_range_m:
+- -0.55
+- -0.25
+height_variation_enabled: true
+start_hold_policy: training_1p2s_after_lower_reference
+start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+tracking_reward_starts_after_start_hold: false

@@ -637,6 +637,8 @@ def run_standard_scenario_evaluations(
     include_previous_action: bool | None = None,
     training_config_path: Path | None = None,
     final_stage_manifest_path: Path | None = None,
+    output_root: Path | None = None,
+    source_stage: Mapping[str, Any] | None = None,
 ) -> PolicyScenarioEvaluationResult:
     """Evaluate one trained model on the standard easy, medium, and hard show scenarios."""
     scenario_paths = dict(scenario_config_paths or STANDARD_SCENARIO_CONFIG_PATHS)
@@ -652,12 +654,12 @@ def run_standard_scenario_evaluations(
         training_config_path=training_config_path,
         final_stage_manifest_path=final_stage_manifest_path,
     )
-    output_root = run_root / utils.artifacts.EVALUATIONS_DIRNAME / STANDARD_SCENARIO_EVALUATION_NAME
+    scenario_output_root = output_root or run_root / utils.artifacts.EVALUATIONS_DIRNAME / STANDARD_SCENARIO_EVALUATION_NAME
     entries: list[dict[str, Any]] = []
     for scenario_label, scenario_path in scenario_paths.items():
         loaded = scenario_render.load_scenario_render_settings(scenario_path)
         composition = scenario_render.compose_scenario_reference(loaded)
-        output_dir = output_root / _safe_name(scenario_label)
+        output_dir = scenario_output_root / _safe_name(scenario_label)
         settings = scenario_render.ScenarioRenderSettings(
             scenario_config_path=loaded.scenario_config_path,
             scenario_name=loaded.scenario_name,
@@ -707,6 +709,7 @@ def run_standard_scenario_evaluations(
             source_curriculum_kind=source_curriculum_kind,
             model_scope=model_scope,
             evaluated_model_source=evaluated_model_source,
+            source_stage=source_stage,
         )
         entry = {
             "scenario_label": scenario_label,
@@ -729,6 +732,7 @@ def run_standard_scenario_evaluations(
             "source_run_name": run_name,
             "source_run_kind": source_run_kind,
             "source_curriculum_kind": source_curriculum_kind,
+            "source_stage": None if source_stage is None else dict(source_stage),
             "model_scope": model_scope,
             "evaluated_model_source": evaluated_model_source,
             "failure_overall_status": scenario_artifacts["diagnostics"].get("failure_overall_status"),
@@ -740,8 +744,8 @@ def run_standard_scenario_evaluations(
         }
         entries.append(entry)
 
-    metrics_dir = output_root / utils.artifacts.METRICS_DIRNAME
-    manifests_dir = output_root / utils.artifacts.MANIFESTS_DIRNAME
+    metrics_dir = scenario_output_root / utils.artifacts.METRICS_DIRNAME
+    manifests_dir = scenario_output_root / utils.artifacts.MANIFESTS_DIRNAME
     metrics_dir.mkdir(parents=True, exist_ok=True)
     manifests_dir.mkdir(parents=True, exist_ok=True)
     filename_stem = f"{run_name}_{STANDARD_SCENARIO_EVALUATION_NAME}"
@@ -762,8 +766,15 @@ def run_standard_scenario_evaluations(
         "source_run_name": run_name,
         "source_run_kind": source_run_kind,
         "source_curriculum_kind": source_curriculum_kind,
+        "source_stage": None if source_stage is None else dict(source_stage),
         "model_scope": model_scope,
         "evaluated_model_source": evaluated_model_source,
+        "canonical_evaluation_owner": "curriculum_stage" if source_stage is not None else "run_root",
+        "final_stage_index": None if source_stage is None else int(source_stage["stage_index"]),
+        "final_stage_name": None if source_stage is None else str(source_stage["stage_name"]),
+        "final_stage_evaluation_path": None if source_stage is None else str(scenario_output_root),
+        "final_stage_evaluation_path_relative": None if source_stage is None else utils.artifacts.path_relative_to(scenario_output_root, run_root),
+        "root_evaluation_outputs_duplicated": False,
         "evaluated_models": entries,
         "summary_metrics_path": str(metrics_path),
         "summary_metrics_path_relative": utils.artifacts.path_relative_to(metrics_path, run_root),
@@ -788,8 +799,15 @@ def run_standard_scenario_evaluations(
             "source_run_name",
             "source_run_kind",
             "source_curriculum_kind",
+            "source_stage",
             "model_scope",
             "evaluated_model_source",
+            "canonical_evaluation_owner",
+            "final_stage_index",
+            "final_stage_name",
+            "final_stage_evaluation_path",
+            "final_stage_evaluation_path_relative",
+            "root_evaluation_outputs_duplicated",
             "summary_metrics_path",
             "summary_metrics_path_relative",
             "summary_manifest_path",
@@ -842,6 +860,7 @@ def _write_standard_scenario_metrics_and_diagnostics(
     source_curriculum_kind: str | None,
     model_scope: str,
     evaluated_model_source: str | None,
+    source_stage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write per-scenario metrics and diagnostics under one scenario output folder."""
     metrics_dir = output_dir / utils.artifacts.METRICS_DIRNAME
@@ -873,6 +892,7 @@ def _write_standard_scenario_metrics_and_diagnostics(
         "source_run_name": run_name,
         "source_run_kind": source_run_kind,
         "source_curriculum_kind": source_curriculum_kind,
+        "source_stage": None if source_stage is None else dict(source_stage),
         "model_scope": model_scope,
         "evaluated_model_source": evaluated_model_source,
         "source_manifest_path": None if settings.source_manifest_path is None else str(settings.source_manifest_path),
@@ -1514,6 +1534,11 @@ def _evaluation_index_entry(
 ) -> dict[str, Any]:
     """Build a link-only evaluation index entry."""
     model_path_text = None if model_path is None else str(model_path)
+    source_stage = next(
+        (entry.get("source_stage") for entry in evaluated_models if isinstance(entry.get("source_stage"), Mapping)),
+        None,
+    )
+    stage_evaluation_path = None if source_stage is None else Path(aggregate_metrics_path).parent.parent
     return {
         "index_key": f"{mode}:{evaluation_name}",
         "run_name": run_name,
@@ -1536,6 +1561,14 @@ def _evaluation_index_entry(
         "model_role": model_role,
         "model_path": model_path_text,
         "model_path_relative": utils.artifacts.path_relative_to(model_path_text, run_root),
+        "source_stage": None if source_stage is None else dict(source_stage),
+        "final_stage_index": None if source_stage is None else int(source_stage["stage_index"]),
+        "final_stage_name": None if source_stage is None else str(source_stage["stage_name"]),
+        "final_stage_evaluation_path": None if stage_evaluation_path is None else str(stage_evaluation_path),
+        "final_stage_evaluation_path_relative": None
+        if stage_evaluation_path is None
+        else utils.artifacts.path_relative_to(stage_evaluation_path, run_root),
+        "root_evaluation_outputs_duplicated": False,
         "task_names": list(task_names),
         "evaluated_models": evaluated_models,
     }

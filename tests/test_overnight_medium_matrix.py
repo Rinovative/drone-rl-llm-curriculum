@@ -42,7 +42,7 @@ POLYLINE_BOOTSTRAP_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_p
 TRACKING_MEDIUM_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_tracking_medium.yaml")
 BASIC_TRAINING_SHOW_DISTRIBUTION_CONFIG = Path("configs/tasks/task_distribution_basic_training_show.yaml")
 BASIC_TRAINING_SHOW_TASK_INDEX = 3
-BOOTSTRAP_HOVER_TARGET_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.7, 1.4]}
+BOOTSTRAP_HOVER_TARGET_BOUNDS = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [0.45, 0.75]}
 MANUAL_STAGE_DISTRIBUTION_CONFIGS = (
     BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG,
     VERTICAL_BOOTSTRAP_DISTRIBUTION_CONFIG,
@@ -166,12 +166,12 @@ def _assert_manual_medium_curriculum_stage_distributions(settings: manual_traini
     assert stage1.bootstrap_task_shape == "hover_stabilization"
     assert stage1.bootstrap_target_sampling_bounds == BOOTSTRAP_HOVER_TARGET_BOUNDS
     assert stage1.stage_sampling_bounds == {"target_position": BOOTSTRAP_HOVER_TARGET_BOUNDS}
-    assert stage2.stage_sampling_bounds["start_height"] == [0.65, 0.9]
-    assert stage2.stage_sampling_bounds["end_height"] == [1.1, 1.4]
-    assert stage3.stage_sampling_bounds["line_length_m"] == [0.25, 0.55]
+    assert stage2.stage_sampling_bounds["start_height"] == [0.45, 0.65]
+    assert stage2.stage_sampling_bounds["end_height"] == [0.65, 1.0]
+    assert stage3.stage_sampling_bounds["line_length_m"] == [0.3, 0.7]
     assert stage3.stage_sampling_bounds["direction_angle_deg"] == [-45.0, 45.0]
-    assert stage4.stage_sampling_bounds["first_segment_length_m"] == [0.3, 0.6]
-    assert stage4.stage_sampling_bounds["second_segment_length_m"] == [0.25, 0.5]
+    assert stage4.stage_sampling_bounds["first_segment_length_m"] == [0.38, 0.75]
+    assert stage4.stage_sampling_bounds["second_segment_length_m"] == [0.32, 0.62]
     assert stage4.stage_sampling_bounds["final_height_offset_m"] == [-0.1, 0.1]
 
     medium_settings = envs.task_distribution.load_task_distribution_settings(stage5.training_task_distribution_config_path)
@@ -497,8 +497,10 @@ def test_generalization_suite_and_standard_scenarios_validate() -> None:
     assert generalization.task_names == [
         "hover_center",
         "vertical_basic",
+        "vertical_down_basic",
         "line_basic",
         "diagonal_line_basic",
+        "angled_descent_basic",
         "short_line_start_hold",
         "polyline_l_basic",
         "rectangle_basic",
@@ -509,6 +511,7 @@ def test_generalization_suite_and_standard_scenarios_validate() -> None:
         "zigzag_basic",
         "triangle_basic",
         "multi_height_polyline_basic",
+        "delayed_altitude_polyline_basic",
     ]
     durations = []
     for config_path in (

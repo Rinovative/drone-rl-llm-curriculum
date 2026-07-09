@@ -24,16 +24,24 @@ task_distribution:
     duration_sec: 4.0
     sample_rate_hz: 10.0
     start_hold_enabled: true
-    start_hold_sec: 1.0
+    start_hold_sec: 1.2
     exclude_start_hold_from_tracking_metrics: true
     start:
     - 0.0
     - 0.0
-    - 1.0
+    - 0.55
     end:
-    - 0.5
+    - 0.6
     - 0.0
-    - 1.0
+    - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
   family_weights:
     line: 0.75
     start_hold_then_line: 0.25
@@ -42,29 +50,60 @@ task_distribution:
       start_xy_radius_m: 0.12
       heading_jitter_deg: 20
       length_range_m:
-      - 0.25
-      - 0.65
+      - 0.3
+      - 0.8
       z_range_m:
-      - 0.85
-      - 1.15
+      - 0.45
+      - 0.75
       duration_range_sec:
-      - 4.0
-      - 7.0
+      - 4.5
+      - 8.0
       start_hold_range_sec:
-      - 0.5
-      - 1.5
+      - 1.2
+      - 1.2
+      base_z_range_m:
+      - 0.45
+      - 0.75
     start_hold_then_line:
       start_xy_radius_m: 0.1
       heading_jitter_deg: 20
       length_range_m:
-      - 0.2
-      - 0.55
+      - 0.25
+      - 0.7
       z_range_m:
-      - 0.85
-      - 1.15
-      hold_duration_range_sec:
+      - 0.45
       - 0.75
-      - 1.75
+      hold_duration_range_sec:
+      - 1.2
+      - 1.2
       move_duration_range_sec:
-      - 3.0
-      - 6.0
+      - 3.5
+      - 7.0
+      base_z_range_m:
+      - 0.45
+      - 0.75
+  metadata:
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    base_z_range_m:
+    - 0.45
+    - 0.75
+    base_z_offset_range_m:
+    - -0.55
+    - -0.25
+    height_variation_enabled: true
+    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+lower_start_height_enabled: true
+start_height_policy: lower_active_reference_0p45_0p75m
+base_z_range_m:
+- 0.45
+- 0.75
+base_z_offset_range_m:
+- -0.55
+- -0.25
+height_variation_enabled: true
+start_hold_policy: training_1p2s_after_lower_reference
+start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+tracking_reward_starts_after_start_hold: false

@@ -37,22 +37,29 @@ proposal_fallback:
   task_distribution_id: tracking_medium
   default_stage_budget_profile: short
   ready_stage_budget_profile: normal
-
 bootstrap:
   enabled: true
   stage_name: hover_stabilization
   task_shape: hover_stabilization
   stage_budget_profile: bootstrap
-  budget_rationale: Deterministic randomized hover-target bootstrap uses 1.0x the reference medium budget before LLM adaptation.
+  budget_rationale: Deterministic randomized hover-target bootstrap uses 1.0x the
+    reference medium budget before LLM adaptation.
   total_timesteps: 500000
   eval_steps: 240
-  notes: Fixed Stage 1 bootstrap samples a constant hover target per episode from bounded x/y/z ranges; LLM proposals begin at Stage 2.
+  notes: Fixed Stage 1 bootstrap samples a constant hover target per episode from
+    bounded x/y/z ranges; LLM proposals begin at Stage 2.
   bootstrap_stage_source: deterministic_config
   bootstrap_task_shape: hover_stabilization
   bootstrap_target_sampling_bounds:
-    x: [-0.5, 0.5]
-    y: [-0.5, 0.5]
-    z: [0.7, 1.4]
+    x:
+    - -0.5
+    - 0.5
+    y:
+    - -0.5
+    - 0.5
+    z:
+    - 0.45
+    - 0.75
   task_distribution_id: bootstrap_randomized_hover_target
   task_distribution_config_path: configs/tasks/task_distribution_hover_bootstrap_medium.yaml
   task:
@@ -60,7 +67,21 @@ bootstrap:
     shape: hover_stabilization
     duration_sec: 3.0
     sample_rate_hz: 10.0
-    position: [0.0, 0.0, 1.0]
+    start_hold_enabled: true
+    start_hold_sec: 1.2
+    exclude_start_hold_from_tracking_metrics: true
+    position:
+    - 0.0
+    - 0.0
+    - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
 llm:
   provider: openai_compatible
   api_base: http://127.0.0.1:18080/v1

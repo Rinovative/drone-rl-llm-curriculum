@@ -23,10 +23,10 @@ task_distribution:
   base_task:
     task_type: trajectory
     shape: basic_training_show
-    duration_sec: 15.9
+    duration_sec: 20.3
     sample_rate_hz: 10.0
     start_hold_enabled: true
-    start_hold_sec: 1.0
+    start_hold_sec: 1.2
     exclude_start_hold_from_tracking_metrics: true
     final_hold_enabled: true
     final_hold_sec: 1.0
@@ -37,116 +37,124 @@ task_distribution:
       segment_start:
       - 0.0
       - 0.0
-      - 0.9
+      - 0.45
       segment_end:
       - 0.0
       - 0.0
-      - 0.9
-      segment_duration_sec: 1.0
-    - segment_name: vertical_lift
-      segment_shape: vertical
-      segment_start:
-      - 0.0
-      - 0.0
-      - 0.9
-      segment_end:
-      - 0.0
-      - 0.0
-      - 1.1
-      segment_duration_sec: 1.4
+      - 0.45
+      segment_duration_sec: 1.2
     - segment_name: horizontal_line
       segment_shape: horizontal_line
       segment_start:
       - 0.0
       - 0.0
-      - 1.1
+      - 0.45
       segment_end:
-      - 0.32
+      - 0.42
       - 0.0
-      - 1.1
-      segment_duration_sec: 1.6
+      - 0.45
+      segment_duration_sec: 2.1
     - segment_name: diagonal_line
       segment_shape: diagonal_line
       segment_start:
-      - 0.32
+      - 0.42
       - 0.0
-      - 1.1
+      - 0.45
       segment_end:
-      - 0.54
-      - 0.15
-      - 1.12
-      segment_duration_sec: 1.7
+      - 0.7
+      - 0.22
+      - 0.47
+      segment_duration_sec: 2.2
+    - segment_name: vertical_lift
+      segment_shape: vertical
+      segment_start:
+      - 0.7
+      - 0.22
+      - 0.47
+      segment_end:
+      - 0.7
+      - 0.22
+      - 0.69
+      segment_duration_sec: 1.8
     - segment_name: ellipse_loop
       segment_shape: ellipse
       segment_start:
-      - 0.54
-      - 0.15
-      - 1.12
+      - 0.7
+      - 0.22
+      - 0.69
       segment_end:
-      - 0.54
-      - 0.15
-      - 1.12
-      segment_duration_sec: 3.0
-      radius_x_m: 0.12
-      radius_y_m: 0.08
+      - 0.7
+      - 0.22
+      - 0.69
+      segment_duration_sec: 3.6
+      radius_x_m: 0.16
+      radius_y_m: 0.11
       phase_deg: 180.0
     - segment_name: polyline_l_shape
       segment_shape: l_shape
       segment_start:
-      - 0.54
-      - 0.15
-      - 1.12
+      - 0.7
+      - 0.22
+      - 0.69
       segment_end:
-      - 0.77
-      - 0.36
-      - 1.08
-      segment_duration_sec: 2.2
+      - 1.02
+      - 0.52
+      - 0.65
+      segment_duration_sec: 2.8
       segment_points:
-      - - 0.54
-        - 0.15
-        - 1.12
-      - - 0.54
-        - 0.36
-        - 1.12
-      - - 0.77
-        - 0.36
-        - 1.08
+      - - 0.7
+        - 0.22
+        - 0.69
+      - - 0.7
+        - 0.52
+        - 0.69
+      - - 1.02
+        - 0.52
+        - 0.65
     - segment_name: zigzag_finish
       segment_shape: zigzag
       segment_start:
-      - 0.77
-      - 0.36
-      - 1.08
+      - 1.02
+      - 0.52
+      - 0.65
       segment_end:
-      - 1.18
-      - 0.42
-      - 1.04
-      segment_duration_sec: 3.0
+      - 1.55
+      - 0.58
+      - 0.61
+      segment_duration_sec: 3.6
       segment_points:
-      - - 0.77
-        - 0.36
-        - 1.08
-      - - 0.91
-        - 0.46
-        - 1.08
-      - - 1.05
-        - 0.28
-        - 1.04
-      - - 1.18
-        - 0.42
-        - 1.04
+      - - 1.02
+        - 0.52
+        - 0.65
+      - - 1.2
+        - 0.66
+        - 0.65
+      - - 1.38
+        - 0.4
+        - 0.61
+      - - 1.55
+        - 0.58
+        - 0.61
     - segment_name: final_hold
       segment_shape: final_hold
       segment_start:
-      - 1.18
-      - 0.42
-      - 1.04
+      - 1.55
+      - 0.58
+      - 0.61
       segment_end:
-      - 1.18
-      - 0.42
-      - 1.04
+      - 1.55
+      - 0.58
+      - 0.61
       segment_duration_sec: 1.0
       segment_final_hold_sec: 1.0
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.45
+    sampled_start_height_m: 0.45
   family_weights:
     basic_training_show: 1.0
   variations:
@@ -158,7 +166,7 @@ task_distribution:
       - -0.08
       - 0.08
       z_offset_range_m:
-      - -0.04
+      - 0.0
       - 0.06
       length_scale_range:
       - 0.9
@@ -171,8 +179,36 @@ task_distribution:
       - 0.9
       - 1.1
       start_hold_range_sec:
-      - 0.8
+      - 1.2
       - 1.2
       final_hold_range_sec:
       - 0.8
       - 1.2
+      base_z_range_m:
+      - 0.45
+      - 0.75
+  metadata:
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    base_z_range_m:
+    - 0.45
+    - 0.75
+    base_z_offset_range_m:
+    - -0.55
+    - -0.19
+    height_variation_enabled: true
+    start_hold_policy: training_1p2s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+lower_start_height_enabled: true
+start_height_policy: lower_active_reference_0p45_0p75m
+base_z_range_m:
+- 0.45
+- 0.75
+base_z_offset_range_m:
+- -0.55
+- -0.19
+height_variation_enabled: true
+start_hold_policy: training_1p2s_after_lower_reference
+start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+tracking_reward_starts_after_start_hold: false

@@ -65,9 +65,9 @@ def test_line_task_reference_adds_default_start_and_final_holds() -> None:
     """Verify moving tracking tasks include start alignment and final settling phases."""
     reference = envs.task_adapter.make_task_reference(_line_task())
 
-    expected_tracking_phase_start_step = 10
-    expected_tracking_phase_end_step = 41
-    expected_total_reference_steps = 51
+    expected_tracking_phase_start_step = 12
+    expected_tracking_phase_end_step = 43
+    expected_total_reference_steps = 53
     expected_start_position = np.array([[0.0, 0.0, 1.0]])
     expected_final_position = np.array([[0.5, 0.0, 1.0]])
     expected_start_hold_positions = np.repeat(
@@ -77,15 +77,15 @@ def test_line_task_reference_adds_default_start_and_final_holds() -> None:
     )
 
     assert reference.start_hold_enabled is True
-    assert reference.start_hold_sec == pytest.approx(1.0)
+    assert reference.start_hold_sec == pytest.approx(1.2)
     assert reference.exclude_start_hold_from_tracking_metrics is True
     assert reference.tracking_phase_start_step == expected_tracking_phase_start_step
-    assert reference.tracking_phase_start_time_sec == pytest.approx(1.0)
+    assert reference.tracking_phase_start_time_sec == pytest.approx(1.2)
     assert reference.final_hold_enabled is True
     assert reference.final_hold_sec == pytest.approx(1.0)
     assert reference.exclude_final_hold_from_tracking_metrics is True
     assert reference.tracking_phase_end_step == expected_tracking_phase_end_step
-    assert reference.tracking_phase_end_time_sec == pytest.approx(4.0)
+    assert reference.tracking_phase_end_time_sec == pytest.approx(4.2)
     assert reference.times.shape[0] == expected_total_reference_steps
     np.testing.assert_allclose(
         reference.positions[: reference.tracking_phase_start_step],

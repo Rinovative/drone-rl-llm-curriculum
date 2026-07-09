@@ -23,7 +23,7 @@ OWN_TASK_SEED = 4
 EVAL_RPM_DELTA_SCALE = 0.07
 STANDARD_SCENARIO_LABELS = ("easy", "medium", "hard")
 STANDARD_SCENARIO_COUNT = len(STANDARD_SCENARIO_LABELS)
-STANDARD_SCENARIO_START_HOLD_SEC = 2.0
+STANDARD_SCENARIO_START_HOLD_SEC = 2.5
 OBSERVATION_MISMATCH_MESSAGE = "Observation spaces do not match: model != env"
 
 
@@ -1105,9 +1105,9 @@ def test_standard_scenario_evaluation_writes_easy_medium_hard_metrics_and_diagno
 
     assert result.metrics["scenario_labels"] == list(STANDARD_SCENARIO_LABELS)
     assert captured == [
-        ("show_easy", 2.0, 1.0, True, True, "pid_position", True),
-        ("show_medium", 2.0, 1.25, True, True, "pid_position", True),
-        ("show_hard", 2.0, 1.5, True, True, "pid_position", True),
+        ("show_easy", STANDARD_SCENARIO_START_HOLD_SEC, 1.0, True, True, "pid_position", True),
+        ("show_medium", STANDARD_SCENARIO_START_HOLD_SEC, 1.2, True, True, "pid_position", True),
+        ("show_hard", STANDARD_SCENARIO_START_HOLD_SEC, 1.5, True, True, "pid_position", True),
     ]
     assert result.metrics["entry_count"] == STANDARD_SCENARIO_COUNT
     for scenario_label in STANDARD_SCENARIO_LABELS:

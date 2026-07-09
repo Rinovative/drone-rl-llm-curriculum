@@ -1,260 +1,537 @@
 evaluation_name: generalization
 seed: 0
 eval_steps: 420
-
 render:
   enabled: true
   fps: 20
   max_steps: null
-
 plots:
   enabled: true
-
 traces:
   enabled: true
-
 tasks:
-  - task_name: hover_center
-    task_shape: hover_stabilization
-    task:
-      task_type: trajectory
-      shape: hover_stabilization
-      duration_sec: 3.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      position: [0.0, 0.0, 1.0]
-  - task_name: vertical_basic
-    task_shape: vertical
-    task:
-      task_type: trajectory
-      shape: vertical
-      duration_sec: 3.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      xy: [0.25, -0.25]
-      start_height: 0.8
-      end_height: 1.4
-  - task_name: line_basic
-    task_shape: line
-    task:
-      task_type: trajectory
-      shape: line
-      duration_sec: 3.5
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      start: [0.0, 0.0, 1.0]
-      end: [0.65, 0.0, 1.0]
-  - task_name: diagonal_line_basic
-    task_shape: line
-    task:
-      task_type: trajectory
-      shape: line
-      duration_sec: 4.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      start: [0.0, 0.0, 1.0]
-      end: [0.55, 0.35, 1.1]
-  - task_name: short_line_start_hold
-    task_shape: start_hold_then_short_line
-    task:
-      task_type: trajectory
-      shape: start_hold_then_short_line
-      hold_duration_sec: 2.0
-      move_duration_sec: 3.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      start: [0.0, 0.0, 1.0]
-      end: [0.35, 0.0, 1.0]
-  - task_name: polyline_l_basic
-    task_shape: polyline
-    task:
-      task_type: trajectory
-      shape: polyline
-      task_family: l_shape
-      duration_sec: 6.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      points:
-        - [0.0, 0.0, 1.0]
-        - [0.4, 0.0, 1.0]
-        - [0.4, 0.35, 1.0]
-  - task_name: rectangle_basic
-    task_shape: polyline
-    task:
-      task_type: trajectory
-      shape: polyline
-      task_family: rectangle
-      duration_sec: 8.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      points:
-        - [0.0, 0.0, 1.0]
-        - [0.45, 0.0, 1.0]
-        - [0.45, 0.28, 1.0]
-        - [0.0, 0.28, 1.0]
-        - [0.0, 0.0, 1.0]
-  - task_name: square_basic
-    task_shape: polyline
-    task:
-      task_type: trajectory
-      shape: polyline
-      task_family: square
-      duration_sec: 7.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      points:
-        - [0.0, 0.0, 1.0]
-        - [0.32, 0.0, 1.0]
-        - [0.32, 0.32, 1.0]
-        - [0.0, 0.32, 1.0]
-        - [0.0, 0.0, 1.0]
-  - task_name: circle_basic
-    task_shape: circle
-    task:
-      task_type: trajectory
-      shape: circle
-      duration_sec: 7.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      radius: 0.25
-      height: 1.0
-      center: [0.0, 0.0]
-      clockwise: false
-  - task_name: ellipse_basic
-    task_shape: ellipse
-    task:
-      task_type: trajectory
-      shape: ellipse
-      duration_sec: 8.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      radius_x: 0.35
-      radius_y: 0.2
-      height: 1.0
-      center: [0.0, 0.0]
-      clockwise: false
-  - task_name: figure_eight_basic
-    task_shape: figure_eight
-    task:
-      task_type: trajectory
-      shape: figure_eight
-      duration_sec: 10.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      radius_x: 0.3
-      radius_y: 0.18
-      height: 1.0
-      center: [0.0, 0.0]
-      clockwise: false
-  - task_name: zigzag_basic
-    task_shape: polyline
-    task:
-      task_type: trajectory
-      shape: polyline
-      task_family: zigzag
-      duration_sec: 7.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      points:
-        - [0.0, 0.0, 1.0]
-        - [0.18, 0.16, 1.0]
-        - [0.36, -0.12, 1.0]
-        - [0.54, 0.12, 1.0]
-  - task_name: triangle_basic
-    task_shape: polyline
-    task:
-      task_type: trajectory
-      shape: polyline
-      task_family: triangle
-      duration_sec: 8.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      points:
-        - [0.0, 0.0, 1.0]
-        - [0.42, 0.0, 1.0]
-        - [0.21, 0.36, 1.0]
-        - [0.0, 0.0, 1.0]
-  - task_name: multi_height_polyline_basic
-    task_shape: polyline
-    task:
-      task_type: trajectory
-      shape: polyline
-      task_family: multi_height_polyline
-      duration_sec: 8.0
-      sample_rate_hz: 10.0
-      start_hold_enabled: true
-      start_hold_sec: 2.0
-      exclude_start_hold_from_tracking_metrics: true
-      final_hold_enabled: true
-      final_hold_sec: 1.0
-      exclude_final_hold_from_tracking_metrics: true
-      points:
-        - [0.0, 0.0, 0.95]
-        - [0.22, 0.12, 1.12]
-        - [0.44, -0.05, 0.90]
-        - [0.62, 0.10, 1.05]
+- task_name: hover_center
+  task_shape: hover_stabilization
+  task:
+    task_type: trajectory
+    shape: hover_stabilization
+    duration_sec: 3.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    position:
+    - 0.0
+    - 0.0
+    - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: vertical_basic
+  task_shape: vertical
+  task:
+    task_type: trajectory
+    shape: vertical
+    duration_sec: 3.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    xy:
+    - 0.25
+    - -0.25
+    start_height: 0.45
+    end_height: 0.95
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.45
+    sampled_start_height_m: 0.45
+- task_name: vertical_down_basic
+  task_shape: vertical
+  task:
+    task_type: trajectory
+    shape: vertical
+    duration_sec: 3.5
+    xy:
+    - -0.25
+    - 0.25
+    start_height: 0.75
+    end_height: 0.45
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.75
+    sampled_start_height_m: 0.75
+- task_name: line_basic
+  task_shape: line
+  task:
+    task_type: trajectory
+    shape: line
+    duration_sec: 3.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    start:
+    - 0.0
+    - 0.0
+    - 0.55
+    end:
+    - 0.8
+    - 0.0
+    - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: diagonal_line_basic
+  task_shape: line
+  task:
+    task_type: trajectory
+    shape: line
+    duration_sec: 4.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    start:
+    - 0.0
+    - 0.0
+    - 0.55
+    end:
+    - 0.7
+    - 0.45
+    - 0.65
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: angled_descent_basic
+  task_shape: line
+  task:
+    task_type: trajectory
+    shape: line
+    duration_sec: 4.8
+    start:
+    - 0.0
+    - 0.0
+    - 0.7
+    end:
+    - 0.6
+    - -0.35
+    - 0.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.7
+    sampled_start_height_m: 0.7
+- task_name: short_line_start_hold
+  task_shape: start_hold_then_short_line
+  task:
+    task_type: trajectory
+    shape: start_hold_then_short_line
+    hold_duration_sec: 1.8
+    move_duration_sec: 3.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    start:
+    - 0.0
+    - 0.0
+    - 0.55
+    end:
+    - 0.45
+    - 0.0
+    - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: polyline_l_basic
+  task_shape: polyline
+  task:
+    task_type: trajectory
+    shape: polyline
+    task_family: l_shape
+    duration_sec: 7.0
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    points:
+    - - 0.0
+      - 0.0
+      - 0.55
+    - - 0.52
+      - 0.0
+      - 0.55
+    - - 0.52
+      - 0.45
+      - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: rectangle_basic
+  task_shape: polyline
+  task:
+    task_type: trajectory
+    shape: polyline
+    task_family: rectangle
+    duration_sec: 9.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    points:
+    - - 0.0
+      - 0.0
+      - 0.55
+    - - 0.6
+      - 0.0
+      - 0.55
+    - - 0.6
+      - 0.36
+      - 0.55
+    - - 0.0
+      - 0.36
+      - 0.55
+    - - 0.0
+      - 0.0
+      - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: square_basic
+  task_shape: polyline
+  task:
+    task_type: trajectory
+    shape: polyline
+    task_family: square
+    duration_sec: 8.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    points:
+    - - 0.0
+      - 0.0
+      - 0.55
+    - - 0.42
+      - 0.0
+      - 0.55
+    - - 0.42
+      - 0.42
+      - 0.55
+    - - 0.0
+      - 0.42
+      - 0.55
+    - - 0.0
+      - 0.0
+      - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: circle_basic
+  task_shape: circle
+  task:
+    task_type: trajectory
+    shape: circle
+    duration_sec: 8.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    radius: 0.33
+    height: 0.55
+    center:
+    - 0.0
+    - 0.0
+    clockwise: false
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: ellipse_basic
+  task_shape: ellipse
+  task:
+    task_type: trajectory
+    shape: ellipse
+    duration_sec: 9.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    radius_x: 0.45
+    radius_y: 0.26
+    height: 0.55
+    center:
+    - 0.0
+    - 0.0
+    clockwise: false
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: figure_eight_basic
+  task_shape: figure_eight
+  task:
+    task_type: trajectory
+    shape: figure_eight
+    duration_sec: 11.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    radius_x: 0.39
+    radius_y: 0.23
+    height: 0.55
+    center:
+    - 0.0
+    - 0.0
+    clockwise: false
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: zigzag_basic
+  task_shape: polyline
+  task:
+    task_type: trajectory
+    shape: polyline
+    task_family: zigzag
+    duration_sec: 8.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    points:
+    - - 0.0
+      - 0.0
+      - 0.55
+    - - 0.24
+      - 0.21
+      - 0.55
+    - - 0.48
+      - -0.16
+      - 0.55
+    - - 0.72
+      - 0.16
+      - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: triangle_basic
+  task_shape: polyline
+  task:
+    task_type: trajectory
+    shape: polyline
+    task_family: triangle
+    duration_sec: 9.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    points:
+    - - 0.0
+      - 0.0
+      - 0.55
+    - - 0.55
+      - 0.0
+      - 0.55
+    - - 0.28
+      - 0.47
+      - 0.55
+    - - 0.0
+      - 0.0
+      - 0.55
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
+- task_name: multi_height_polyline_basic
+  task_shape: polyline
+  task:
+    task_type: trajectory
+    shape: polyline
+    task_family: multi_height_polyline
+    duration_sec: 9.5
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    points:
+    - - 0.0
+      - 0.0
+      - 0.5
+    - - 0.29
+      - 0.16
+      - 0.67
+    - - 0.58
+      - -0.07
+      - 0.45
+    - - 0.82
+      - 0.13
+      - 0.6
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.5
+    sampled_start_height_m: 0.5
+- task_name: delayed_altitude_polyline_basic
+  task_shape: polyline
+  task:
+    task_type: trajectory
+    shape: polyline
+    task_family: delayed_altitude_polyline
+    duration_sec: 10.0
+    points:
+    - - 0.0
+      - 0.0
+      - 0.55
+    - - 0.35
+      - 0.0
+      - 0.55
+    - - 0.7
+      - 0.25
+      - 0.75
+    - - 0.95
+      - 0.25
+      - 0.75
+    sample_rate_hz: 10.0
+    start_hold_enabled: true
+    start_hold_sec: 1.8
+    exclude_start_hold_from_tracking_metrics: true
+    final_hold_enabled: true
+    final_hold_sec: 1.0
+    exclude_final_hold_from_tracking_metrics: true
+    lower_start_height_enabled: true
+    start_height_policy: lower_active_reference_0p45_0p75m
+    height_variation_enabled: true
+    start_hold_policy: evaluation_1p8s_after_lower_reference
+    start_hold_reward_policy: full_tracking_reward_active_during_short_lower_start_hold
+    tracking_reward_starts_after_start_hold: false
+    base_z_m: 0.55
+    sampled_start_height_m: 0.55
