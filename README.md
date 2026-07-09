@@ -262,6 +262,7 @@ This project is released under the [MIT License](LICENSE).
 - E. Coumans and Y. Bai, **PyBullet: A Python Module for Physics Simulation for Games, Robotics and Machine Learning**, 2016–2021.  
 - Farama Foundation, **Gymnasium Documentation**, maintained successor of OpenAI Gym.  
 
+---
 
 ## 🎞️ Evaluation Rollout Gallery
 <details>

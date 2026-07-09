@@ -274,3 +274,143 @@ def test_find_default_runs_root_prefers_local_storage_runs(tmp_path: Path, monke
     (tmp_path / "storage" / "runs").mkdir(parents=True)
 
     assert evaluation.report.find_default_runs_root() == Path("storage/runs")
+
+
+def test_build_aggregated_report_metric_table_summarizes_generalization_rows(tmp_path: Path) -> None:
+    """Verify run-level aggregation averages task metrics and excludes non-generalization rows."""
+    root = tmp_path / "runs"
+    run_name = "direct_ppo_pid_dynprev_m-taskdist_medium_seed0"
+    common_payload = {
+        "source_run_name": run_name,
+        "source_run_kind": "direct_ppo",
+        "action_interface": "pid_position",
+        "evaluation_name": "generalization",
+    }
+    _write_metrics(
+        root,
+        run_name,
+        "evaluations/generalization/line_basic",
+        {
+            **common_payload,
+            "suite_task_name": "line_basic",
+            "task_shape": "line",
+            "mean_position_error_tracking_m": 0.2,
+            "mean_position_error_m": 0.3,
+            "final_position_error_m": 0.4,
+            "max_position_error_m": 0.5,
+            "mean_eval_reward": -0.2,
+            "final_eval_reward": -0.1,
+            "eval_terminated_count": 1,
+            "eval_truncated_count": 0,
+            "failure_overall_status": "successful",
+            "failure_primary_mode": "no_failure_detected",
+        },
+    )
+    _write_metrics(
+        root,
+        run_name,
+        "evaluations/generalization/circle_basic",
+        {
+            **common_payload,
+            "suite_task_name": "circle_basic",
+            "task_shape": "circle",
+            "mean_position_error_tracking_m": 0.4,
+            "mean_position_error_m": 0.5,
+            "final_position_error_m": 0.6,
+            "max_position_error_m": 0.7,
+            "mean_eval_reward": -0.4,
+            "final_eval_reward": -0.3,
+            "eval_terminated_count": 2,
+            "eval_truncated_count": 3,
+            "failure_overall_status": "failed",
+            "failure_primary_mode": "overshoot",
+        },
+    )
+    _write_metrics(
+        root,
+        run_name,
+        "evaluations/own_task",
+        {**common_payload, "evaluation_name": "own_task", "suite_task_name": "own_task", "mean_position_error_tracking_m": 99.0},
+    )
+    _write_metrics(
+        root,
+        run_name,
+        "evaluations/scenarios/easy",
+        {**common_payload, "evaluation_name": "scenarios", "scenario_label": "easy", "mean_position_error_tracking_m": 99.0},
+    )
+
+    rows = evaluation.report.build_aggregated_report_metric_table(root=root)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["run_name"] == run_name
+    assert row["method"] == "Direct PPO"
+    assert row["action_interface"] == "pid_position"
+    assert row["variant"] == "default"
+    assert row["evaluated_task_count"] == 2
+    assert row["mean_tracking_error_m"] == pytest.approx(0.3)
+    assert row["mean_position_error_m"] == pytest.approx(0.4)
+    assert row["final_position_error_m"] == pytest.approx(0.5)
+    assert row["max_position_error_m"] == pytest.approx(0.6)
+    assert row["mean_eval_reward"] == pytest.approx(-0.3)
+    assert row["final_eval_reward"] == pytest.approx(-0.2)
+    assert row["terminated_count"] == 3
+    assert row["truncated_count"] == 3
+    assert row["failure_status"] == "failed, successful"
+    assert row["primary_failure"] == "no_failure_detected, overshoot"
+
+
+def test_build_aggregated_report_metric_table_handles_missing_optional_metrics(tmp_path: Path) -> None:
+    """Verify missing optional aggregate fields do not crash or fabricate values."""
+    root = tmp_path / "runs"
+    run_name = "curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0"
+    _write_metrics(
+        root,
+        run_name,
+        "evaluations/line_eval/line_basic",
+        {
+            "evaluation_name": "line_eval",
+            "suite_task_name": "line_basic",
+            "mean_position_error_m": 0.25,
+        },
+    )
+
+    rows = evaluation.report.build_aggregated_report_metric_table(root=root)
+
+    assert len(rows) == 1
+    assert rows[0]["method"] == "Manual curriculum"
+    assert rows[0]["action_interface"] == "direct_rpm"
+    assert rows[0]["evaluated_task_count"] == 1
+    assert rows[0]["mean_tracking_error_m"] == pytest.approx(0.25)
+    assert rows[0]["mean_position_error_m"] == pytest.approx(0.25)
+    assert rows[0]["final_position_error_m"] is None
+    assert rows[0]["terminated_count"] is None
+    assert rows[0]["truncated_count"] is None
+
+
+def test_compact_aggregated_report_metric_table_uses_display_columns(tmp_path: Path) -> None:
+    """Verify compact aggregate rows expose the notebook display columns only."""
+    root = tmp_path / "runs"
+    run_name = "direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0"
+    _write_metrics(
+        root,
+        run_name,
+        "evaluations/generalization/line_basic",
+        {
+            "evaluation_name": "generalization",
+            "suite_task_name": "line_basic",
+            "mean_position_error_tracking_m": 0.1,
+            "final_eval_reward": -0.5,
+        },
+    )
+
+    rows = evaluation.report.compact_aggregated_report_metric_table(root=root)
+
+    assert len(rows) == 1
+    assert tuple(rows[0]) == evaluation.report.compact_aggregated_report_columns()
+    assert rows[0]["run_name"] == run_name
+    assert rows[0]["variant"] == "gamma095"
+    assert rows[0]["evaluated_task_count"] == 1
+    assert rows[0]["mean_tracking_error_m"] == pytest.approx(0.1)
+    assert "final_eval_reward" not in rows[0]
+    assert "metrics_file" not in rows[0]

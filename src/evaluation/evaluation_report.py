@@ -95,6 +95,47 @@ COMPACT_REPORT_METRIC_COLUMNS = (
     "failure_status",
     "primary_failure",
 )
+_AGGREGATED_REPORT_GROUP_COLUMNS = (
+    "run_name",
+    "method",
+    "action_interface",
+    "variant",
+)
+_AGGREGATED_REPORT_MEAN_COLUMNS = (
+    "mean_tracking_error_m",
+    "mean_position_error_m",
+    "final_position_error_m",
+    "max_position_error_m",
+    "mean_eval_reward",
+    "final_eval_reward",
+)
+_AGGREGATED_REPORT_COUNT_COLUMNS = (
+    "terminated_count",
+    "truncated_count",
+)
+AGGREGATED_REPORT_METRIC_COLUMNS = (
+    *_AGGREGATED_REPORT_GROUP_COLUMNS,
+    "evaluated_task_count",
+    *_AGGREGATED_REPORT_MEAN_COLUMNS,
+    *_AGGREGATED_REPORT_COUNT_COLUMNS,
+    "failure_status",
+    "primary_failure",
+)
+COMPACT_AGGREGATED_REPORT_METRIC_COLUMNS = (
+    "run_name",
+    "method",
+    "action_interface",
+    "variant",
+    "evaluated_task_count",
+    "mean_tracking_error_m",
+    "mean_position_error_m",
+    "final_position_error_m",
+    "max_position_error_m",
+    "terminated_count",
+    "truncated_count",
+    "failure_status",
+    "primary_failure",
+)
 _REPORT_METRIC_FIELD_SOURCES = {
     "mean_tracking_error_m": ("mean_tracking_error_m", "mean_position_error_tracking_m", "mean_position_error_m"),
     "mean_position_error_m": ("mean_position_error_m", "mean_position_error_tracking_m"),
@@ -299,6 +340,74 @@ def compact_report_metric_table(
     """
     selected_columns = compact_report_columns() if columns is None else columns
     return [{column: row.get(column) for column in selected_columns if column in row} for row in build_report_metric_table(root=root)]
+
+
+def build_aggregated_report_metric_table(root: str | Path | None = None) -> list[dict[str, Any]]:
+    """
+    Build one fixed/generalization comparison row per run.
+
+    Parameters
+    ----------
+    root
+        Runs root to scan recursively. When omitted, ``find_default_runs_root`` is used.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Run-level rows where numeric evaluation metrics are averaged over fixed or
+        generalization task rows, termination counts are summed and failures are summarized.
+
+    """
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for row in build_report_metric_table(root=root):
+        if not _is_generalization_report_metric_row(row):
+            continue
+        key = tuple(row.get(column) for column in _AGGREGATED_REPORT_GROUP_COLUMNS)
+        groups.setdefault(key, []).append(row)
+
+    table: list[dict[str, Any]] = []
+    for key, rows in groups.items():
+        aggregate = dict.fromkeys(AGGREGATED_REPORT_METRIC_COLUMNS)
+        aggregate.update(dict(zip(_AGGREGATED_REPORT_GROUP_COLUMNS, key, strict=True)))
+        aggregate["evaluated_task_count"] = len(rows)
+        for column in _AGGREGATED_REPORT_MEAN_COLUMNS:
+            aggregate[column] = _mean_numeric(row.get(column) for row in rows)
+        for column in _AGGREGATED_REPORT_COUNT_COLUMNS:
+            aggregate[column] = _sum_numeric_counts(row.get(column) for row in rows)
+        aggregate["failure_status"] = _unique_summary(row.get("failure_status") for row in rows)
+        aggregate["primary_failure"] = _unique_summary(row.get("primary_failure") for row in rows)
+        table.append(aggregate)
+    return sorted(table, key=_aggregated_report_sort_key)
+
+
+def compact_aggregated_report_columns() -> tuple[str, ...]:
+    """Return the default compact columns for aggregated notebook report display."""
+    return COMPACT_AGGREGATED_REPORT_METRIC_COLUMNS
+
+
+def compact_aggregated_report_metric_table(
+    root: str | Path | None = None,
+    *,
+    columns: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Build a compact aggregated report table with display-friendly columns.
+
+    Parameters
+    ----------
+    root
+        Runs root to scan recursively. When omitted, ``find_default_runs_root`` is used.
+    columns
+        Optional output columns. Missing columns are ignored rather than raising.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Compact one-row-per-run metric summaries for notebook display.
+
+    """
+    selected_columns = compact_aggregated_report_columns() if columns is None else columns
+    return [{column: row.get(column) for column in selected_columns if column in row} for row in build_aggregated_report_metric_table(root=root)]
 
 
 def summarize_run_artifacts(
@@ -712,6 +821,74 @@ def _report_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     )
 
 
+def _is_generalization_report_metric_row(row: dict[str, Any]) -> bool:
+    """Return whether a detailed report row belongs in the fixed/generalization aggregate."""
+    return _infer_report_evaluation_category(row) in {"fixed", "generalization"}
+
+
+def _infer_report_evaluation_category(row: dict[str, Any]) -> str:
+    """Infer the report evaluation category from row labels and artifact paths."""
+    text = _row_search_text(row, ("evaluation_name", "evaluation_suite_name", "suite_task_name", "metrics_file")).lower().replace("\\", "/")
+    if not text:
+        return "unknown"
+    if "own_task" in text:
+        return "own_task"
+    if "scenario" in text or "/scenarios/" in text or "show_" in text or "/show" in text:
+        return "scenario"
+    if "policy_render" in text or "render" in text:
+        return "render"
+    if "training" in text and "/evaluations/" not in text:
+        return "training"
+    if "generalization" in text:
+        return "generalization"
+    if "fixed" in text or "benchmark" in text or "line_eval" in text:
+        return "fixed"
+    if "/evaluations/" in text and "/metrics/" in text and row.get("suite_task_name"):
+        return "fixed"
+    return "unknown"
+
+
+def _row_search_text(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+    """Return lower-level row text used for deterministic category inference."""
+    return " ".join(str(row.get(key) or "") for key in keys).strip()
+
+
+def _mean_numeric(values: Any) -> float | None:
+    """Return the mean of finite numeric values, ignoring missing values."""
+    numeric_values = [_as_float(value) for value in values]
+    numeric_values = [value for value in numeric_values if value is not None]
+    if not numeric_values:
+        return None
+    return float(sum(numeric_values) / len(numeric_values))
+
+
+def _sum_numeric_counts(values: Any) -> int | None:
+    """Return the sum of count-like values, or None when no counts are present."""
+    counts = [_count_value(value) for value in values]
+    counts = [value for value in counts if value is not None]
+    if not counts:
+        return None
+    return int(sum(counts))
+
+
+def _unique_summary(values: Any) -> str | None:
+    """Return a compact deterministic summary of unique non-empty values."""
+    unique_values = sorted({str(value) for value in values if value not in {None, ""}})
+    if not unique_values:
+        return None
+    return ", ".join(unique_values)
+
+
+def _aggregated_report_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Sort aggregated report rows deterministically by display labels."""
+    return (
+        str(row.get("method") or ""),
+        str(row.get("action_interface") or ""),
+        str(row.get("variant") or ""),
+        str(row.get("run_name") or ""),
+    )
+
+
 def _direct_run_dirs(root: Path) -> list[Path]:
     """Return direct child directories under an artifact root."""
     if not root.exists():
@@ -822,6 +999,8 @@ def _as_float(value: Any) -> float | None:
 
 
 __all__ = [
+    "AGGREGATED_REPORT_METRIC_COLUMNS",
+    "COMPACT_AGGREGATED_REPORT_METRIC_COLUMNS",
     "COMPACT_REPORT_METRIC_COLUMNS",
     "DEFAULT_ARTIFACT_ROOT",
     "MATRIX_SCRIPT_PATH",
@@ -832,8 +1011,11 @@ __all__ = [
     "REPORT_METRIC_OUTPUT_COLUMNS",
     "RUN_MANIFEST_FILENAME",
     "artifact_root",
+    "build_aggregated_report_metric_table",
     "build_metric_comparison_table",
     "build_report_metric_table",
+    "compact_aggregated_report_columns",
+    "compact_aggregated_report_metric_table",
     "compact_report_columns",
     "compact_report_metric_table",
     "expected_run_names",
