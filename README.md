@@ -1,5 +1,5 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Rinovative/drone-rl-llm-curriculum/blob/main/Drone_RL_LLM_Curriculum.ipynb)  
-_Open Interactive Jupyter Notebook directly in your browser (via Colab)_
+_Open Jupyter Notebook directly in your browser (via Colab)_
 
 # Drone RL with LLM-Guided Curriculum Learning  
 ### *Deep Reinforcement Learning Project – MSE Data Science, Spring 2026*
@@ -32,21 +32,21 @@ The environment is used to train and evaluate a reinforcement-learning agent for
 </details>
 
 <details>
-<summary><strong>🧭 Trajectory generation</strong></summary>
+<summary><strong>🧭 Trajectory generation and task distributions</strong></summary>
 
-Parametric trajectory generators are used to create progressively more difficult reference paths.
+The project uses validated trajectory tasks and randomized task distributions for training and evaluation.
 
-Planned trajectory families include:
+The active medium tracking setup samples a new task at the beginning of each episode and keeps it fixed during that episode. This prevents the policy from memorizing one fixed trajectory and exposes it to different tracking situations.
 
-- hover targets
-- straight lines
-- circles
-- figure-eight paths
-- stars
-- spirals
-- optional formation-style paths for visual demonstrations
+The task families include:
 
-These trajectories define the tracking targets used during training and evaluation.
+- hover and takeoff stabilization,
+- straight-line and start-hold-then-line tracking,
+- polylines, L-shapes, rectangles and squares,
+- circles, ellipses and figure-eight trajectories,
+- vertical and altitude-changing trajectories such as vertical up-down, angled vertical, delayed-altitude polylines and multi-height polylines.
+
+Curriculum runs use narrower task distributions in early stages and progress toward broader tracking distributions.
 
 </details>
 
@@ -90,15 +90,15 @@ The learned policy should track reference trajectories while minimizing tracking
 <details>
 <summary><strong>📊 Evaluation</strong></summary>
 
-The project compares different training strategies using quantitative metrics and visualizations.
+The project compares different training strategies using quantitative metrics and visual artifacts.
 
 The main comparison is:
 
-- direct training on difficult tasks
-- fixed manual curriculum
-- LLM-guided adaptive curriculum
+- direct PPO on randomized task distributions,
+- fixed manual curriculum learning,
+- LLM-guided adaptive curriculum learning.
 
-Evaluation criteria include learning curves, tracking error, success rate, crash rate, action-cost proxies, curriculum progression, and invalid proposal statistics.
+Evaluation criteria include learning curves, mean tracking error, final and maximum position error, termination and truncation counts, automatic failure-mode classification, trajectory plots and GIFs.
 
 </details>
 
@@ -127,16 +127,16 @@ The LLM is used only as a **curriculum manager**. It must not generate arbitrary
 
 The project compares three training setups:
 
-1. **Direct training**  
-   The agent is trained directly on difficult target trajectories.
+1. **Direct PPO**  
+   The agent is trained directly on randomized task distributions such as `tracking_medium`.
 
 2. **Manual curriculum**  
-   The agent follows a predefined progression from simple to harder tasks.
+   The agent follows a predefined progression from simpler task distributions to harder tracking tasks.
 
 3. **LLM-guided adaptive curriculum**  
-   The LLM proposes the next training task based on recent evaluation metrics and a compact training history.
+   The first stage is a deterministic hover bootstrap. Later stages are proposed by a local LLM based on compact training feedback and are accepted only after deterministic validation.
 
-Only tasks that pass deterministic validation are accepted for training or evaluation.
+The LLM is not a drone controller. It only proposes structured curriculum tasks and cannot directly control the simulated drone.
 
 ---
 
@@ -261,3 +261,136 @@ This project is released under the [MIT License](LICENSE).
 - J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov, **“Proximal Policy Optimization Algorithms”**, 2017.  
 - E. Coumans and Y. Bai, **PyBullet: A Python Module for Physics Simulation for Games, Robotics and Machine Learning**, 2016–2021.  
 - Farama Foundation, **Gymnasium Documentation**, maintained successor of OpenAI Gym.  
+
+
+## 🎞️ Evaluation Rollout Gallery
+
+The following GIFs show deterministic policy rollouts on fixed generalization tasks. They are qualitative artifacts in addition to the quantitative tracking-error metrics.
+
+<details>
+<summary><strong>Stabilization and altitude tasks</strong></summary>
+
+<br>
+
+<table>
+  <tr>
+    <td align="center">
+      <strong>Hover center</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/hover_center/scenario_rollout.gif" width="260">
+    </td>
+    <td align="center">
+      <strong>Vertical basic</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/vertical_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Vertical down</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/vertical_down_basic/scenario_rollout.gif" width="260">
+    </td>
+    <td align="center">
+      <strong>Angled descent</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/angled_descent_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+</table>
+
+</details>
+
+<details>
+<summary><strong>Line and altitude-tracking tasks</strong></summary>
+
+<br>
+
+<table>
+  <tr>
+    <td align="center">
+      <strong>Line basic</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/line_basic/scenario_rollout.gif" width="260">
+    </td>
+    <td align="center">
+      <strong>Diagonal line</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/diagonal_line_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Short line start hold</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/short_line_start_hold/scenario_rollout.gif" width="260">
+    </td>
+    <td align="center">
+      <strong>Delayed altitude polyline</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/delayed_altitude_polyline_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Multi-height polyline</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/multi_height_polyline_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+</table>
+
+</details>
+
+<details>
+<summary><strong>Polyline and corner tasks</strong></summary>
+
+<br>
+
+<table>
+  <tr>
+    <td align="center">
+      <strong>L-shape polyline</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/polyline_l_basic/scenario_rollout.gif" width="260">
+    </td>
+    <td align="center">
+      <strong>Rectangle</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/rectangle_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Square</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/square_basic/scenario_rollout.gif" width="260">
+    </td>
+    <td align="center">
+      <strong>Triangle</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/triangle_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Zigzag</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/zigzag_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+</table>
+
+</details>
+
+<details>
+<summary><strong>Curved trajectory tasks</strong></summary>
+
+<br>
+
+<table>
+  <tr>
+    <td align="center">
+      <strong>Circle</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/circle_basic/scenario_rollout.gif" width="260">
+    </td>
+    <td align="center">
+      <strong>Ellipse</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/ellipse_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Figure eight</strong><br>
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/figure_eight_basic/scenario_rollout.gif" width="260">
+    </td>
+  </tr>
+</table>
+
+</details>

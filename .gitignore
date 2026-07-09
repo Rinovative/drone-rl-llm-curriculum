@@ -52,3 +52,8 @@ tmp/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Keep curated README/report media under version control
+!docs/media/
+!docs/media/**
+!docs/media/**/*.gif

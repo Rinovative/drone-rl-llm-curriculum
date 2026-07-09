@@ -5,14 +5,11 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from src import evaluation
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _matrix_rows() -> list[dict[str, object]]:
@@ -161,3 +158,119 @@ def test_find_media_artifacts_returns_direct_run_relative_paths(tmp_path: Path) 
 
     assert [row["media_file"] for row in rows] == ["rollout.gif", "trajectory_xy.png"]
     assert all(str(row["path_relative_to_root"]).startswith("direct_ppo_pid") for row in rows)
+
+
+def _write_metrics(root: Path, run_name: str, relative_dir: str, payload: dict[str, object]) -> Path:
+    """Write a synthetic metrics JSON fixture below a run directory."""
+    metrics_dir = root / run_name / relative_dir / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = metrics_dir / f"{run_name}_{relative_dir.replace('/', '_')}_metrics.json"
+    metrics_path.write_text(json.dumps(payload), encoding="utf-8")
+    return metrics_path
+
+
+def test_build_report_metric_table_normalizes_valid_metrics_and_skips_unusable_files(tmp_path: Path) -> None:
+    """Verify report metric aggregation includes valid metrics and skips invalid or nonmetric files."""
+    root = tmp_path / "runs"
+    run_name = "direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0"
+    metrics_path = _write_metrics(
+        root,
+        run_name,
+        "evaluations/own_task",
+        {
+            "source_run_name": run_name,
+            "source_run_kind": "direct_ppo",
+            "action_interface": "pid_position",
+            "evaluation_name": "own_task",
+            "suite_task_name": "own_task",
+            "task_shape_used_for_evaluation": "polyline",
+            "mean_position_error_tracking_m": 0.12,
+            "mean_position_error_m": 0.15,
+            "final_position_error_m": 0.20,
+            "max_position_error_m": 0.35,
+            "mean_eval_reward": -0.4,
+            "final_eval_reward": -0.2,
+            "eval_terminated_count": 2,
+            "eval_truncated_count": 1,
+            "failure_overall_status": "failed",
+            "failure_primary_mode": "attitude_instability",
+        },
+    )
+    bad_dir = root / "bad_run" / "training" / "metrics"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "bad_run_metrics.json").write_text("{not json", encoding="utf-8")
+    (bad_dir / "aggregate_metrics.json").write_text(json.dumps({"evaluation_name": "own_task"}), encoding="utf-8")
+    (bad_dir / "evaluation_index_metrics.json").write_text(json.dumps({"entry_count": 1}), encoding="utf-8")
+    (bad_dir / "run_manifest_metrics.json").write_text(json.dumps({"run_name": "bad_run"}), encoding="utf-8")
+
+    rows = evaluation.report.build_report_metric_table(root=root)
+
+    assert len(rows) == 1
+    assert rows[0] == {
+        "run_name": run_name,
+        "method": "Direct PPO",
+        "action_interface": "pid_position",
+        "variant": "gamma095",
+        "evaluation_name": "own_task",
+        "suite_task_name": "own_task",
+        "task_shape": "polyline",
+        "mean_tracking_error_m": 0.12,
+        "mean_position_error_m": 0.15,
+        "final_position_error_m": 0.20,
+        "max_position_error_m": 0.35,
+        "mean_eval_reward": -0.4,
+        "final_eval_reward": -0.2,
+        "terminated_count": 2,
+        "truncated_count": 1,
+        "failure_status": "failed",
+        "primary_failure": "attitude_instability",
+        "metrics_file": str(metrics_path),
+    }
+
+
+def test_build_report_metric_table_infers_method_action_and_variant_from_paths(tmp_path: Path) -> None:
+    """Verify deterministic inference for report labels when metrics metadata is sparse."""
+    root = tmp_path / "runs"
+    run_names = (
+        "direct_ppo_pid_dynprev_m-taskdist_medium_gamma095_seed0",
+        "curriculum_manual_directrpm_dynprev_m-taskdist_medium_smooth001_seed0",
+        "curriculum_llm_pid_dynprev_m-taskdist_medium_seed0",
+    )
+    for index, run_name in enumerate(run_names):
+        _write_metrics(root, run_name, "training", {"mean_position_error_m": 0.1 + index})
+
+    rows = {row["run_name"]: row for row in evaluation.report.build_report_metric_table(root=root)}
+
+    assert rows[run_names[0]]["method"] == "Direct PPO"
+    assert rows[run_names[0]]["action_interface"] == "pid_position"
+    assert rows[run_names[0]]["variant"] == "gamma095"
+    assert rows[run_names[1]]["method"] == "Manual curriculum"
+    assert rows[run_names[1]]["action_interface"] == "direct_rpm"
+    assert rows[run_names[1]]["variant"] == "smooth001"
+    assert rows[run_names[2]]["method"] == "LLM curriculum"
+    assert rows[run_names[2]]["action_interface"] == "pid_position"
+    assert rows[run_names[2]]["variant"] == "default"
+
+
+def test_compact_report_metric_table_uses_display_columns_without_metrics_file(tmp_path: Path) -> None:
+    """Verify compact report rows contain display fields and omit verbose file paths."""
+    root = tmp_path / "runs"
+    run_name = "direct_ppo_pid_dynprev_m-taskdist_medium_seed0"
+    _write_metrics(root, run_name, "evaluations/generalization/line_basic", {"mean_position_error_m": 0.25})
+
+    rows = evaluation.report.compact_report_metric_table(root=root)
+
+    assert len(rows) == 1
+    assert tuple(rows[0]) == evaluation.report.compact_report_columns()
+    assert rows[0]["run_name"] == run_name
+    assert rows[0]["evaluation_name"] == "generalization"
+    assert rows[0]["mean_tracking_error_m"] == pytest.approx(0.25)
+    assert "metrics_file" not in rows[0]
+
+
+def test_find_default_runs_root_prefers_local_storage_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify default runs-root discovery supports notebook execution from the repo root."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "storage" / "runs").mkdir(parents=True)
+
+    assert evaluation.report.find_default_runs_root() == Path("storage/runs")

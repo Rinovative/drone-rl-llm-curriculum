@@ -49,11 +49,75 @@ REPORT_METRIC_KEYS = (
     "rmse_position_error_m",
     "success_rate",
     "crash_rate",
+    "mean_eval_reward",
+    "final_eval_reward",
+    "mean_reward",
+    "final_reward",
     "failure_overall_status",
     "failure_primary_mode",
     "eval_terminated_count",
     "eval_truncated_count",
     "episode_count",
+)
+REPORT_METRIC_OUTPUT_COLUMNS = (
+    "run_name",
+    "method",
+    "action_interface",
+    "variant",
+    "evaluation_name",
+    "suite_task_name",
+    "task_shape",
+    "mean_tracking_error_m",
+    "mean_position_error_m",
+    "final_position_error_m",
+    "max_position_error_m",
+    "mean_eval_reward",
+    "final_eval_reward",
+    "terminated_count",
+    "truncated_count",
+    "failure_status",
+    "primary_failure",
+    "metrics_file",
+)
+COMPACT_REPORT_METRIC_COLUMNS = (
+    "run_name",
+    "method",
+    "action_interface",
+    "variant",
+    "evaluation_name",
+    "suite_task_name",
+    "task_shape",
+    "mean_tracking_error_m",
+    "mean_position_error_m",
+    "final_position_error_m",
+    "max_position_error_m",
+    "mean_eval_reward",
+    "failure_status",
+    "primary_failure",
+)
+_REPORT_METRIC_FIELD_SOURCES = {
+    "mean_tracking_error_m": ("mean_tracking_error_m", "mean_position_error_tracking_m", "mean_position_error_m"),
+    "mean_position_error_m": ("mean_position_error_m", "mean_position_error_tracking_m"),
+    "final_position_error_m": ("final_position_error_m",),
+    "max_position_error_m": ("max_position_error_m",),
+    "mean_eval_reward": ("mean_eval_reward", "mean_reward", "eval_mean_reward"),
+    "final_eval_reward": ("final_eval_reward", "final_reward", "eval_final_reward"),
+    "terminated_count": ("terminated_count", "eval_terminated_count", "terminated"),
+    "truncated_count": ("truncated_count", "eval_truncated_count", "truncated"),
+    "failure_status": ("failure_status", "failure_overall_status", "overall_status"),
+    "primary_failure": ("primary_failure", "failure_primary_mode", "primary_failure_mode"),
+}
+_REPORT_TASK_SHAPE_KEYS = (
+    "task_shape",
+    "task_shape_used_for_evaluation",
+    "own_task_shape",
+    "training_task_shape",
+    "task_distribution_base_task_shape",
+)
+_REPORT_USABLE_METRIC_KEYS = (
+    *(key for keys in _REPORT_METRIC_FIELD_SOURCES.values() for key in keys if key not in {"terminated", "truncated"}),
+    "terminated",
+    "truncated",
 )
 
 
@@ -170,6 +234,71 @@ def _curriculum_kind(kind: str) -> str:
 def artifact_root(root: str | Path | None = None) -> Path:
     """Return the artifact root, defaulting to direct run folders under /workspace/storage/runs."""
     return DEFAULT_ARTIFACT_ROOT if root is None else Path(root).expanduser()
+
+
+def find_default_runs_root() -> Path:
+    """Find the most likely local runs root for notebook/report metrics."""
+    for candidate in (Path("storage/runs"), Path("../storage/runs"), DEFAULT_ARTIFACT_ROOT):
+        if candidate.is_dir():
+            return candidate
+    return DEFAULT_ARTIFACT_ROOT
+
+
+def build_report_metric_table(root: str | Path | None = None) -> list[dict[str, Any]]:
+    """
+    Build normalized final-report metric rows from existing run artifacts.
+
+    Parameters
+    ----------
+    root
+        Runs root to scan recursively. When omitted, common local roots such as
+        ``storage/runs`` and ``/workspace/storage/runs`` are checked.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Pandas-friendly rows with stable comparison columns. Invalid JSON,
+        manifests, indexes and metrics files without scalar report metrics are skipped.
+
+    """
+    resolved_root = find_default_runs_root() if root is None else Path(root).expanduser()
+    rows: list[dict[str, Any]] = []
+    for path in _iter_report_metric_files(resolved_root):
+        payload = _read_json_mapping(path)
+        if payload is None or not _has_report_metric_fields(payload):
+            continue
+        rows.append(_report_metric_row(payload=payload, path=path, root=resolved_root))
+    return sorted(rows, key=_report_sort_key)
+
+
+def compact_report_columns() -> tuple[str, ...]:
+    """Return the default compact columns for notebook report display."""
+    return COMPACT_REPORT_METRIC_COLUMNS
+
+
+def compact_report_metric_table(
+    root: str | Path | None = None,
+    *,
+    columns: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Build a compact report metric table with only display-friendly columns.
+
+    Parameters
+    ----------
+    root
+        Runs root to scan recursively. When omitted, ``find_default_runs_root`` is used.
+    columns
+        Optional output columns. Missing columns are ignored rather than raising.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Compact rows suitable for notebook display.
+
+    """
+    selected_columns = compact_report_columns() if columns is None else columns
+    return [{column: row.get(column) for column in selected_columns if column in row} for row in build_report_metric_table(root=root)]
 
 
 def summarize_run_artifacts(
@@ -381,12 +510,8 @@ def find_media_artifacts(root: str | Path | None = None, *, run_name: str | None
 
 
 def infer_method_label(kind: str) -> str:
-    """Return a report-facing method label for an experiment kind."""
-    return {
-        "direct_ppo": "Direct PPO",
-        "manual_curriculum": "Manual curriculum",
-        "llm_curriculum": "LLM curriculum",
-    }.get(kind, kind or "unknown")
+    """Return a report-facing method label for an experiment kind or run name."""
+    return _known_method_label(kind) or kind or "unknown"
 
 
 def infer_action_interface(text: str) -> str:
@@ -410,20 +535,181 @@ def infer_training_target(text: str) -> str:
 
 
 def infer_ppo_variant(run_name: str) -> str:
-    """Infer the PPO variant label from a planned run name."""
-    if "net256" in run_name:
+    """Infer the compact PPO variant label from a planned run name or metric field."""
+    normalized = run_name.lower()
+    if "net256" in normalized:
         return "net256"
-    if "low_lr" in run_name:
+    if "low_lr" in normalized or "low-lr" in normalized:
         return "low_lr"
-    if "gamma095" in run_name:
-        return "gamma_0.95"
-    if "ent005" in run_name:
-        return "ent_coef_0.005"
-    if "clip010" in run_name:
-        return "clip_range_0.10"
-    if "targetkl015" in run_name:
-        return "target_kl_0.015"
+    if "gamma095" in normalized or "gamma_0.95" in normalized or "gamma=0.95" in normalized:
+        return "gamma095"
+    if "smooth001" in normalized or "smooth_0.01" in normalized or "smooth=0.01" in normalized:
+        return "smooth001"
+    if "ent005" in normalized or "ent_coef_0.005" in normalized or "ent=0.005" in normalized:
+        return "ent005"
+    if "clip010" in normalized or "clip_range_0.10" in normalized or "clip=0.10" in normalized:
+        return "clip010"
+    if "targetkl015" in normalized or "target_kl_0.015" in normalized or "targetkl=0.015" in normalized:
+        return "targetkl015"
     return "default"
+
+
+def _known_method_label(text: str) -> str | None:
+    """Infer a known report method label from compact metadata or path text."""
+    normalized = text.lower().replace("-", "_")
+    if normalized in {"manual", "manual_curriculum"} or "manual_curriculum" in normalized or "curriculum_manual" in normalized:
+        return "Manual curriculum"
+    if normalized in {"llm", "llm_curriculum"} or "llm_curriculum" in normalized or "curriculum_llm" in normalized:
+        return "LLM curriculum"
+    if normalized in {"direct", "direct_ppo"} or "direct_ppo" in normalized:
+        return "Direct PPO"
+    return None
+
+
+def _iter_report_metric_files(root: Path) -> tuple[Path, ...]:
+    """Return candidate report metrics files below a runs root."""
+    if not root.exists():
+        return ()
+    return tuple(sorted(path for path in root.rglob(METRICS_GLOB) if path.is_file() and not _is_index_or_manifest_file(path)))
+
+
+def _is_index_or_manifest_file(path: Path) -> bool:
+    """Return whether a JSON path is clearly an index or manifest artifact."""
+    name = path.name.lower()
+    return "index" in name or "manifest" in name
+
+
+def _has_report_metric_fields(payload: dict[str, Any]) -> bool:
+    """Return whether a metrics payload has at least one scalar report metric."""
+    return any(key in payload and _is_scalar_json_value(payload[key]) for key in _REPORT_USABLE_METRIC_KEYS)
+
+
+def _report_metric_row(payload: dict[str, Any], path: Path, root: Path) -> dict[str, Any]:
+    """Normalize one metrics payload into the final-report comparison schema."""
+    artifact = _artifact_row(path=path, root=root, artifact_key="metrics_file_name")
+    run_name = _first_present(payload, ("source_run_name", "run_name", "training_run_name", "model_run_name"))
+    run_name = str(run_name or artifact.get("run_name") or "")
+    context = _report_context(payload=payload, path=path, run_name=run_name)
+    row = dict.fromkeys(REPORT_METRIC_OUTPUT_COLUMNS)
+    row.update(
+        {
+            "run_name": run_name,
+            "method": _report_method_label(payload=payload, context=context),
+            "action_interface": _report_action_interface(payload=payload, context=context),
+            "variant": _report_variant_label(payload=payload, context=context),
+            "evaluation_name": _report_evaluation_name(payload=payload, path=path),
+            "suite_task_name": _report_suite_task_name(payload),
+            "task_shape": _first_present(payload, _REPORT_TASK_SHAPE_KEYS),
+            "metrics_file": str(path),
+        }
+    )
+    for column, keys in _REPORT_METRIC_FIELD_SOURCES.items():
+        value = _first_present(payload, keys)
+        row[column] = _count_value(value) if column in {"terminated_count", "truncated_count"} else value
+    return row
+
+
+def _report_context(payload: dict[str, Any], path: Path, run_name: str) -> str:
+    """Build a deterministic text context for label inference."""
+    context_values = [
+        run_name,
+        path.as_posix(),
+        payload.get("source_config_path"),
+        payload.get("training_config_path"),
+        payload.get("task_config_path"),
+    ]
+    return " ".join(str(value) for value in context_values if value)
+
+
+def _report_method_label(payload: dict[str, Any], context: str) -> str:
+    """Return the best method label from metrics metadata or path context."""
+    curriculum_kind = _first_present(payload, ("source_curriculum_kind", "curriculum_kind"))
+    run_kind = _first_present(payload, ("source_run_kind", "run_kind", "model_role"))
+    if curriculum_kind and str(run_kind or "") in {"curriculum", "curriculum_stage", "baseline"}:
+        known = _known_method_label(f"{curriculum_kind}_curriculum")
+        if known is not None:
+            return known
+    if run_kind:
+        known = _known_method_label(str(run_kind))
+        if known is not None:
+            return known
+    return _known_method_label(context) or "unknown"
+
+
+def _report_action_interface(payload: dict[str, Any], context: str) -> str:
+    """Return the action interface from metrics metadata or path context."""
+    action_interface = payload.get("action_interface")
+    if isinstance(action_interface, str) and action_interface:
+        return infer_action_interface(action_interface)
+    return infer_action_interface(context)
+
+
+def _report_variant_label(payload: dict[str, Any], context: str) -> str:
+    """Return a compact PPO variant from metrics metadata or path context."""
+    for key in ("variant", "ppo_profile", "ppo_variant"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            inferred = infer_ppo_variant(value)
+            if inferred != "default" or value.lower() in {"default", "baseline"}:
+                return inferred
+    return infer_ppo_variant(context)
+
+
+def _report_evaluation_name(payload: dict[str, Any], path: Path) -> Any:
+    """Return the evaluation name from metrics metadata or artifact layout."""
+    value = _first_present(payload, ("evaluation_name", "evaluation_suite_name", "evaluation_suite", "evaluated_task_name"))
+    if value:
+        return value
+    path_value = _path_component_after(path, "evaluations")
+    if path_value:
+        return path_value
+    if "training" in path.parts:
+        return "training"
+    return None
+
+
+def _report_suite_task_name(payload: dict[str, Any]) -> Any:
+    """Return the suite task or scenario name when present."""
+    return _first_present(payload, ("suite_task_name", "evaluated_task_name", "scenario_label", "scenario_name"))
+
+
+def _path_component_after(path: Path, component: str) -> str | None:
+    """Return the path part immediately after a named component."""
+    parts = path.parts
+    try:
+        index = parts.index(component)
+    except ValueError:
+        return None
+    next_index = index + 1
+    return parts[next_index] if next_index < len(parts) else None
+
+
+def _count_value(value: Any) -> int | None:
+    """Convert count-like metric values to integers."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and isfinite(value):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _report_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Sort report rows deterministically by run, evaluation, task and metrics path."""
+    return (
+        str(row.get("run_name") or ""),
+        str(row.get("evaluation_name") or ""),
+        str(row.get("suite_task_name") or ""),
+        str(row.get("metrics_file") or ""),
+    )
 
 
 def _direct_run_dirs(root: Path) -> list[Path]:
@@ -536,16 +822,22 @@ def _as_float(value: Any) -> float | None:
 
 
 __all__ = [
+    "COMPACT_REPORT_METRIC_COLUMNS",
     "DEFAULT_ARTIFACT_ROOT",
     "MATRIX_SCRIPT_PATH",
     "MATRIX_TSV_PATH",
     "MEDIA_SUFFIXES",
     "METRICS_GLOB",
     "REPORT_METRIC_KEYS",
+    "REPORT_METRIC_OUTPUT_COLUMNS",
     "RUN_MANIFEST_FILENAME",
     "artifact_root",
     "build_metric_comparison_table",
+    "build_report_metric_table",
+    "compact_report_columns",
+    "compact_report_metric_table",
     "expected_run_names",
+    "find_default_runs_root",
     "find_media_artifacts",
     "find_metric_artifacts",
     "infer_action_interface",
