@@ -338,6 +338,12 @@ def test_build_aggregated_report_metric_table_summarizes_generalization_rows(tmp
         "evaluations/scenarios/easy",
         {**common_payload, "evaluation_name": "scenarios", "scenario_label": "easy", "mean_position_error_tracking_m": 99.0},
     )
+    _write_metrics(
+        root,
+        run_name,
+        "training",
+        {**common_payload, "evaluation_name": "training", "suite_task_name": "training", "mean_position_error_tracking_m": 99.0},
+    )
 
     rows = evaluation.report.build_aggregated_report_metric_table(root=root)
 
@@ -386,6 +392,112 @@ def test_build_aggregated_report_metric_table_handles_missing_optional_metrics(t
     assert rows[0]["final_position_error_m"] is None
     assert rows[0]["terminated_count"] is None
     assert rows[0]["truncated_count"] is None
+
+
+def test_build_aggregated_report_metric_table_keeps_final_manual_curriculum_stage(tmp_path: Path) -> None:
+    """Verify manual curriculum aggregation excludes earlier stage evaluations."""
+    root = tmp_path / "runs"
+    run_name = "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0"
+    _write_metrics(
+        root,
+        run_name,
+        "stages/stage01_hover/evaluations/generalization/line_basic",
+        {
+            "source_run_name": "curriculum_manual_pid_dynprev_m-taskdist_medium_stage01_hover_seed0",
+            "source_run_kind": "curriculum_stage",
+            "source_curriculum_kind": "manual",
+            "source_stage": {"stage_index": 1, "stage_name": "hover"},
+            "evaluation_name": "generalization",
+            "suite_task_name": "line_basic",
+            "mean_position_error_tracking_m": 99.0,
+            "eval_terminated_count": 9,
+            "eval_truncated_count": 9,
+        },
+    )
+    for task_name, value in (("line_basic", 0.2), ("circle_basic", 0.4)):
+        _write_metrics(
+            root,
+            run_name,
+            f"stages/stage03_medium/evaluations/generalization/{task_name}",
+            {
+                "source_run_name": "curriculum_manual_pid_dynprev_m-taskdist_medium_stage03_medium_seed0",
+                "source_run_kind": "curriculum_stage",
+                "source_curriculum_kind": "manual",
+                "source_stage": {"stage_index": 3, "stage_name": "medium"},
+                "model_scope": "final-stage",
+                "model_role": "stage",
+                "evaluation_name": "generalization",
+                "suite_task_name": task_name,
+                "mean_position_error_tracking_m": value,
+                "eval_terminated_count": 1,
+                "eval_truncated_count": 2,
+            },
+        )
+
+    rows = evaluation.report.build_aggregated_report_metric_table(root=root)
+
+    assert len(rows) == 1
+    assert rows[0]["run_name"] == run_name
+    assert rows[0]["method"] == "Manual curriculum"
+    assert rows[0]["evaluated_task_count"] == 2
+    assert rows[0]["mean_tracking_error_m"] == pytest.approx(0.3)
+    assert rows[0]["terminated_count"] == 2
+    assert rows[0]["truncated_count"] == 4
+
+
+def test_build_aggregated_report_metric_table_keeps_final_llm_curriculum_stage(tmp_path: Path) -> None:
+    """Verify LLM curriculum aggregation excludes earlier stage evaluations."""
+    root = tmp_path / "runs"
+    run_name = "llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0"
+    _write_metrics(
+        root,
+        run_name,
+        "stages/stage02_line/evaluations/generalization/line_basic",
+        {
+            "source_run_name": "llm_curriculum_directrpm_dynprev_m-taskdist_medium_stage02_line_seed0",
+            "source_run_kind": "curriculum_stage",
+            "source_curriculum_kind": "llm",
+            "source_stage": {"stage_index": 2, "stage_name": "line"},
+            "evaluation_name": "generalization",
+            "suite_task_name": "line_basic",
+            "mean_position_error_tracking_m": 99.0,
+        },
+    )
+    _write_metrics(
+        root,
+        run_name,
+        "stages/stage10_hover/evaluations/generalization/line_basic",
+        {
+            "source_run_name": "llm_curriculum_directrpm_dynprev_m-taskdist_medium_stage10_hover_seed0",
+            "source_run_kind": "curriculum_stage",
+            "source_curriculum_kind": "llm",
+            "source_stage": {"stage_index": 10, "stage_name": "hover"},
+            "model_scope": "final-stage",
+            "model_role": "stage",
+            "evaluation_name": "generalization",
+            "suite_task_name": "line_basic",
+            "mean_position_error_tracking_m": 0.5,
+        },
+    )
+
+    rows = evaluation.report.build_aggregated_report_metric_table(root=root)
+
+    assert len(rows) == 1
+    assert rows[0]["run_name"] == run_name
+    assert rows[0]["method"] == "LLM curriculum"
+    assert rows[0]["action_interface"] == "direct_rpm"
+    assert rows[0]["evaluated_task_count"] == 1
+    assert rows[0]["mean_tracking_error_m"] == pytest.approx(0.5)
+
+
+def test_notebook_results_cell_does_not_write_csv() -> None:
+    """Verify notebook report display cells do not export CSV files."""
+    notebook = json.loads(Path("Drone_RL_LLM_Curriculum.ipynb").read_text(encoding="utf-8"))
+    code_source = "\n".join("".join(cell.get("source", [])) for cell in notebook.get("cells", []) if cell.get("cell_type") == "code")
+
+    assert "to_csv" not in code_source
+    assert "report_metric_comparison.csv" not in code_source
+    assert "build_aggregated_report_metric_table" in code_source
 
 
 def test_compact_aggregated_report_metric_table_uses_display_columns(tmp_path: Path) -> None:

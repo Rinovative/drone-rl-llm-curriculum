@@ -20,6 +20,16 @@ The core research question is:
 
 > Can an LLM propose valid and useful training tasks that improve the learning process of a drone RL agent compared to a fixed manual curriculum or direct training on difficult tasks?
 
+## 🎬 Showcase Rollout
+
+The animation below shows a qualitative hard-scenario rollout of a trained LLM-curriculum policy. It is intended as a visual showcase and stress-test, not as the main quantitative evaluation.
+
+<p align="center">
+  <img src="docs/media/hard_scenario_llm_curriculum_directrpm_dynprev_m-taskdist_medium_seed0_scenario_rollout.gif"
+       alt="Hard scenario rollout of an LLM-curriculum drone policy"
+       width="720">
+</p>
+
 The repository provides a modular research pipeline covering:
 
 <details>
@@ -282,10 +292,6 @@ This project is released under the [MIT License](LICENSE).
     </td>
   </tr>
   <tr>
-    <td align="center">
-      <strong>Vertical down</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/vertical_down_basic/scenario_rollout.gif" width="260">
-    </td>
     <td align="center">
       <strong>Angled descent</strong><br>
       <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/angled_descent_basic/scenario_rollout.gif" width="260">

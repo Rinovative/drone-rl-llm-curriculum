@@ -1892,6 +1892,10 @@ def _stage_from_proposal(
             stage_index=stage_index,
             previous_stage_task_shape=previous_stage_task_shape,
         )
+        repair_fields = _merge_distribution_resolution_repair_fields(
+            repair_fields,
+            resolution_repair=_optional_json_mapping(resolved.get("distribution_resolution_repair")),
+        )
         stage_name = _stage_display_name(
             resolved_task=resolved["resolved_task"],
             task_distribution_metadata=resolved["resolved_task_sample_metadata"],
@@ -1974,6 +1978,52 @@ def _progression_stage_context(
     return context
 
 
+def _merge_distribution_resolution_repair_fields(
+    repair_fields: Mapping[str, Any],
+    *,
+    resolution_repair: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge post-sampling distribution repair metadata into stage repair fields."""
+    merged = dict(repair_fields)
+    if not resolution_repair:
+        return merged
+    original_distribution_id = merged.get("proposal_original_distribution_id") or resolution_repair.get("proposal_original_distribution_id")
+    merged.update(
+        {
+            "proposal_repaired": True,
+            "proposal_repair_reason": _combined_metadata_text(
+                merged.get("proposal_repair_reason"),
+                resolution_repair.get("proposal_repair_reason"),
+            ),
+            "proposal_original_distribution_id": original_distribution_id,
+            "proposal_final_distribution_id": resolution_repair.get("proposal_final_distribution_id"),
+            "proposal_progression_rule_applied": _combined_metadata_text(
+                merged.get("proposal_progression_rule_applied"),
+                resolution_repair.get("proposal_progression_rule_applied"),
+            ),
+            "hover_vertical_loop_detected": bool(
+                merged.get("hover_vertical_loop_detected", False) or resolution_repair.get("hover_vertical_loop_detected", False)
+            ),
+            "stage_progression_bucket": resolution_repair.get("stage_progression_bucket") or merged.get("stage_progression_bucket"),
+        }
+    )
+    return merged
+
+
+def _combined_metadata_text(first: Any, second: Any) -> str | None:
+    """Return a stable semicolon-joined metadata string without duplicate fragments."""
+    values: list[str] = []
+    for value in (first, second):
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text not in values:
+            values.append(text)
+    if not values:
+        return None
+    return "; ".join(values)
+
+
 def _resolve_task_distribution_stage_task(
     *,
     settings: LLMCurriculumSettings,
@@ -1984,6 +2034,93 @@ def _resolve_task_distribution_stage_task(
     """Resolve a constrained distribution reference into one concrete valid stage task."""
     config_path = Path(str(task[llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD]))
     distribution_id = str(task.get(llm.task_schema.TASK_DISTRIBUTION_ID_FIELD) or config_path.stem)
+    primary_resolution = _sample_valid_progression_task_from_distribution(
+        settings=settings,
+        distribution_id=distribution_id,
+        config_path=config_path,
+        stage_index=stage_index,
+        previous_stage_task_shape=previous_stage_task_shape,
+    )
+    if primary_resolution["resolved"]:
+        return _resolved_distribution_stage_payload(
+            config_path=config_path,
+            distribution_id=distribution_id,
+            resolved_task=primary_resolution["resolved_task"],
+            resolved_task_shape=primary_resolution["resolved_task_shape"],
+            resolved_sample_metadata=primary_resolution["resolved_task_sample_metadata"],
+            resolution_repair=None,
+        )
+
+    rejected_alternatives: list[str] = []
+    for candidate_index, candidate_distribution_id in enumerate(
+        _alternative_distribution_candidates_for_progression(
+            distribution_id=distribution_id,
+            previous_stage_task_shape=previous_stage_task_shape,
+            stage_index=stage_index,
+            max_stages=settings.max_stages,
+        ),
+        start=1,
+    ):
+        allowed, transition_reason = llm.progression.is_valid_progression_transition(
+            previous_stage_task_shape,
+            _progression_stage_context(distribution_id=candidate_distribution_id),
+            diagnostics={"stage_index": stage_index, "max_stages": settings.max_stages},
+        )
+        if not allowed:
+            rejected_alternatives.append(f"{candidate_distribution_id}: {transition_reason}")
+            continue
+        candidate_config_path = Path(llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS[candidate_distribution_id])
+        candidate_resolution = _sample_valid_progression_task_from_distribution(
+            settings=settings,
+            distribution_id=candidate_distribution_id,
+            config_path=candidate_config_path,
+            stage_index=stage_index,
+            previous_stage_task_shape=previous_stage_task_shape,
+        )
+        if not candidate_resolution["resolved"]:
+            rejected_alternatives.append(
+                _distribution_resolution_rejection_summary(
+                    distribution_id=candidate_distribution_id,
+                    rejected_samples=candidate_resolution["rejected_samples"],
+                )
+            )
+            continue
+        resolved_sample_metadata = dict(candidate_resolution["resolved_task_sample_metadata"])
+        resolution_repair = _distribution_resolution_repair_metadata(
+            original_distribution_id=distribution_id,
+            final_distribution_id=candidate_distribution_id,
+            original_rejected_samples=primary_resolution["rejected_samples"],
+            rejected_alternatives=rejected_alternatives,
+            candidate_index=candidate_index,
+        )
+        resolved_sample_metadata.update(resolution_repair["resolved_task_sample_metadata"])
+        return _resolved_distribution_stage_payload(
+            config_path=candidate_config_path,
+            distribution_id=candidate_distribution_id,
+            resolved_task=candidate_resolution["resolved_task"],
+            resolved_task_shape=candidate_resolution["resolved_task_shape"],
+            resolved_sample_metadata=resolved_sample_metadata,
+            resolution_repair=resolution_repair["stage_repair_fields"],
+        )
+
+    primary_details = _sample_rejection_details(primary_resolution["rejected_samples"], previous_stage_task_shape=previous_stage_task_shape)
+    alternative_details = "; alternatives rejected: " + "; ".join(rejected_alternatives) if rejected_alternatives else ""
+    message = (
+        f"resolved task-distribution proposal {distribution_id!r} only produced invalid consecutive progression sample(s): "
+        f"{primary_details}{alternative_details}"
+    )
+    raise ValueError(message)
+
+
+def _sample_valid_progression_task_from_distribution(
+    *,
+    settings: LLMCurriculumSettings,
+    distribution_id: str,
+    config_path: Path,
+    stage_index: int,
+    previous_stage_task_shape: str | None,
+) -> dict[str, Any]:
+    """Sample one distribution until a valid non-repeating progression task is found."""
     distribution_settings = envs.task_distribution.load_task_distribution_settings(config_path)
     stage_seed = _stage_task_distribution_seed(settings=settings, distribution_settings=distribution_settings, stage_index=stage_index)
     sampler_settings = replace(distribution_settings, seed=stage_seed)
@@ -2014,12 +2151,138 @@ def _resolve_task_distribution_stage_task(
                     "progression_transition_reason": transition_reason,
                 }
             )
-            break
+            return {
+                "resolved": True,
+                "resolved_task": dict(resolved_task),
+                "resolved_task_shape": resolved_task_shape,
+                "resolved_task_sample_metadata": resolved_sample_metadata,
+                "rejected_samples": rejected_samples,
+            }
         rejected_samples.append(f"{resolved_task_shape} ({transition_reason})")
+    return {
+        "resolved": False,
+        "resolved_task": None,
+        "resolved_task_shape": None,
+        "resolved_task_sample_metadata": None,
+        "rejected_samples": rejected_samples,
+    }
+
+
+def _alternative_distribution_candidates_for_progression(
+    *,
+    distribution_id: str,
+    previous_stage_task_shape: str | None,
+    stage_index: int,
+    max_stages: int,
+) -> tuple[str, ...]:
+    """Return deterministic repair candidates after a distribution samples only repeats."""
+    previous_bucket = _progression_bucket_for_shape(previous_stage_task_shape)
+    original_bucket = _progression_bucket_for_distribution_id(distribution_id)
+    if previous_stage_task_shape in {validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE, validation.contracts.SHAPE_SHORT_SLOW_LINE}:
+        candidates: tuple[str, ...] = (
+            "line_bootstrap",
+            "angled_vertical_bootstrap",
+            "polyline_bootstrap",
+            "l_shape_bootstrap",
+            "delayed_altitude_polyline_bootstrap",
+            "zigzag_bootstrap",
+            "triangle_bootstrap",
+        )
+    elif PROGRESSION_BUCKET_XY_LINE in {previous_bucket, original_bucket}:
+        candidates = (
+            "polyline_bootstrap",
+            "l_shape_bootstrap",
+            "angled_vertical_bootstrap",
+            "delayed_altitude_polyline_bootstrap",
+            "multi_height_polyline_bootstrap",
+            "zigzag_bootstrap",
+            "triangle_bootstrap",
+            "ellipse_bootstrap",
+        )
+    elif previous_bucket == PROGRESSION_BUCKET_TURN_POLYLINE:
+        candidates = (
+            "l_shape_bootstrap",
+            "zigzag_bootstrap",
+            "triangle_bootstrap",
+            "rectangle_bootstrap",
+            "ellipse_bootstrap",
+            "circle_bootstrap",
+            "angled_vertical_bootstrap",
+        )
+    elif previous_bucket == PROGRESSION_BUCKET_CURVE:
+        candidates = (
+            "ellipse_bootstrap",
+            "polyline_bootstrap",
+            "zigzag_bootstrap",
+            "circle_bootstrap",
+            "angled_vertical_bootstrap",
+        )
+    elif previous_bucket in PURE_HOVER_VERTICAL_BUCKETS:
+        candidates = (
+            "short_line_bootstrap",
+            "line_bootstrap",
+            "angled_vertical_bootstrap",
+            "polyline_bootstrap",
+            "l_shape_bootstrap",
+        )
     else:
-        details = ", ".join(rejected_samples[-3:]) or str(previous_stage_task_shape)
-        message = f"resolved task-distribution proposal {distribution_id!r} only produced invalid consecutive progression sample(s): {details}"
-        raise ValueError(message)
+        candidates = (
+            "short_line_bootstrap",
+            "line_bootstrap",
+            "polyline_bootstrap",
+            "l_shape_bootstrap",
+            "angled_vertical_bootstrap",
+            "ellipse_bootstrap",
+        )
+    if stage_index >= max(max_stages - 1, 1):
+        candidates = (*candidates, "tracking_small", "tracking_medium")
+    return tuple(candidate for candidate in _known_unique_distribution_ids(candidates) if candidate != distribution_id)
+
+
+def _distribution_resolution_repair_metadata(
+    *,
+    original_distribution_id: str,
+    final_distribution_id: str,
+    original_rejected_samples: Sequence[str],
+    rejected_alternatives: Sequence[str],
+    candidate_index: int,
+) -> dict[str, Any]:
+    """Return stage and sample metadata for a repaired distribution resolution."""
+    reason = "resolved distribution samples repeated the immediate progression state"
+    rule = "resolved_distribution_repeated_samples_repaired_to_progression"
+    return {
+        "stage_repair_fields": {
+            "proposal_repaired": True,
+            "proposal_repair_reason": reason,
+            "proposal_original_distribution_id": original_distribution_id,
+            "proposal_final_distribution_id": final_distribution_id,
+            "proposal_progression_rule_applied": rule,
+            "hover_vertical_loop_detected": False,
+            "stage_progression_bucket": _progression_bucket_for_distribution_id(final_distribution_id),
+        },
+        "resolved_task_sample_metadata": {
+            "distribution_resolution_repaired": True,
+            "distribution_resolution_repair_reason": reason,
+            "distribution_resolution_original_distribution_id": original_distribution_id,
+            "distribution_resolution_final_distribution_id": final_distribution_id,
+            "distribution_resolution_rule_applied": rule,
+            "distribution_resolution_original_rejected_samples": list(original_rejected_samples),
+            "distribution_resolution_rejected_alternatives": list(rejected_alternatives),
+            "distribution_resolution_candidate_attempts": candidate_index,
+        },
+    }
+
+
+def _resolved_distribution_stage_payload(
+    *,
+    config_path: Path,
+    distribution_id: str,
+    resolved_task: Mapping[str, Any],
+    resolved_task_shape: str,
+    resolved_sample_metadata: Mapping[str, Any],
+    resolution_repair: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the resolved distribution payload consumed by stage construction."""
     return {
         "task_distribution_config_path": config_path,
         "task_distribution_id": distribution_id,
@@ -2029,8 +2292,20 @@ def _resolve_task_distribution_stage_task(
         },
         "resolved_task": dict(resolved_task),
         "resolved_task_shape": resolved_task_shape,
-        "resolved_task_sample_metadata": resolved_sample_metadata,
+        "resolved_task_sample_metadata": dict(resolved_sample_metadata),
+        "distribution_resolution_repair": dict(resolution_repair) if resolution_repair else None,
     }
+
+
+def _distribution_resolution_rejection_summary(*, distribution_id: str, rejected_samples: Sequence[str]) -> str:
+    """Return a compact human-readable rejection summary for one candidate distribution."""
+    details = _sample_rejection_details(rejected_samples, previous_stage_task_shape=None)
+    return f"{distribution_id}: {details}"
+
+
+def _sample_rejection_details(rejected_samples: Sequence[str], *, previous_stage_task_shape: str | None) -> str:
+    """Return the tail of rejected sample reasons for an exhausted distribution."""
+    return ", ".join(rejected_samples[-3:]) or str(previous_stage_task_shape)
 
 
 def _generated_task_distribution_id(*, stage_index: int, stage_name: str, task: Mapping[str, Any]) -> str:

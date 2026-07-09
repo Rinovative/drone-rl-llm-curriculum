@@ -366,7 +366,8 @@ def build_aggregated_report_metric_table(root: str | Path | None = None) -> list
         groups.setdefault(key, []).append(row)
 
     table: list[dict[str, Any]] = []
-    for key, rows in groups.items():
+    for key, candidate_rows in groups.items():
+        rows = _final_model_report_rows(candidate_rows)
         aggregate = dict.fromkeys(AGGREGATED_REPORT_METRIC_COLUMNS)
         aggregate.update(dict(zip(_AGGREGATED_REPORT_GROUP_COLUMNS, key, strict=True)))
         aggregate["evaluated_task_count"] = len(rows)
@@ -696,8 +697,13 @@ def _has_report_metric_fields(payload: dict[str, Any]) -> bool:
 def _report_metric_row(payload: dict[str, Any], path: Path, root: Path) -> dict[str, Any]:
     """Normalize one metrics payload into the final-report comparison schema."""
     artifact = _artifact_row(path=path, root=root, artifact_key="metrics_file_name")
-    run_name = _first_present(payload, ("source_run_name", "run_name", "training_run_name", "model_run_name"))
-    run_name = str(run_name or artifact.get("run_name") or "")
+    raw_run_name = _first_present(payload, ("source_run_name", "run_name", "training_run_name", "model_run_name"))
+    run_name = _report_display_run_name(
+        raw_run_name=str(raw_run_name or ""),
+        artifact_run_name=str(artifact.get("run_name") or ""),
+        payload=payload,
+        path=path,
+    )
     context = _report_context(payload=payload, path=path, run_name=run_name)
     row = dict.fromkeys(REPORT_METRIC_OUTPUT_COLUMNS)
     row.update(
@@ -716,6 +722,32 @@ def _report_metric_row(payload: dict[str, Any], path: Path, root: Path) -> dict[
         value = _first_present(payload, keys)
         row[column] = _count_value(value) if column in {"terminated_count", "truncated_count"} else value
     return row
+
+
+def _report_display_run_name(raw_run_name: str, artifact_run_name: str, payload: dict[str, Any], path: Path) -> str:
+    """Return the report-facing run name, collapsing curriculum stages to their parent run."""
+    if _is_curriculum_stage_context(raw_run_name=raw_run_name, payload=payload, path=path):
+        return artifact_run_name or _strip_curriculum_stage_suffix(raw_run_name) or raw_run_name
+    return raw_run_name or artifact_run_name
+
+
+def _is_curriculum_stage_context(raw_run_name: str, payload: dict[str, Any], path: Path) -> bool:
+    """Return whether metrics describe a curriculum stage model or stage artifact."""
+    run_kind = _first_present(payload, ("source_run_kind", "run_kind"))
+    if run_kind == "curriculum_stage":
+        return True
+    if any(key in payload for key in ("source_stage", "stage_index", "curriculum_stage_index")):
+        return True
+    normalized_path = path.as_posix().lower()
+    return "/stages/stage" in normalized_path or re.search(r"_stage\d+_", raw_run_name.lower()) is not None
+
+
+def _strip_curriculum_stage_suffix(run_name: str) -> str:
+    """Strip a ``_stageNN_<name>_seedN`` suffix from a curriculum stage run name."""
+    match = re.match(r"^(?P<prefix>.+)_stage\d+_.+_seed(?P<seed>\d+)$", run_name)
+    if match is None:
+        return ""
+    return f"{match.group('prefix')}_seed{match.group('seed')}"
 
 
 def _report_context(payload: dict[str, Any], path: Path, run_name: str) -> str:
@@ -823,7 +855,23 @@ def _report_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
 
 def _is_generalization_report_metric_row(row: dict[str, Any]) -> bool:
     """Return whether a detailed report row belongs in the fixed/generalization aggregate."""
-    return _infer_report_evaluation_category(row) in {"fixed", "generalization"}
+    return _infer_report_evaluation_category(row) in {"fixed", "generalization"} and _has_suite_task_name(row)
+
+
+def _final_model_report_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only final-stage rows when a grouped model has staged evaluations."""
+    stage_indexes = [_report_stage_index(row) for row in rows]
+    known_stage_indexes = [stage_index for stage_index in stage_indexes if stage_index is not None]
+    if not known_stage_indexes:
+        return rows
+    final_stage_index = max(known_stage_indexes)
+    return [row for row, stage_index in zip(rows, stage_indexes, strict=True) if stage_index == final_stage_index]
+
+
+def _has_suite_task_name(row: dict[str, Any]) -> bool:
+    """Return whether a detailed metrics row represents one suite task."""
+    suite_task_name = row.get("suite_task_name")
+    return isinstance(suite_task_name, str) and bool(suite_task_name) and suite_task_name != "own_task"
 
 
 def _infer_report_evaluation_category(row: dict[str, Any]) -> str:
@@ -846,6 +894,15 @@ def _infer_report_evaluation_category(row: dict[str, Any]) -> str:
     if "/evaluations/" in text and "/metrics/" in text and row.get("suite_task_name"):
         return "fixed"
     return "unknown"
+
+
+def _report_stage_index(row: dict[str, Any]) -> int | None:
+    """Infer a curriculum stage index from a report row path or run name."""
+    text = _row_search_text(row, ("metrics_file", "run_name")).lower().replace("\\", "/")
+    match = re.search(r"(?:/|_)stage(?P<stage>\d+)", text)
+    if match is None:
+        return None
+    return int(match.group("stage"))
 
 
 def _row_search_text(row: dict[str, Any], keys: tuple[str, ...]) -> str:

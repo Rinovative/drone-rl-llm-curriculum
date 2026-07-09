@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from src import envs, utils, validation
+from src import envs, llm, utils, validation
 from src.experiments.cli import experiments_cli_train_llm_curriculum as cli_train_llm_curriculum
 from src.experiments.curriculum import experiments_curriculum_llm_training as llm_curriculum_training
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
@@ -668,6 +668,123 @@ def test_llm_fallback_resolves_line_after_rejected_short_line_duplicate(tmp_path
     assert fallback_events[0]["task_distribution_reference"]["task_distribution_id"] == "line_bootstrap"
     assert fallback_events[0]["fallback_distribution_attempts"] == 1
     assert fallback_events[0]["fallback_final_distribution_id"] == "line_bootstrap"
+
+
+def test_taskdist_resolution_repairs_exhausted_short_line_repeat_samples(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify repeated short-line distribution samples repair to a valid next distribution."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_taskdist_resolution_repair_unit",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
+            "seed": 2,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "max_stages": 3,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "llm": {"provider": "mock", "model": "mock", "max_repair_attempts": 0, "mock_responses": []},
+        }
+    )
+    task = {
+        llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+        llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: "short_line_bootstrap",
+        llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS["short_line_bootstrap"],
+    }
+
+    stage = llm_curriculum_training._stage_from_proposal(  # noqa: SLF001
+        settings=settings,
+        stage_index=2,
+        task=task,
+        task_reason="Repeat short line.",
+        stage_budget_profile=None,
+        budget_rationale=None,
+        proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+        original_proposal=task,
+        previous_stage_task_shape="start_hold_then_short_line",
+        proposal_fallback_used=False,
+        proposal_failure_reason=None,
+        progression_repair=None,
+    )
+
+    assert stage.task_distribution_id == "line_bootstrap"
+    assert stage.resolved_task_shape == "line"
+    assert stage.proposal_repaired is True
+    assert stage.proposal_original_distribution_id == "short_line_bootstrap"
+    assert stage.proposal_final_distribution_id == "line_bootstrap"
+    assert stage.proposal_progression_rule_applied == "resolved_distribution_repeated_samples_repaired_to_progression"
+    assert stage.stage_progression_bucket == "xy_line"
+    assert stage.resolved_task_sample_metadata is not None
+    metadata = stage.resolved_task_sample_metadata
+    assert metadata["distribution_resolution_repaired"] is True
+    assert metadata["distribution_resolution_original_distribution_id"] == "short_line_bootstrap"
+    assert metadata["distribution_resolution_final_distribution_id"] == "line_bootstrap"
+    assert metadata["distribution_resolution_candidate_attempts"] == 1
+    assert metadata["task_distribution_sampled_family"] == "line"
+    assert metadata["duplicate_samples_rejected"] == EXPECTED_LINE_BOOTSTRAP_SAMPLE_INDEX_AFTER_REPAIR
+    assert metadata["distribution_resolution_original_rejected_samples"]
+    assert all(
+        llm_curriculum_training._progression_bucket_for_distribution_id(distribution_id)  # noqa: SLF001
+        not in llm_curriculum_training.PURE_HOVER_VERTICAL_BUCKETS
+        for distribution_id in llm_curriculum_training._alternative_distribution_candidates_for_progression(  # noqa: SLF001
+            distribution_id="short_line_bootstrap",
+            previous_stage_task_shape="start_hold_then_short_line",
+            stage_index=2,
+            max_stages=3,
+        )
+    )
+
+
+def test_valid_line_bootstrap_distribution_progression_stays_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify a valid non-repeating distribution proposal is not marked as repaired."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_taskdist_valid_progression_unit",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
+            "seed": 2,
+            "wandb_mode": "disabled",
+            "normalize_actions": True,
+            "max_stages": 3,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "llm": {"provider": "mock", "model": "mock", "max_repair_attempts": 0, "mock_responses": []},
+        }
+    )
+    task = {
+        llm.task_schema.PROPOSAL_KIND_FIELD: llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+        llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: "line_bootstrap",
+        llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: llm.task_schema.KNOWN_TASK_DISTRIBUTION_CONFIGS["line_bootstrap"],
+    }
+
+    stage = llm_curriculum_training._stage_from_proposal(  # noqa: SLF001
+        settings=settings,
+        stage_index=2,
+        task=task,
+        task_reason="Progress to line.",
+        stage_budget_profile=None,
+        budget_rationale=None,
+        proposal_type=llm.task_schema.PROPOSAL_KIND_TASK_DISTRIBUTION,
+        original_proposal=task,
+        previous_stage_task_shape="start_hold_then_short_line",
+        proposal_fallback_used=False,
+        proposal_failure_reason=None,
+        progression_repair=None,
+    )
+
+    assert stage.task_distribution_id == "line_bootstrap"
+    assert stage.resolved_task_shape == "line"
+    assert stage.proposal_repaired is False
+    assert stage.proposal_original_distribution_id == "line_bootstrap"
+    assert stage.proposal_final_distribution_id == "line_bootstrap"
+    assert stage.resolved_task_sample_metadata is not None
+    assert stage.resolved_task_sample_metadata["progression_transition_reason"] == "valid_difficulty_increase"
 
 
 def _budget_test_settings() -> llm_curriculum_training.LLMCurriculumSettings:
