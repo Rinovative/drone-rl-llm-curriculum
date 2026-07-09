@@ -286,17 +286,17 @@ The following rollout gallery shows the fixed generalization tasks for the model
   <tr>
     <td align="center">
       <strong>Hover center</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/hover_center/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/hover_center/scenario_rollout.gif" width="350">
     </td>
     <td align="center">
       <strong>Vertical basic</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/vertical_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/vertical_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
   <tr>
     <td align="center">
       <strong>Angled descent</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/angled_descent_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/angled_descent_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
 </table>
@@ -312,27 +312,27 @@ The following rollout gallery shows the fixed generalization tasks for the model
   <tr>
     <td align="center">
       <strong>Line basic</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/line_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/line_basic/scenario_rollout.gif" width="350">
     </td>
     <td align="center">
       <strong>Diagonal line</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/diagonal_line_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/diagonal_line_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
   <tr>
     <td align="center">
       <strong>Short line start hold</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/short_line_start_hold/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/short_line_start_hold/scenario_rollout.gif" width="350">
     </td>
     <td align="center">
       <strong>Delayed altitude polyline</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/delayed_altitude_polyline_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/delayed_altitude_polyline_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
   <tr>
     <td align="center">
       <strong>Multi-height polyline</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/multi_height_polyline_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/multi_height_polyline_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
 </table>
@@ -348,27 +348,27 @@ The following rollout gallery shows the fixed generalization tasks for the model
   <tr>
     <td align="center">
       <strong>L-shape polyline</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/polyline_l_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/polyline_l_basic/scenario_rollout.gif" width="350">
     </td>
     <td align="center">
       <strong>Rectangle</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/rectangle_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/rectangle_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
   <tr>
     <td align="center">
       <strong>Square</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/square_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/square_basic/scenario_rollout.gif" width="350">
     </td>
     <td align="center">
       <strong>Triangle</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/triangle_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/triangle_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
   <tr>
     <td align="center">
       <strong>Zigzag</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/zigzag_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/zigzag_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
 </table>
@@ -384,17 +384,17 @@ The following rollout gallery shows the fixed generalization tasks for the model
   <tr>
     <td align="center">
       <strong>Circle</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/circle_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/circle_basic/scenario_rollout.gif" width="350">
     </td>
     <td align="center">
       <strong>Ellipse</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/ellipse_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/ellipse_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
   <tr>
     <td align="center">
       <strong>Figure eight</strong><br>
-      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/figure_eight_basic/scenario_rollout.gif" width="260">
+      <img src="docs/media/generalization_direct_ppo_directrpm_dynprev_m-taskdist_medium_gamma095_seed0/figure_eight_basic/scenario_rollout.gif" width="350">
     </td>
   </tr>
 </table>
