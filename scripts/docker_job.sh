@@ -6,7 +6,7 @@ STORAGE_DIR="${PROJECT_DIR}/../storage"
 
 usage() {
   echo "Usage: scripts/docker_job.sh <repo-script-path> [args...]" >&2
-  echo "Example: scripts/docker_job.sh src/experiments/cli/experiments_cli_train_tracking.py --config configs/training/ppo_tracking_smoke.yaml" >&2
+  echo "Example: scripts/docker_job.sh src/experiments/cli/experiments_cli_train_tracking.py --config configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml" >&2
 }
 
 if [ "$#" -lt 1 ]; then

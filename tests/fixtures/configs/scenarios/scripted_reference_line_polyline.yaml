@@ -1,5 +1,5 @@
 scenario_name: scripted_reference_line_polyline
-task_config_path: configs/smoke/trajectory_validation.yaml
+task_config_path: tests/fixtures/configs/smoke/trajectory_validation.yaml
 
 controller: scripted_reference
 

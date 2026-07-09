@@ -1,5 +1,11 @@
 name: basic_training_show
-notes: Bounded per-episode variation around the foundational composed Direct-PPO training show.
+task_config_role: training_distribution
+task_is_distribution: true
+sampled_per_episode: true
+constant_within_episode: true
+variation_enabled: true
+notes: Bounded per-episode variation around the foundational composed Direct-PPO training
+  show.
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -26,69 +32,147 @@ task_distribution:
     final_hold_sec: 1.0
     exclude_final_hold_from_tracking_metrics: true
     segments:
-      - segment_name: hover_start
-        segment_shape: hover_stabilization
-        segment_start: [0.0, 0.0, 0.9]
-        segment_end: [0.0, 0.0, 0.9]
-        segment_duration_sec: 1.0
-      - segment_name: vertical_lift
-        segment_shape: vertical
-        segment_start: [0.0, 0.0, 0.9]
-        segment_end: [0.0, 0.0, 1.1]
-        segment_duration_sec: 1.4
-      - segment_name: horizontal_line
-        segment_shape: horizontal_line
-        segment_start: [0.0, 0.0, 1.1]
-        segment_end: [0.32, 0.0, 1.1]
-        segment_duration_sec: 1.6
-      - segment_name: diagonal_line
-        segment_shape: diagonal_line
-        segment_start: [0.32, 0.0, 1.1]
-        segment_end: [0.54, 0.15, 1.12]
-        segment_duration_sec: 1.7
-      - segment_name: ellipse_loop
-        segment_shape: ellipse
-        segment_start: [0.54, 0.15, 1.12]
-        segment_end: [0.54, 0.15, 1.12]
-        segment_duration_sec: 3.0
-        radius_x_m: 0.12
-        radius_y_m: 0.08
-        phase_deg: 180.0
-      - segment_name: polyline_l_shape
-        segment_shape: l_shape
-        segment_start: [0.54, 0.15, 1.12]
-        segment_end: [0.77, 0.36, 1.08]
-        segment_duration_sec: 2.2
-        segment_points:
-          - [0.54, 0.15, 1.12]
-          - [0.54, 0.36, 1.12]
-          - [0.77, 0.36, 1.08]
-      - segment_name: zigzag_finish
-        segment_shape: zigzag
-        segment_start: [0.77, 0.36, 1.08]
-        segment_end: [1.18, 0.42, 1.04]
-        segment_duration_sec: 3.0
-        segment_points:
-          - [0.77, 0.36, 1.08]
-          - [0.91, 0.46, 1.08]
-          - [1.05, 0.28, 1.04]
-          - [1.18, 0.42, 1.04]
-      - segment_name: final_hold
-        segment_shape: final_hold
-        segment_start: [1.18, 0.42, 1.04]
-        segment_end: [1.18, 0.42, 1.04]
-        segment_duration_sec: 1.0
-        segment_final_hold_sec: 1.0
+    - segment_name: hover_start
+      segment_shape: hover_stabilization
+      segment_start:
+      - 0.0
+      - 0.0
+      - 0.9
+      segment_end:
+      - 0.0
+      - 0.0
+      - 0.9
+      segment_duration_sec: 1.0
+    - segment_name: vertical_lift
+      segment_shape: vertical
+      segment_start:
+      - 0.0
+      - 0.0
+      - 0.9
+      segment_end:
+      - 0.0
+      - 0.0
+      - 1.1
+      segment_duration_sec: 1.4
+    - segment_name: horizontal_line
+      segment_shape: horizontal_line
+      segment_start:
+      - 0.0
+      - 0.0
+      - 1.1
+      segment_end:
+      - 0.32
+      - 0.0
+      - 1.1
+      segment_duration_sec: 1.6
+    - segment_name: diagonal_line
+      segment_shape: diagonal_line
+      segment_start:
+      - 0.32
+      - 0.0
+      - 1.1
+      segment_end:
+      - 0.54
+      - 0.15
+      - 1.12
+      segment_duration_sec: 1.7
+    - segment_name: ellipse_loop
+      segment_shape: ellipse
+      segment_start:
+      - 0.54
+      - 0.15
+      - 1.12
+      segment_end:
+      - 0.54
+      - 0.15
+      - 1.12
+      segment_duration_sec: 3.0
+      radius_x_m: 0.12
+      radius_y_m: 0.08
+      phase_deg: 180.0
+    - segment_name: polyline_l_shape
+      segment_shape: l_shape
+      segment_start:
+      - 0.54
+      - 0.15
+      - 1.12
+      segment_end:
+      - 0.77
+      - 0.36
+      - 1.08
+      segment_duration_sec: 2.2
+      segment_points:
+      - - 0.54
+        - 0.15
+        - 1.12
+      - - 0.54
+        - 0.36
+        - 1.12
+      - - 0.77
+        - 0.36
+        - 1.08
+    - segment_name: zigzag_finish
+      segment_shape: zigzag
+      segment_start:
+      - 0.77
+      - 0.36
+      - 1.08
+      segment_end:
+      - 1.18
+      - 0.42
+      - 1.04
+      segment_duration_sec: 3.0
+      segment_points:
+      - - 0.77
+        - 0.36
+        - 1.08
+      - - 0.91
+        - 0.46
+        - 1.08
+      - - 1.05
+        - 0.28
+        - 1.04
+      - - 1.18
+        - 0.42
+        - 1.04
+    - segment_name: final_hold
+      segment_shape: final_hold
+      segment_start:
+      - 1.18
+      - 0.42
+      - 1.04
+      segment_end:
+      - 1.18
+      - 0.42
+      - 1.04
+      segment_duration_sec: 1.0
+      segment_final_hold_sec: 1.0
   family_weights:
     basic_training_show: 1.0
   variations:
     basic_training_show:
-      x_offset_range_m: [-0.08, 0.08]
-      y_offset_range_m: [-0.08, 0.08]
-      z_offset_range_m: [-0.04, 0.06]
-      length_scale_range: [0.90, 1.08]
-      duration_scale_range: [0.95, 1.10]
+      x_offset_range_m:
+      - -0.08
+      - 0.08
+      y_offset_range_m:
+      - -0.08
+      - 0.08
+      z_offset_range_m:
+      - -0.04
+      - 0.06
+      length_scale_range:
+      - 0.9
+      - 1.08
+      duration_scale_range:
+      - 0.95
+      - 1.1
       heading_jitter_deg: 10.0
-      ellipse_scale_range: [0.90, 1.10]
-      start_hold_range_sec: [0.8, 1.2]
-      final_hold_range_sec: [0.8, 1.2]
+      ellipse_scale_range:
+      - 0.9
+      - 1.1
+      start_hold_range_sec:
+      - 0.8
+      - 1.2
+      final_hold_range_sec:
+      - 0.8
+      - 1.2

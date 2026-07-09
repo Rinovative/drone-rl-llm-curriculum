@@ -2,9 +2,9 @@
 
 This matrix is medium-screening seed0 only. Final-budget and multi-seed runs are intentionally deferred until after these results are reviewed.
 
-The matrix remains 18 experiments. Unit accounting is now direct PPO = 1, manual curriculum = 5, and LLM curriculum = 5, for 34 total units across six lanes. The preferred lane totals are 6, 6, 6, 6, 5, and 5 units.
+The final matrix remains 18 experiments. Unit accounting is now direct PPO = 1, manual curriculum = 5, and LLM curriculum = 5, for 34 total units across six lanes. The preferred lane totals are 6, 6, 6, 6, 5, and 5 units.
 
-PPO policy architecture is now net256 by default for direct, manual, and LLM runs. The only default-profile architecture comparisons are `net128_small` and `net512_large`; `low_lr`, `ent005`, `clip010`, and `targetkl015` remain net256-only one-parameter comparisons.
+PPO policy architecture is net128 by default for direct, manual, and LLM runs. The only architecture comparison is a paired PID/direct-RPM net256 tracking-medium run. Net512 is not scheduled. `low_lr`, `ent005`, `clip010`, and `targetkl015` are paired PID/direct-RPM PPO-profile comparisons on the net128 default architecture.
 
 Manual curriculum runs use five fixed-budget stages for interpretability: hover stabilization, vertical low/high stabilization, start-hold short line, L-shaped polyline tracking, and the medium tracking-distribution stage. Each manual stage uses the 500000-step reference medium budget, for 2500000 total timesteps.
 
@@ -50,4 +50,4 @@ Standard evaluation uses `src.experiments.cli.experiments_cli_evaluate_policy` f
 
 Curricula are evaluated only once after the full curriculum completes, using the final-stage best model when available and the final-stage last model otherwise. Scenario/show evaluation uses that final-stage model; per-stage scenario renders are not launched by the lane runner.
 
-Task-distribution training lanes use only `configs/tasks/task_distribution_tracking_medium.yaml`. Small and broad task-distribution configs remain for debugging/evaluation/future work, but they are not scheduled tonight.
+Direct basic-show lanes train on `configs/tasks/task_distribution_basic_training_show.yaml`; tracking-medium task-distribution lanes train on `configs/tasks/task_distribution_tracking_medium.yaml`. Small and broad task-distribution configs remain only as tested LLM-schema/compatibility support, and they are not scheduled tonight. See `docs/experiments/config_structure.md` for the source-of-truth config map.

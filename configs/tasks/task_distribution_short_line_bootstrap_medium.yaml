@@ -1,4 +1,9 @@
 name: short_line_bootstrap_medium
+task_config_role: training_distribution
+task_is_distribution: true
+sampled_per_episode: true
+constant_within_episode: true
+variation_enabled: true
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -23,15 +28,29 @@ task_distribution:
     start_hold_enabled: true
     start_hold_sec: 1.0
     exclude_start_hold_from_tracking_metrics: true
-    start: [0.0, 0.0, 1.0]
-    end: [0.35, 0.0, 1.0]
+    start:
+    - 0.0
+    - 0.0
+    - 1.0
+    end:
+    - 0.35
+    - 0.0
+    - 1.0
   family_weights:
     start_hold_then_line: 1.0
   variations:
     start_hold_then_line:
       start_xy_radius_m: 0.15
       heading_jitter_deg: 45
-      length_range_m: [0.25, 0.55]
-      z_range_m: [0.85, 1.2]
-      hold_duration_range_sec: [1.0, 1.0]
-      move_duration_range_sec: [3.0, 4.5]
+      length_range_m:
+      - 0.25
+      - 0.55
+      z_range_m:
+      - 0.85
+      - 1.2
+      hold_duration_range_sec:
+      - 1.0
+      - 1.0
+      move_duration_range_sec:
+      - 3.0
+      - 4.5

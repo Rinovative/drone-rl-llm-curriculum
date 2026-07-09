@@ -20,7 +20,7 @@ def test_mvp_parser_defaults_are_tiny_and_storage_scoped() -> None:
     """Verify parser defaults point to tiny smoke settings."""
     args = cli_mvp.build_parser().parse_args([])
 
-    assert args.config.as_posix() == "configs/smoke/training_smoke.yaml"
+    assert args.config.as_posix() == "tests/fixtures/configs/smoke/training_smoke.yaml"
     assert args.output_dir.as_posix().endswith("storage/runs/mvp_smoke")
     assert args.max_steps == DEFAULT_MAX_STEPS
     assert args.task_index is None
@@ -43,7 +43,7 @@ def test_mvp_main_runs_sequence_with_temporary_output_dir(tmp_path: Path, capsys
     status = cli_mvp.main(
         [
             "--config",
-            "configs/smoke/training_smoke.yaml",
+            "tests/fixtures/configs/smoke/training_smoke.yaml",
             "--output-dir",
             str(tmp_path),
             "--max-steps",

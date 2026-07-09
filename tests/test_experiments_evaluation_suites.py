@@ -4,10 +4,15 @@
 
 from __future__ import annotations
 
+import json
+import math
+from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from src import envs
 from src.experiments.evaluation import experiments_evaluation_suites as evaluation_suites
 
 
@@ -151,30 +156,36 @@ def test_suite_to_dict_output_is_stable(tmp_path: Path) -> None:
 
 
 def test_real_evaluation_suites_load_through_suite_loader() -> None:
-    """Verify every report-facing evaluation suite loads through the canonical loader."""
+    """Verify the active report-facing evaluation suite loads through the canonical loader."""
+    suite = evaluation_suites.load_evaluation_suite("configs/evaluation/generalization_eval_suite.yaml")
+
+    assert suite.task_names == [
+        "hover_center",
+        "vertical_basic",
+        "line_basic",
+        "diagonal_line_basic",
+        "short_line_start_hold",
+        "polyline_l_basic",
+        "rectangle_basic",
+        "square_basic",
+        "circle_basic",
+        "ellipse_basic",
+        "figure_eight_basic",
+        "zigzag_basic",
+        "triangle_basic",
+        "multi_height_polyline_basic",
+    ]
+
+
+def test_legacy_evaluation_suite_fixtures_load_through_suite_loader() -> None:
+    """Verify legacy eval suite fixtures remain useful for parser regression tests."""
     expected = {
-        "configs/evaluation/line_eval_suite.yaml": ["line_basic"],
-        "configs/evaluation/final_benchmark_eval_suite.yaml": [
+        "tests/fixtures/configs/evaluation/line_eval_suite.yaml": ["line_basic"],
+        "tests/fixtures/configs/evaluation/final_benchmark_eval_suite.yaml": [
             "line_basic",
             "line_long_final",
             "line_diagonal",
             "line_reverse",
-        ],
-        "configs/evaluation/generalization_eval_suite.yaml": [
-            "hover_center",
-            "vertical_basic",
-            "line_basic",
-            "diagonal_line_basic",
-            "short_line_start_hold",
-            "polyline_l_basic",
-            "rectangle_basic",
-            "square_basic",
-            "circle_basic",
-            "ellipse_basic",
-            "figure_eight_basic",
-            "zigzag_basic",
-            "triangle_basic",
-            "multi_height_polyline_basic",
         ],
     }
 
@@ -183,9 +194,9 @@ def test_real_evaluation_suites_load_through_suite_loader() -> None:
         assert suite.task_names == task_names
 
 
-def test_final_benchmark_suite_is_line_focused() -> None:
-    """Verify the primary final benchmark is fair for line-trained policies."""
-    suite = evaluation_suites.load_evaluation_suite("configs/evaluation/final_benchmark_eval_suite.yaml")
+def test_legacy_final_benchmark_fixture_is_line_focused() -> None:
+    """Verify the old final benchmark fixture stays line-focused for compatibility tests."""
+    suite = evaluation_suites.load_evaluation_suite("tests/fixtures/configs/evaluation/final_benchmark_eval_suite.yaml")
 
     assert suite.evaluation_name == "final_benchmark"
     assert suite.eval_steps == 360
@@ -219,3 +230,50 @@ def test_generalization_suite_contains_optional_non_line_tasks() -> None:
     assert all(task.task["exclude_start_hold_from_tracking_metrics"] is True for task in suite.tasks)
     assert all(task.task["final_hold_enabled"] is True for task in suite.tasks)
     assert all(task.task["final_hold_sec"] == 1.0 for task in suite.tasks)
+
+
+def test_generalization_suite_keeps_rectangle_square_and_triangle_distinct() -> None:
+    """Verify basic closed-polyline generalization tasks are not duplicate equivalents."""
+    suite = evaluation_suites.load_evaluation_suite("configs/evaluation/generalization_eval_suite.yaml")
+    tasks = {task.task_name: task.task for task in suite.tasks}
+
+    duplicate_guard: dict[str, str] = {}
+    for suite_task in suite.tasks:
+        signature = _task_equivalence_signature(suite_task.task)
+        assert duplicate_guard.get(signature) is None, f"{suite_task.task_name} duplicates {duplicate_guard[signature]}"
+        duplicate_guard[signature] = suite_task.task_name
+
+    rectangle = tasks["rectangle_basic"]
+    square = tasks["square_basic"]
+    triangle = tasks["triangle_basic"]
+    assert rectangle["task_family"] == "rectangle"
+    assert square["task_family"] == "square"
+    assert triangle["task_family"] == "triangle"
+    assert rectangle["points"] != square["points"]
+    assert len(rectangle["points"]) == 5
+    assert len(square["points"]) == 5
+    assert len(triangle["points"]) == 4
+    assert triangle["points"][0] == triangle["points"][-1]
+
+    references = {name: envs.task_adapter.make_task_reference(tasks[name]) for name in ("rectangle_basic", "square_basic", "triangle_basic")}
+    for reference in references.values():
+        assert reference.start_hold_enabled is True
+        assert reference.tracking_phase_start_step > 0
+        assert reference.final_hold_enabled is True
+        assert reference.tracking_phase_end_step < reference.positions.shape[0]
+
+    path_lengths = {name: _reference_path_length(reference.positions) for name, reference in references.items()}
+    assert not math.isclose(path_lengths["rectangle_basic"], path_lengths["square_basic"], abs_tol=0.05)
+    assert not math.isclose(path_lengths["rectangle_basic"], path_lengths["triangle_basic"], abs_tol=0.05)
+
+
+def _task_equivalence_signature(task: dict[str, Any]) -> str:
+    """Return a task signature that ignores labels but preserves geometry and timing."""
+    payload = {key: value for key, value in task.items() if key not in {"task_family", "task_name"}}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _reference_path_length(positions: Any) -> float:
+    """Return cumulative XYZ path length for a sampled reference."""
+    rows = [tuple(float(value) for value in row) for row in positions]
+    return float(sum(math.dist(previous, current) for previous, current in pairwise(rows)))

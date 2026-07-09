@@ -252,6 +252,9 @@ def test_repair_prompt_mentions_supported_distributions_and_concrete_task_values
     assert "curriculum_history" in content
     assert "readiness_level_omitted" in content
     assert "reference_too_fast" in content
+    assert "z_instability" in content
+    assert "Do not choose broad shows, scenarios, or basic_training_show" in content
+    assert "true instability" in content
 
 
 def test_invalid_budget_profile_is_repaired_once_and_accepted(tmp_path: Path) -> None:

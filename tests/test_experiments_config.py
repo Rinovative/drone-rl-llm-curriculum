@@ -19,11 +19,14 @@ REQUIRED_SHAPES = {"hover", "circle", "line", "vertical", "polyline"}
 DIRECT_RPM_DELTA_SCALE = 0.05
 MAX_DIRECT_RPM_SMOKE_TIMESTEPS = 4096
 POLICY_NET_ARCH = [256, 256]
+EXPECTED_MEDIUM_TIMESTEPS = 500000
+EXPECTED_MEDIUM_NUM_ENVS = 4
+EXPECTED_MANUAL_STAGE_COUNT = 5
 
 
 def test_smoke_config_loads_and_contains_valid_tasks() -> None:
     """Verify the smoke config loads and its tasks pass deterministic validation."""
-    config = experiments_config.load_experiment_config("configs/smoke/trajectory_validation.yaml")
+    config = experiments_config.load_experiment_config("tests/fixtures/configs/smoke/trajectory_validation.yaml")
 
     assert config["name"] == "trajectory_validation_smoke"
     assert config["seed"] == 0
@@ -60,41 +63,40 @@ def test_non_mapping_yaml_config_fails(tmp_path: Path) -> None:
         experiments_config.load_experiment_config(config_path)
 
 
-def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() -> None:
-    """Verify direct PPO smoke/medium/final configs use the canonical task source and nested PPO."""
+def test_active_direct_ppo_training_configs_use_representative_tasks_and_nested_ppo() -> None:
+    """Verify active Direct-PPO configs use representative tasks plus explicit training distributions."""
     expected = {
-        "configs/training/ppo_tracking_smoke.yaml": {
-            "run_name": "direct_ppo_line_smoke_seed0",
-            "total_timesteps": 4096,
-            "num_envs": 1,
-            "n_steps": 256,
-            "batch_size": 64,
-            "n_epochs": 5,
-            "wandb_mode": "disabled",
-            "task_index": 0,
+        "configs/training/ppo_tracking_pid_dynprev_basic_show.yaml": {
+            "run_name": "direct_ppo_pid_dynprev_basic_show_seed0",
+            "task_index": 3,
+            "task_distribution_config_path": "configs/tasks/task_distribution_basic_training_show.yaml",
             "action_interface": "pid_position",
+            "include_dynamics_observation": True,
+            "include_previous_action": True,
         },
-        "configs/training/ppo_tracking_medium.yaml": {
-            "run_name": "direct_ppo_line_medium_seed0",
-            "total_timesteps": 250000,
-            "num_envs": 4,
-            "n_steps": 512,
-            "batch_size": 128,
-            "n_epochs": 5,
-            "wandb_mode": "auto",
-            "task_index": 0,
-            "action_interface": "pid_position",
+        "configs/training/ppo_tracking_directrpm_dynprev_basic_show.yaml": {
+            "run_name": "direct_ppo_directrpm_dynprev_basic_show_seed0",
+            "task_index": 3,
+            "task_distribution_config_path": "configs/tasks/task_distribution_basic_training_show.yaml",
+            "action_interface": "direct_rpm",
+            "include_dynamics_observation": True,
+            "include_previous_action": True,
         },
-        "configs/training/ppo_tracking_final.yaml": {
-            "run_name": "direct_ppo_line_final_seed0",
-            "total_timesteps": 1000000,
-            "num_envs": 8,
-            "n_steps": 1024,
-            "batch_size": 256,
-            "n_epochs": 10,
-            "wandb_mode": "auto",
-            "task_index": 1,
+        "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml": {
+            "run_name": "direct_ppo_pid_dynprev_m-taskdist_medium_seed0",
+            "task_index": 0,
+            "task_distribution_config_path": "configs/tasks/task_distribution_tracking_medium.yaml",
             "action_interface": "pid_position",
+            "include_dynamics_observation": True,
+            "include_previous_action": True,
+        },
+        "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium.yaml": {
+            "run_name": "direct_ppo_directrpm_dynprev_m-taskdist_medium_seed0",
+            "task_index": 0,
+            "task_distribution_config_path": "configs/tasks/task_distribution_tracking_medium.yaml",
+            "action_interface": "direct_rpm",
+            "include_dynamics_observation": True,
+            "include_previous_action": True,
         },
     }
 
@@ -103,35 +105,35 @@ def test_real_direct_ppo_training_configs_use_production_tasks_and_nested_ppo() 
         flat_ppo_keys = set(config) & set(ppo_config.PPO_CONFIG_KEYS)
 
         assert flat_ppo_keys == set()
-        assert config["task_config_path"] == "configs/training/ppo_tracking_tasks.yaml"
+        assert config["task_config_path"] == "configs/training/ppo_tracking_representative_tasks.yaml"
+        assert config["task_distribution_config_path"] == values["task_distribution_config_path"]
         assert config["run_name"] == values["run_name"]
-        assert config["total_timesteps"] == values["total_timesteps"]
-        assert config["num_envs"] == values["num_envs"]
+        assert config["total_timesteps"] == EXPECTED_MEDIUM_TIMESTEPS
+        assert config["num_envs"] == EXPECTED_MEDIUM_NUM_ENVS
         assert config["task_index"] == values["task_index"]
         assert config["action_interface"] == values["action_interface"]
-        assert config["include_dynamics_observation"] is False
-        assert config["include_previous_action"] is False
-        assert config["wandb_mode"] == values["wandb_mode"]
-        assert config["ppo"]["n_steps"] == values["n_steps"]
-        assert config["ppo"]["batch_size"] == values["batch_size"]
-        assert config["ppo"]["n_epochs"] == values["n_epochs"]
+        assert config["include_dynamics_observation"] is values["include_dynamics_observation"]
+        assert config["include_previous_action"] is values["include_previous_action"]
+        assert config["wandb_mode"] == "auto"
 
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)
         assert settings.run_name == values["run_name"]
-        assert settings.num_envs == values["num_envs"]
+        assert settings.num_envs == EXPECTED_MEDIUM_NUM_ENVS
         assert settings.action_interface == values["action_interface"]
-        assert settings.include_dynamics_observation is False
-        assert settings.include_previous_action is False
+        assert settings.task_config_path == Path("configs/training/ppo_tracking_representative_tasks.yaml")
+        assert settings.task_distribution_config_path == Path(values["task_distribution_config_path"])
+        assert settings.include_dynamics_observation is values["include_dynamics_observation"]
+        assert settings.include_previous_action is values["include_previous_action"]
         assert settings.ppo_config.to_dict() == {**config["ppo"], "policy_kwargs": ppo_config.default_policy_kwargs()}
 
 
 def test_direct_rpm_smoke_config_is_explicit_and_safe() -> None:
     """Verify the direct-RPM smoke config is opt-in, tiny, and W&B-disabled."""
-    config_path = "configs/training/ppo_tracking_direct_rpm_smoke.yaml"
+    config_path = "tests/fixtures/configs/training/ppo_tracking_direct_rpm_smoke.yaml"
     config = experiments_config.load_experiment_config(config_path)
     settings = ppo_tracking.load_ppo_tracking_settings(config_path)
 
-    assert config["task_config_path"] == "configs/training/ppo_tracking_tasks.yaml"
+    assert config["task_config_path"] == "configs/training/ppo_tracking_representative_tasks.yaml"
     assert config["action_interface"] == "direct_rpm"
     assert config["normalize_actions"] is True
     assert config["include_dynamics_observation"] is True
@@ -148,7 +150,7 @@ def test_direct_rpm_smoke_config_is_explicit_and_safe() -> None:
 
 def test_dynamics_smoke_config_is_explicit_and_safe() -> None:
     """Verify the optional PID dynamics smoke config is tiny and W&B-disabled."""
-    config_path = "configs/training/ppo_tracking_dynamics_smoke.yaml"
+    config_path = "tests/fixtures/configs/training/ppo_tracking_dynamics_smoke.yaml"
     config = experiments_config.load_experiment_config(config_path)
     settings = ppo_tracking.load_ppo_tracking_settings(config_path)
 
@@ -166,7 +168,7 @@ def test_dynamics_smoke_config_is_explicit_and_safe() -> None:
 
 def test_dynamics_medium_net_smoke_config_is_explicit_and_safe() -> None:
     """Verify the optional larger-network config is still smoke-sized."""
-    config_path = "configs/training/ppo_tracking_dynamics_medium_net_smoke.yaml"
+    config_path = "tests/fixtures/configs/training/ppo_tracking_dynamics_medium_net_smoke.yaml"
     config = experiments_config.load_experiment_config(config_path)
     settings = ppo_tracking.load_ppo_tracking_settings(config_path)
 
@@ -180,12 +182,17 @@ def test_dynamics_medium_net_smoke_config_is_explicit_and_safe() -> None:
     assert settings.ppo_config.policy_kwargs == {"net_arch": POLICY_NET_ARCH}
 
 
-def test_real_direct_ppo_task_source_validates_and_final_uses_hard_line() -> None:
-    """Verify the production direct PPO task source is valid and final selects the hard line."""
-    task_config = experiments_config.load_experiment_config("configs/training/ppo_tracking_tasks.yaml")
-    final_config = experiments_config.load_experiment_config("configs/training/ppo_tracking_final.yaml")
+def test_representative_task_source_is_labelled_and_not_training_like() -> None:
+    """Verify representative tasks validate and do not masquerade as training distributions."""
+    task_config = experiments_config.load_experiment_config("configs/training/ppo_tracking_representative_tasks.yaml")
     limits = validation.tasks.ValidationLimits(**task_config["validation_limits"])
 
+    assert task_config["task_config_role"] == "representative_eval_only"
+    assert task_config["representative_task_config_path"] == "configs/training/ppo_tracking_representative_tasks.yaml"
+    assert task_config["training_task_distribution_config_paths"] == {
+        "basic_training_show": "configs/tasks/task_distribution_basic_training_show.yaml",
+        "tracking_medium": "configs/tasks/task_distribution_tracking_medium.yaml",
+    }
     assert [task["task_name"] for task in task_config["tasks"]] == [
         "line_basic",
         "line_long_final",
@@ -197,56 +204,84 @@ def test_real_direct_ppo_task_source_validates_and_final_uses_hard_line() -> Non
         assert result.is_valid, result.messages
         assert result.trajectory is not None
 
-    final_task = task_config["tasks"][final_config["task_index"]]
-    assert final_task["task_name"] == "line_long_final"
-    assert final_task["end"] == [1.5, 0.0, 1.0]
+    basic_show = task_config["tasks"][3]
+    assert basic_show["task_is_show"] is True
+    assert basic_show["show_name"] == "basic_training_show"
+    for removed_key in (
+        "task_is_distribution",
+        "sampled_per_episode",
+        "variation_enabled",
+        "variation_mode",
+        "requested_task_family",
+        "accepted_task_family",
+        "repair_was_applied",
+    ):
+        assert removed_key not in basic_show
 
 
-def test_real_manual_curriculum_configs_are_canonical_and_valid() -> None:
-    """Verify manual curriculum tiers have canonical names, budgets, and run IDs."""
+def test_active_manual_curriculum_configs_are_canonical_and_valid() -> None:
+    """Verify active manual curricula are the current five-stage task-distribution curricula."""
     expected = {
-        "configs/curricula/curriculum_manual_line_smoke.yaml": {
-            "name": "curriculum_manual_line_smoke",
-            "run_name": "curriculum_manual_line_smoke_seed0",
-            "base": "configs/training/ppo_tracking_smoke.yaml",
-            "budgets": [4096, 4096, 4096, 4096, 4096],
-            "wandb_mode": "disabled",
+        "configs/curricula/curriculum_pid_dynprev_m-taskdist_medium.yaml": {
+            "name": "curriculum_manual_pid_dynprev_m-taskdist_medium",
+            "base": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
         },
-        "configs/curricula/curriculum_manual_line_medium.yaml": {
-            "name": "curriculum_manual_line_medium",
-            "run_name": "curriculum_manual_line_medium_seed0",
-            "base": "configs/training/ppo_tracking_medium.yaml",
-            "budgets": [25000, 25000, 50000, 50000, 100000],
-            "wandb_mode": "auto",
-        },
-        "configs/curricula/curriculum_manual_line_final.yaml": {
-            "name": "curriculum_manual_line_final",
-            "run_name": "curriculum_manual_line_final_seed0",
-            "base": "configs/training/ppo_tracking_final.yaml",
-            "budgets": [100000, 100000, 150000, 175000, 225000, 250000],
-            "wandb_mode": "auto",
+        "configs/curricula/curriculum_directrpm_dynprev_m-taskdist_medium.yaml": {
+            "name": "curriculum_manual_directrpm_dynprev_m-taskdist_medium",
+            "base": "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium.yaml",
         },
     }
+    stage_distribution_paths = [
+        Path("configs/tasks/task_distribution_hover_bootstrap_medium.yaml"),
+        Path("configs/tasks/task_distribution_vertical_bootstrap_medium.yaml"),
+        Path("configs/tasks/task_distribution_short_line_bootstrap_medium.yaml"),
+        Path("configs/tasks/task_distribution_polyline_bootstrap_medium.yaml"),
+        Path("configs/tasks/task_distribution_tracking_medium.yaml"),
+    ]
 
     for config_path, values in expected.items():
         settings = curriculum_training.load_manual_curriculum_settings(config_path)
 
         assert settings.curriculum_name == values["name"]
         assert settings.base_training_config == Path(values["base"])
-        assert settings.wandb_mode == values["wandb_mode"]
-        assert [stage.total_timesteps for stage in settings.stages] == values["budgets"]
-        assert curriculum_training._curriculum_artifact_run_name(settings.curriculum_name, settings.seed) == values["run_name"]  # noqa: SLF001
-        assert [stage.stage_name for stage in settings.stages[:5]] == [
+        assert settings.wandb_mode == "auto"
+        assert settings.manual_stage_count == EXPECTED_MANUAL_STAGE_COUNT
+        assert [stage.total_timesteps for stage in settings.stages] == [EXPECTED_MEDIUM_TIMESTEPS] * EXPECTED_MANUAL_STAGE_COUNT
+        assert [stage.training_task_distribution_config_path for stage in settings.stages] == stage_distribution_paths
+        assert [stage.stage_name for stage in settings.stages] == [
             "hover_stabilization",
-            "nearby_target_hover",
+            "vertical_low_high",
             "start_hold_then_short_line",
-            "short_slow_line",
-            "line",
+            "polyline_l_shape",
+            "medium_tracking",
         ]
-        if config_path.endswith("final.yaml"):
-            assert settings.stages[-1].stage_name == "long_line"
-            assert settings.stages[-1].task["end"] == [1.5, 0.0, 1.0]
         curriculum_training.validate_manual_curriculum(settings)
+
+
+def test_stale_legacy_configs_and_half_smoke_folder_are_absent() -> None:
+    """Verify deleted legacy configs do not remain in the active config tree."""
+    absent_paths = (
+        "configs/training/ppo_tracking_final.yaml",
+        "configs/training/ppo_tracking_medium.yaml",
+        "configs/training/ppo_tracking_smoke.yaml",
+        "configs/training/ppo_tracking_tasks.yaml",
+        "configs/training/ppo_tracking_pid_baseline_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_medium.yaml",
+        "configs/training/ppo_tracking_directrpm_dynprev_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_net128_small_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_net512_large_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_directrpm_dynprev_net512_large_m-taskdist_medium.yaml",
+        "configs/curricula/curriculum_manual_line_final.yaml",
+        "configs/curricula/curriculum_manual_line_medium.yaml",
+        "configs/curricula/curriculum_manual_line_smoke.yaml",
+        "configs/curricula/curriculum_llm_smoke.yaml",
+        "configs/curricula/curriculum_llm_local_smoke.yaml",
+        "configs/smoke",
+        "configs/scenarios",
+    )
+
+    for path in absent_paths:
+        assert not Path(path).exists(), path
 
 
 def test_active_configs_do_not_reference_removed_benchmark_or_legacy_storage_roots() -> None:

@@ -170,12 +170,6 @@ bash scripts/docker_build.sh
 bash scripts/docker_dev.sh
 ```
 
-Docker and job helpers default `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, and `TORCH_NUM_THREADS` to `1` to avoid CPU thread-pool oversubscription when PPO uses `num_envs > 1`. Override them from the host before launching when needed:
-
-```bash
-OMP_NUM_THREADS=2 TORCH_NUM_THREADS=2 bash scripts/docker_dev.sh
-```
-
 5. Attach with Visual Studio Code:
 
 ```text
@@ -193,23 +187,6 @@ Drone_RL_LLM_Curriculum.ipynb
 
 ---
 
-## Task Distributions and Overnight Runs
-
-Training can use fixed or randomized task distributions. A fixed task is treated as a degenerate distribution (`mode: fixed`, `strength: 0.0`), while randomized distributions sample bounded validated tasks per reset when `sample_on_reset: true`. Evaluation remains fixed and reproducible through `configs/evaluation/evaluation_task_suite_variation.yaml` and `configs/evaluation/evaluation_task_suite_broad.yaml`.
-
-The local LLM curriculum can choose constrained known task distributions such as `tracking_small`, `tracking_medium`, and experimental `tracking_broad`; it does not freely invent arbitrary trajectory randomization configs.
-
-Medium-screening overnight entry points:
-
-```bash
-export LANE_RUN_ID="$(date +%Y%m%d_%H%M%S)"
-bash scripts/run_lane_1.sh
-bash scripts/run_lane_2.sh
-bash scripts/run_lane_3.sh
-bash scripts/run_lane_4.sh
-```
-
-See `docs/experiments/overnight_lane_assignment.tsv` and `docs/experiments/overnight_runner_usage.md` for the exact matrix, logs, resume markers, LLM skip behavior, and evaluation/render outputs.
 
 
 ## 📂 Project Structure

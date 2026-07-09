@@ -21,6 +21,9 @@ SUITE_EVALUATION_STEPS = 120
 OWN_TASK_EVAL_STEPS = 12
 OWN_TASK_SEED = 4
 EVAL_RPM_DELTA_SCALE = 0.07
+STANDARD_SCENARIO_LABELS = ("easy", "medium", "hard")
+STANDARD_SCENARIO_COUNT = len(STANDARD_SCENARIO_LABELS)
+STANDARD_SCENARIO_START_HOLD_SEC = 2.0
 OBSERVATION_MISMATCH_MESSAGE = "Observation spaces do not match: model != env"
 
 
@@ -447,14 +450,14 @@ def test_direct_policy_evaluation_cli_parser_accepts_run_manifest_and_suite() ->
             "--run-manifest",
             "storage/runs/direct_ppo_line_seed0/run_manifest.json",
             "--suite",
-            "configs/evaluation/line_eval_suite.yaml",
+            "configs/evaluation/generalization_eval_suite.yaml",
             "--wandb-mode",
             "disabled",
         ]
     )
 
     assert args.run_manifest == Path("storage/runs/direct_ppo_line_seed0/run_manifest.json")
-    assert args.suite == Path("configs/evaluation/line_eval_suite.yaml")
+    assert args.suite == Path("configs/evaluation/generalization_eval_suite.yaml")
     assert args.wandb_mode == "disabled"
 
     default_args = parser.parse_args(["--run-manifest", "storage/runs/direct_ppo_line_seed0/run_manifest.json"])
@@ -1000,26 +1003,89 @@ def test_direct_policy_own_task_evaluation_resolves_distribution_representative(
     assert metrics["own_task_distribution_config_path"] == str(Path(distribution_path).resolve(strict=False))
 
 
-def test_standard_scenario_evaluation_preserves_configured_start_hold(
+def test_standard_scenario_evaluation_writes_easy_medium_hard_metrics_and_diagnostics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify standard scenario evaluation forwards start holds from scenario configs."""
+    """Verify standard scenarios run as evaluations with metrics and diagnostics artifacts."""
     run_root = tmp_path / "storage" / "runs" / "policy_run"
     model_path = run_root / "models" / "policy.zip"
     model_path.parent.mkdir(parents=True, exist_ok=True)
     model_path.write_bytes(b"model")
-    captured: list[tuple[str, float, float]] = []
+    run_manifest_path = run_root / "run_manifest.json"
+    run_manifest_path.write_text(
+        json.dumps(
+            {
+                "run_name": "policy_run",
+                "run_kind": "direct_ppo",
+                "action_interface": "pid_position",
+                "normalize_actions": True,
+                "include_dynamics_observation": True,
+                "include_previous_action": True,
+                "config": {
+                    "training_config_path": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
+                    "action_interface": "pid_position",
+                    "normalize_actions": True,
+                    "include_dynamics_observation": True,
+                    "include_previous_action": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: list[tuple[str, float, float, bool, bool, str, bool]] = []
 
     def fake_run_scenario_render(
         settings: policy_evaluation.scenario_render.ScenarioRenderSettings | None = None,
     ) -> policy_evaluation.scenario_render.ScenarioRenderResult:
         assert settings is not None
-        captured.append((settings.scenario_name, settings.start_hold_sec, settings.final_hold_sec))
+        assert settings.output_dir is not None
+        captured.append(
+            (
+                settings.scenario_name or "",
+                settings.start_hold_sec,
+                settings.final_hold_sec,
+                settings.include_dynamics_observation,
+                settings.include_previous_action,
+                settings.action_interface,
+                settings.normalize_actions,
+            )
+        )
+        renders_dir = settings.output_dir / "renders"
+        manifests_dir = settings.output_dir / "manifests"
+        traces_dir = settings.output_dir / "traces"
+        plots_dir = settings.output_dir / "plots"
+        for directory in (renders_dir, manifests_dir, traces_dir, plots_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        gif_path = renders_dir / "scenario.gif"
+        trace_path = traces_dir / "scenario_rollout_trace.jsonl"
+        plot_path = plots_dir / "position_error.png"
+        manifest_path = manifests_dir / "scenario_manifest.json"
+        gif_path.write_bytes(b"gif")
+        trace_path.write_text("{}\n", encoding="utf-8")
+        plot_path.write_bytes(b"plot")
+        manifest_path.write_text(
+            json.dumps({"gif_path": str(gif_path), "trace_path": str(trace_path), "plot_paths": {"position_error": str(plot_path)}}),
+            encoding="utf-8",
+        )
         return policy_evaluation.scenario_render.ScenarioRenderResult(
-            gif_path=str(settings.output_dir / "renders" / "scenario.gif"),
-            manifest_path=str(settings.output_dir / "manifests" / "scenario_manifest.json"),
-            metrics={"scenario_name": settings.scenario_name},
+            gif_path=str(gif_path),
+            manifest_path=str(manifest_path),
+            metrics={
+                "scenario_name": settings.scenario_name,
+                "mean_position_error_m": 0.10,
+                "final_position_error_m": 0.20,
+                "max_position_error_m": 0.30,
+                "terminated": True,
+                "truncated": False,
+                "termination_reason": "tracking_reference_complete",
+                "completed_reference": True,
+                "completed_reference_motion": True,
+                "completed_phase_holds": True,
+                "completed_final_hold": True,
+                "ended_normally": True,
+                "warnings": [],
+            },
             warnings=(),
         )
 
@@ -1034,11 +1100,60 @@ def test_standard_scenario_evaluation_preserves_configured_start_hold(
         source_curriculum_kind=None,
         model_scope="direct",
         evaluated_model_source="test",
-        scenario_config_paths={"easy": Path("configs/evaluation/scenarios/show_easy.yaml")},
+        run_manifest_path=run_manifest_path,
     )
 
-    assert result.metrics["scenario_labels"] == ["easy"]
-    assert captured == [("show_easy", 2.0, 1.0)]
+    assert result.metrics["scenario_labels"] == list(STANDARD_SCENARIO_LABELS)
+    assert captured == [
+        ("show_easy", 2.0, 1.0, True, True, "pid_position", True),
+        ("show_medium", 2.0, 1.25, True, True, "pid_position", True),
+        ("show_hard", 2.0, 1.5, True, True, "pid_position", True),
+    ]
+    assert result.metrics["entry_count"] == STANDARD_SCENARIO_COUNT
+    for scenario_label in STANDARD_SCENARIO_LABELS:
+        scenario_root = run_root / "evaluations" / "scenarios" / scenario_label
+        metrics_path = scenario_root / "metrics" / f"policy_run_{scenario_label}_scenario_metrics.json"
+        diagnostics_path = scenario_root / "diagnostics" / f"policy_run_{scenario_label}_scenario_diagnostics.json"
+        assert metrics_path.exists()
+        assert diagnostics_path.exists()
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+        assert metrics["evaluation_name"] == "scenarios"
+        assert metrics["scenario_label"] == scenario_label
+        assert metrics["model_path"] == str(model_path)
+        assert metrics["evaluated_model_source"] == "test"
+        assert metrics["include_dynamics_observation"] is True
+        assert metrics["include_previous_action"] is True
+        assert metrics["normalize_actions"] is True
+        assert metrics["action_interface"] == "pid_position"
+        assert metrics["scenario_duration_sec"] > 0.0
+        assert metrics["scenario_reference_path_length_m"] > 0.0
+        assert metrics["scenario_reference_mean_speed_mps"] > 0.0
+        assert metrics["scenario_phase_count"] == len(metrics["scenario_segments"])
+        assert metrics["start_hold_enabled"] is True
+        assert metrics["start_hold_sec"] == STANDARD_SCENARIO_START_HOLD_SEC
+        assert metrics["final_hold_enabled"] is True
+        assert metrics["final_hold_sec"] > 0.0
+        assert metrics["failure_overall_status"] == "passed"
+        assert diagnostics["failure_overall_status"] == "passed"
+        assert diagnostics["failure_primary_mode"] == "none"
+        manifest = json.loads((scenario_root / "manifests" / "scenario_manifest.json").read_text(encoding="utf-8"))
+        assert manifest["scenario_complete"] is True
+        assert manifest["policy_rollout_render_required"] is True
+        assert manifest["render_source"] == "evaluated_policy_rollout_trace"
+        assert manifest["scenario_completion_requirements"] == {
+            "metrics": True,
+            "diagnostics": True,
+            "manifest": True,
+            "trace": True,
+            "plot": True,
+            "render": True,
+        }
+
+    entries_by_label = {entry["scenario_label"]: entry for entry in result.metrics["evaluated_models"]}
+    assert set(entries_by_label) == {"easy", "medium", "hard"}
+    assert entries_by_label["easy"]["metrics_path_relative"] == "evaluations/scenarios/easy/metrics/policy_run_easy_scenario_metrics.json"
+    assert entries_by_label["easy"]["diagnostics_path_relative"] == "evaluations/scenarios/easy/diagnostics/policy_run_easy_scenario_diagnostics.json"
 
 
 def test_direct_policy_standard_evaluation_runs_default_profile(

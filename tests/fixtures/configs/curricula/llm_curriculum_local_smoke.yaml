@@ -1,5 +1,5 @@
-curriculum_name: curriculum_llm_local_smoke
-base_training_config: configs/training/ppo_tracking_smoke.yaml
+curriculum_name: llm_curriculum_local_smoke
+base_training_config: tests/fixtures/configs/training/ppo_tracking_smoke.yaml
 seed: 0
 wandb_mode: disabled
 normalize_actions: true
@@ -13,13 +13,17 @@ bootstrap:
   task_shape: hover_stabilization
   total_timesteps: 4096
   eval_steps: 120
-  notes: Bootstrap with a deterministic hover task before asking the local LLM for one next task.
+  notes: Bootstrap with a deterministic hover task before asking the local LLM for
+    one next task.
   task:
     task_type: trajectory
     shape: hover_stabilization
     duration_sec: 2.0
     sample_rate_hz: 10.0
-    position: [0.0, 0.0, 1.0]
+    position:
+    - 0.0
+    - 0.0
+    - 1.0
 llm:
   provider: openai_compatible
   api_base: http://127.0.0.1:18080/v1

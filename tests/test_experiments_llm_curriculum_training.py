@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from src import envs, validation
 from src.experiments.cli import experiments_cli_train_llm_curriculum as cli_train_llm_curriculum
 from src.experiments.curriculum import experiments_curriculum_llm_training as llm_curriculum_training
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
@@ -44,10 +45,10 @@ FALLBACK_FAILED_PROPOSAL_COUNT = 2
 
 def test_llm_curriculum_config_loads_and_validates() -> None:
     """Verify the mock LLM curriculum config exposes bootstrap and provider settings."""
-    settings = llm_curriculum_training.load_llm_curriculum_settings("configs/curricula/curriculum_llm_smoke.yaml")
+    settings = llm_curriculum_training.load_llm_curriculum_settings("tests/fixtures/configs/curricula/llm_curriculum_mock_smoke.yaml")
 
-    assert settings.curriculum_name == "curriculum_llm_smoke"
-    assert settings.base_training_config == Path("configs/training/ppo_tracking_smoke.yaml")
+    assert settings.curriculum_name == "llm_curriculum_mock_smoke"
+    assert settings.base_training_config == Path("tests/fixtures/configs/training/ppo_tracking_smoke.yaml")
     assert settings.seed == 0
     assert settings.max_stages == CONFIG_STAGE_COUNT
     assert settings.llm_provider == "mock"
@@ -61,14 +62,14 @@ def test_llm_curriculum_dry_run_writes_manifest_and_proposal_log(tmp_path: Path,
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
 
     result = llm_curriculum_training.run_llm_curriculum_training_from_config(
-        config_path="configs/curricula/curriculum_llm_smoke.yaml",
+        config_path="tests/fixtures/configs/curricula/llm_curriculum_mock_smoke.yaml",
         max_stages=2,
         dry_run_proposals=True,
     )
     summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
     events = [json.loads(line) for line in Path(result.proposal_log_path).read_text(encoding="utf-8").splitlines() if line]
 
-    expected_root = tmp_path / "runs" / "curriculum_llm_smoke_seed0"
+    expected_root = tmp_path / "runs" / "llm_curriculum_mock_smoke_seed0"
     assert Path(result.summary_path) == expected_root / "run_manifest.json"
     assert Path(result.proposal_log_path) == expected_root / "llm_logs" / "proposals.jsonl"
     assert summary["run_kind"] == "curriculum"
@@ -94,7 +95,7 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
         {
             "curriculum_name": "curriculum_llm_unit",
-            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
             "seed": 7,
             "wandb_mode": "disabled",
             "normalize_actions": True,
@@ -206,7 +207,7 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert calls[0]["run_metadata"]["curriculum_stage_run_name"] == "curriculum_llm_unit_stage01_hover_stabilization_seed7"
     assert calls[0]["run_metadata"]["llm_provider"] == "mock"
     assert calls[0]["run_metadata"]["stage_budget_profile"] == "normal"
-    assert calls[0]["config_path"] == Path("configs/training/ppo_tracking_smoke.yaml")
+    assert calls[0]["config_path"] == Path("tests/fixtures/configs/training/ppo_tracking_smoke.yaml")
     assert "action_interface" not in calls[0]
     assert summary["model_transfer_enabled"] is True
     assert summary["stage_run_names"] == [
@@ -258,7 +259,7 @@ def test_llm_curriculum_cli_parser_accepts_expected_options() -> None:
     args = parser.parse_args(
         [
             "--config",
-            "configs/curricula/curriculum_llm_smoke.yaml",
+            "tests/fixtures/configs/curricula/llm_curriculum_mock_smoke.yaml",
             "--seed",
             "3",
             "--wandb-mode",
@@ -273,7 +274,7 @@ def test_llm_curriculum_cli_parser_accepts_expected_options() -> None:
         ]
     )
 
-    assert args.config == Path("configs/curricula/curriculum_llm_smoke.yaml")
+    assert args.config == Path("tests/fixtures/configs/curricula/llm_curriculum_mock_smoke.yaml")
     assert args.seed == CLI_SEED_OVERRIDE
     assert args.wandb_mode == "offline"
     assert args.provider == "mock"
@@ -323,6 +324,74 @@ def test_llm_taskdist_curriculum_configs_load() -> None:
         assert base_settings.task_distribution_settings is not None
         assert base_settings.include_dynamics_observation is True
         assert base_settings.include_previous_action is True
+
+
+def test_llm_concrete_tasks_materialize_to_varied_bounded_distributions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify concrete line, ellipse, and polyline proposals become varied episode distributions."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_materialize_unit",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
+            "seed": 4,
+            "wandb_mode": "disabled",
+            "max_stages": 3,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "llm": {"provider": "mock", "model": "mock"},
+        }
+    )
+    tasks = {
+        "line": {
+            validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
+            validation.contracts.FIELD_SHAPE: validation.contracts.SHAPE_LINE,
+            validation.contracts.FIELD_DURATION_SEC: 4.0,
+            validation.contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            validation.contracts.FIELD_START: [0.0, 0.0, 1.0],
+            validation.contracts.FIELD_END: [0.35, 0.0, 1.0],
+        },
+        "ellipse": {
+            validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
+            validation.contracts.FIELD_SHAPE: validation.contracts.SHAPE_ELLIPSE,
+            validation.contracts.FIELD_DURATION_SEC: 8.0,
+            validation.contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            validation.contracts.FIELD_RADIUS_X: 0.30,
+            validation.contracts.FIELD_RADIUS_Y: 0.18,
+            validation.contracts.FIELD_HEIGHT: 1.0,
+            validation.contracts.FIELD_CENTER: [0.0, 0.0],
+        },
+        "polyline": {
+            validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
+            validation.contracts.FIELD_SHAPE: validation.contracts.SHAPE_POLYLINE,
+            validation.contracts.FIELD_DURATION_SEC: 6.0,
+            validation.contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+            validation.contracts.FIELD_POINTS: [[0.0, 0.0, 1.0], [0.4, 0.0, 1.1], [0.4, 0.35, 1.0]],
+        },
+    }
+
+    for stage_index, (stage_name, task) in enumerate(tasks.items(), start=2):
+        materialized = llm_curriculum_training._materialize_concrete_task_distribution(  # noqa: SLF001
+            settings=settings,
+            stage_index=stage_index,
+            stage_name=stage_name,
+            task=task,
+        )
+        config_path = Path(materialized["task_distribution_config_path"])
+        distribution_settings = envs.task_distribution.load_task_distribution_settings(config_path)
+        first_sampler = envs.task_distribution.TaskDistributionSampler(distribution_settings, env_rank=0)
+        repeated_sampler = envs.task_distribution.TaskDistributionSampler(distribution_settings, env_rank=0)
+        first_samples = [first_sampler.sample_task() for _ in range(3)]
+        repeated_samples = [repeated_sampler.sample_task() for _ in range(3)]
+
+        assert materialized["task_distribution_reference"]["generated_from_concrete_task"] is True
+        assert distribution_settings.mode == envs.task_distribution.MODE_RANDOMIZED
+        assert distribution_settings.sample_on_reset is True
+        assert distribution_settings.strength > 0.0
+        assert first_samples == repeated_samples
+        assert len({json.dumps(sample, sort_keys=True, default=str) for sample in first_samples}) > 1
+        assert {sample[validation.contracts.FIELD_SHAPE] for sample in first_samples} == {task[validation.contracts.FIELD_SHAPE]}
+        for sample in first_samples:
+            assert validation.tasks.validate_task(sample, limits=distribution_settings.validation_limits).is_valid
 
 
 def test_llm_taskdist_reference_resolves_to_concrete_stage_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -457,7 +526,7 @@ def _budget_test_settings() -> llm_curriculum_training.LLMCurriculumSettings:
     return llm_curriculum_training.llm_curriculum_settings_from_mapping(
         {
             "curriculum_name": "curriculum_llm_budget_unit",
-            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
             "seed": 5,
             "wandb_mode": "disabled",
             "normalize_actions": True,
@@ -548,7 +617,7 @@ def test_llm_budget_cap_must_reserve_minimum_budget_for_all_stages() -> None:
     """Verify impossible total caps are rejected at config load time."""
     config = {
         "curriculum_name": "curriculum_llm_bad_budget",
-        "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+        "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
         "max_stages": 4,
         "stage_defaults": {"total_timesteps": 30, "eval_steps": 4},
         "llm_stage_budget": {
@@ -674,9 +743,54 @@ def test_llm_taskdist_wandb_identity_uses_resolved_stage_shape(tmp_path: Path, m
 
 def test_old_local_llm_smoke_config_keeps_adaptive_budget_disabled() -> None:
     """Verify legacy local LLM smoke config loads without adaptive budget settings."""
-    settings = llm_curriculum_training.load_llm_curriculum_settings("configs/curricula/curriculum_llm_local_smoke.yaml")
+    settings = llm_curriculum_training.load_llm_curriculum_settings("tests/fixtures/configs/curricula/llm_curriculum_local_smoke.yaml")
 
     assert settings.llm_stage_budget.enabled is False
     assert settings.llm_stage_budget.profiles == {"normal": settings.stage_total_timesteps}
     assert settings.proposal_fallback.enabled is False
     llm_curriculum_training.validate_llm_curriculum(settings)
+
+
+def test_llm_context_summary_uses_trends_and_diagnostic_guidance() -> None:
+    """Verify LLM prompt context uses compact metrics and avoids pessimistic readiness labels."""
+    entries = [
+        {
+            "stage_index": 1,
+            "stage_name": "hover_stabilization",
+            "task_shape": "hover_stabilization",
+            "mean_position_error_tracking_m": 0.42,
+            "failure_primary_mode": "action_saturation",
+            "resolved_task_sample_metadata": {"task_distribution_sampled_family": "hover_stabilization"},
+        },
+        {
+            "stage_index": 2,
+            "stage_name": "line",
+            "task_shape": "line",
+            "mean_position_error_tracking_m": 0.30,
+            "failure_primary_mode": "z_instability",
+            "resolved_task_sample_metadata": {"task_distribution_sampled_family": "line"},
+        },
+    ]
+
+    summary = llm_curriculum_training._llm_context_summary(  # noqa: SLF001
+        entries,
+        {"mean_position_error_tracking_m": 0.30, "failure_primary_mode": "z_instability"},
+    )
+
+    assert summary["readiness_level_omitted_from_llm_context"] is True
+    assert summary["position_error_trend"] == "improving"
+    assert summary["trend_status"] == "improving"
+    assert summary["recent_improvements"] == ["mean_position_error_tracking_m"]
+    assert summary["previous_stage_task_family"] == "line"
+    assert summary["recommended_avoid_immediate_duplicate_family"] is True
+    assert "basic_training_show" not in summary["allowed_task_families"]
+    assert summary["strongest_task_families"] == ["line", "hover_stabilization"]
+    assert summary["weakest_task_families"] == ["hover_stabilization", "line"]
+    assert {item["failure_mode"] for item in summary["top_repeated_failure_modes"]} == {"action_saturation", "z_instability"}
+    guidance = summary["diagnostic_guidance"]
+    assert guidance["prefer_metrics_over_readiness_label"] is True
+    assert guidance["do_not_overreact_to_single_failure_mode"] is True
+    assert "difficulty" in guidance["action_saturation"]
+    assert "diagnostic" in guidance["z_instability"]
+    assert guidance["reference_too_fast_or_too_hard"] == "treat_as_task_difficulty_signal_not_policy_instability"
+    assert guidance["accepted_concrete_tasks_are_materialized_as_bounded_distributions"] is True

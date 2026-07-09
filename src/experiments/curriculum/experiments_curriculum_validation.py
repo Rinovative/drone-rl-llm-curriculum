@@ -102,7 +102,7 @@ def summarize_config_tasks(config: Mapping[str, Any]) -> CurriculumValidationSum
     Validate and summarize the task list in an experiment configuration.
 
     The helper currently supports the top-level ``tasks`` list used by
-    ``configs/smoke/trajectory_validation.yaml``. If a top-level
+    ``tests/fixtures/configs/smoke/trajectory_validation.yaml``. If a top-level
     ``validation_limits`` mapping is present, it is used to construct
     ``validation.tasks.ValidationLimits`` for all task checks.
 

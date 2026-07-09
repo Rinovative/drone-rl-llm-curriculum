@@ -1,4 +1,9 @@
 name: hover_small
+task_config_role: training_distribution
+task_is_distribution: true
+sampled_per_episode: true
+constant_within_episode: true
+variation_enabled: true
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -16,13 +21,20 @@ task_distribution:
   base_task:
     task_type: trajectory
     shape: hover_stabilization
-    position: [0.0, 0.0, 1.0]
+    position:
+    - 0.0
+    - 0.0
+    - 1.0
     duration_sec: 3.0
     sample_rate_hz: 10.0
   family_weights:
     hover_stabilization: 1.0
   variations:
     hover_stabilization:
-      xy_radius_m: 0.20
-      z_range_m: [0.8, 1.2]
-      duration_range_sec: [2.0, 5.0]
+      xy_radius_m: 0.2
+      z_range_m:
+      - 0.8
+      - 1.2
+      duration_range_sec:
+      - 2.0
+      - 5.0

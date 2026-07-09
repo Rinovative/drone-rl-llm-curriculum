@@ -29,10 +29,10 @@ EXPECTED_STAGE_COUNT = 5
 
 def test_manual_curriculum_config_loads_and_validates() -> None:
     """Verify the manual line curriculum config exposes the expected stages."""
-    settings = curriculum_training.load_manual_curriculum_settings("configs/curricula/curriculum_manual_line_smoke.yaml")
+    settings = curriculum_training.load_manual_curriculum_settings("tests/fixtures/configs/curricula/curriculum_manual_line_smoke.yaml")
 
     assert settings.curriculum_name == "curriculum_manual_line_smoke"
-    assert settings.base_training_config == Path("configs/training/ppo_tracking_smoke.yaml")
+    assert settings.base_training_config == Path("tests/fixtures/configs/training/ppo_tracking_smoke.yaml")
     assert settings.seed == 0
     assert settings.normalize_actions is True
     assert len(settings.stages) == EXPECTED_STAGE_COUNT
@@ -63,7 +63,7 @@ def test_manual_curriculum_stage_naming_uses_concrete_task_shape() -> None:
     settings = curriculum_training.manual_curriculum_settings_from_mapping(
         {
             "curriculum_name": "curriculum_manual_shape_unit",
-            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
             "seed": 0,
             "wandb_mode": "disabled",
             "normalize_actions": True,
@@ -98,7 +98,7 @@ def test_manual_curriculum_invalid_stage_fails_clearly() -> None:
     settings = curriculum_training.manual_curriculum_settings_from_mapping(
         {
             "curriculum_name": "curriculum_manual_line_smoke",
-            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
             "seed": 0,
             "wandb_mode": "disabled",
             "normalize_actions": True,
@@ -138,7 +138,7 @@ def test_manual_curriculum_stage_distribution_path_is_passed_to_ppo(tmp_path: Pa
     settings = curriculum_training.manual_curriculum_settings_from_mapping(
         {
             "curriculum_name": "curriculum_manual_distribution_unit",
-            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
             "seed": 0,
             "wandb_mode": "disabled",
             "normalize_actions": True,
@@ -195,7 +195,7 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     settings = curriculum_training.manual_curriculum_settings_from_mapping(
         {
             "curriculum_name": "curriculum_manual_line_smoke",
-            "base_training_config": "configs/training/ppo_tracking_smoke.yaml",
+            "base_training_config": "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
             "seed": 0,
             "wandb_mode": "disabled",
             "normalize_actions": True,
@@ -363,7 +363,7 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
     assert calls[0]["artifact_root"] == expected_root / "stages" / "stage01_hover_stabilization" / "training"
     assert calls[1]["artifact_root"] == expected_root / "stages" / "stage02_nearby_target_hover" / "training"
     assert calls[0]["normalize_actions"] is True
-    assert calls[0]["config_path"] == Path("configs/training/ppo_tracking_smoke.yaml")
+    assert calls[0]["config_path"] == Path("tests/fixtures/configs/training/ppo_tracking_smoke.yaml")
     assert "action_interface" not in calls[0]
     assert "num_envs" not in calls[0]
     assert calls[0]["wandb_group"] == "curriculum/manual/curriculum_manual_line_smoke_seed0"
@@ -382,9 +382,11 @@ def test_manual_curriculum_summary_writing_includes_diagnostics_paths(tmp_path: 
 def test_manual_curriculum_cli_parser_accepts_expected_options() -> None:
     """Verify the curriculum parser exposes config, seed, and W&B controls."""
     parser = cli_train_curriculum.build_parser()
-    args = parser.parse_args(["--config", "configs/curricula/curriculum_manual_line_smoke.yaml", "--seed", "3", "--wandb-mode", "offline"])
+    args = parser.parse_args(
+        ["--config", "tests/fixtures/configs/curricula/curriculum_manual_line_smoke.yaml", "--seed", "3", "--wandb-mode", "offline"]
+    )
 
-    assert args.config == Path("configs/curricula/curriculum_manual_line_smoke.yaml")
+    assert args.config == Path("tests/fixtures/configs/curricula/curriculum_manual_line_smoke.yaml")
     assert args.seed == CLI_SEED_OVERRIDE
     assert args.wandb_mode == "offline"
 

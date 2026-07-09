@@ -237,6 +237,13 @@ def _fake_policy_evaluation(spec: object, artifacts: object) -> policy_evaluatio
         "evaluated_model_source": spec.evaluated_model_source or "specified",
         "task_config_path_used_for_evaluation": str(spec.task_config_path),
         "task_shape_used_for_evaluation": spec.task_shape,
+        "own_task_source": spec.own_task_source,
+        "own_task_config_path": None if spec.own_task_config_path is None else str(spec.own_task_config_path),
+        "own_task_distribution_config_path": None if spec.own_task_distribution_config_path is None else str(spec.own_task_distribution_config_path),
+        "own_task_shape": spec.own_task_shape,
+        "own_task_is_show": spec.own_task_is_show,
+        "own_task_fallback_used": spec.own_task_fallback_used,
+        "own_task_fallback_reason": spec.own_task_fallback_reason,
         "source_manifest_path": None if spec.source_manifest_path is None else str(spec.source_manifest_path),
         "action_interface": spec.action_interface,
         "rpm_delta_scale": spec.rpm_delta_scale if spec.action_interface == "direct_rpm" else None,
@@ -472,6 +479,12 @@ def test_curriculum_evaluation_own_stage_creates_stage_indexed_dirs_and_summary_
     assert payload["evaluated_models"][0]["is_final_stage"] is False
     assert payload["evaluated_models"][1]["is_final_stage"] is True
     assert payload["evaluated_models"][0]["suite_task_name"] is None
+    assert payload["evaluated_models"][0]["own_task_source"] == "curriculum_stage_representative_task"
+    assert payload["evaluated_models"][1]["own_task_source"] == "curriculum_stage_representative_task"
+    assert payload["evaluated_models"][0]["own_task_shape"] == "hover_stabilization"
+    assert payload["evaluated_models"][1]["own_task_shape"] == "line"
+    assert payload["evaluated_models"][0]["own_task_fallback_used"] is False
+    assert payload["evaluated_models"][1]["own_task_fallback_used"] is False
     assert not (summary_path.parent / "evaluations" / "own_task").exists()
     assert summary_payload["entry_count"] == 1
     assert summary_payload["evaluations"][0]["evaluation_name"] == "own_task"

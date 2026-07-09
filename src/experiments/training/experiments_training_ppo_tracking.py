@@ -2,22 +2,22 @@
 ===============================================================================
 experiments_training_ppo_tracking.py
 ===============================================================================
-Run tiny Stable-Baselines3 PPO smoke training on TrajectoryTrackingEnv.
+Run Stable-Baselines3 PPO training on TrajectoryTrackingEnv.
 
 Responsibilities:
-  - Load a configured validated trajectory task for PPO smoke training
+  - Load configured representative and training task sources for PPO tracking
   - Verify the Gymnasium wrapper with Stable-Baselines3 when available
   - Train, save, and evaluate a bounded deterministic PPO model headlessly
   - Write compact JSON metrics and action/liftoff diagnostics under storage
 
 Design principles:
-  - Keep defaults tiny, deterministic, bounded, and safe for Docker or HPC smoke runs
+  - Keep defaults deterministic, bounded, and aligned with scheduled medium experiments
   - Import heavyweight RL dependencies lazily inside training functions
   - Keep generated models and metrics out of source-controlled paths
 
 Boundaries:
   - Curriculum generation and LLM calls belong in llm modules
-  - Long training runs, plotting, and trained-policy rendering belong elsewhere
+  - Plotting and trained-policy rendering belong elsewhere
 ===============================================================================
 
 """
@@ -41,8 +41,8 @@ from src.experiments import experiments_config as config_loader
 
 from . import experiments_training_ppo_config as ppo_config
 
-DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking_smoke.yaml")
-DEFAULT_TASK_CONFIG_PATH = Path("configs/training/ppo_tracking_tasks.yaml")
+DEFAULT_PPO_TRACKING_CONFIG_PATH = Path("configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml")
+DEFAULT_TASK_CONFIG_PATH = Path("configs/training/ppo_tracking_representative_tasks.yaml")
 DEFAULT_TASK_INDEX = 0
 DEFAULT_TOTAL_TIMESTEPS = 4096
 DEFAULT_NUM_ENVS = 1
@@ -62,13 +62,15 @@ _TIMESTEPS_PER_MILLION_LABEL = 1_000_000
 _MIN_TIMESTEPS_FOR_COMPACT_THOUSAND_LABEL = 10_000
 _ENT005_COEFFICIENT = 0.005
 _LOW_LR_LEARNING_RATE = 0.0001
+_CLIP010_RANGE = 0.1
+_TARGETKL015_VALUE = 0.015
 VEC_MONITOR_ENABLED = True
 
 
 @dataclass(frozen=True)
 class PPOTrackingSmokeSettings:
     """
-    Settings for a tiny PPO trajectory-tracking smoke run.
+    Settings for a PPO trajectory-tracking run.
 
     Parameters
     ----------
@@ -87,7 +89,7 @@ class PPOTrackingSmokeSettings:
     run_name
         Optional canonical storage/runs run name for model, metrics, and W&B artifacts.
     total_timesteps
-        Tiny upper-level PPO learning budget passed to Stable-Baselines3.
+        Upper-level PPO learning budget passed to Stable-Baselines3.
     num_envs
         Number of parallel training environments used for PPO rollout collection.
     ppo_config
@@ -308,7 +310,7 @@ def _settings_diagnostic_limits(settings: PPOTrackingSmokeSettings) -> envs.term
 
 def load_ppo_tracking_settings(path: str | Path) -> PPOTrackingSmokeSettings:
     """
-    Load PPO trajectory-tracking smoke settings from YAML.
+    Load PPO trajectory-tracking settings from YAML.
 
     Parameters
     ----------
@@ -644,6 +646,12 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
     )
     task_distribution_settings = _resolved_task_distribution_settings(active_settings, task)
     task_distribution_metadata = _task_distribution_metadata(task_distribution_settings)
+    task_resolution_metadata = _training_task_resolution_metadata(
+        settings=active_settings,
+        task=task,
+        selected_task_index=selected_task_index,
+        task_distribution_metadata=task_distribution_metadata,
+    )
     resolved_task_shape = str(task.get("shape", "unknown"))
     training_run_name = _run_name(active_settings, resolved_task_shape)
     timesteps_label = _timesteps_label(active_settings.total_timesteps)
@@ -841,6 +849,7 @@ def run_ppo_tracking_smoke(settings: PPOTrackingSmokeSettings | None = None) -> 
             "task_shape_requested": active_settings.task_shape,
             **_task_show_metadata(task),
             **task_distribution_metadata,
+            **task_resolution_metadata,
             "total_timesteps": active_settings.total_timesteps,
             "num_envs": active_settings.num_envs,
             "action_interface": active_settings.action_interface,
@@ -1249,6 +1258,131 @@ def _task_distribution_manifest_fields(metrics: Mapping[str, Any]) -> dict[str, 
     return {key: metrics.get(key) for key in keys if key in metrics}
 
 
+def _training_task_resolution_metadata(
+    *,
+    settings: PPOTrackingSmokeSettings,
+    task: Mapping[str, Any],
+    selected_task_index: int,
+    task_distribution_metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return source-of-truth metadata for training task resolution."""
+    distribution_enabled = bool(task_distribution_metadata.get("task_distribution_enabled"))
+    distribution_mode = task_distribution_metadata.get("task_distribution_mode")
+    distribution_strength = float(task_distribution_metadata.get("task_distribution_strength") or 0.0)
+    sampled_per_episode = bool(
+        distribution_enabled
+        and distribution_mode == envs.task_distribution.MODE_RANDOMIZED
+        and task_distribution_metadata.get("task_distribution_sample_on_reset") is True
+        and distribution_strength > 0.0
+    )
+    task_kind = str(
+        task.get("training_task_kind")
+        or task_distribution_metadata.get("task_distribution_name")
+        or task.get("task_name")
+        or task.get(validation.contracts.FIELD_SHAPE)
+        or "unknown"
+    )
+    representative_role = "representative_eval_only" if sampled_per_episode else "training_fixed_task"
+    return {
+        "training_task_kind": task_kind,
+        "training_task_config_path": str(settings.task_config_path),
+        "training_task_config_role": representative_role,
+        "training_task_index": int(selected_task_index),
+        "training_task_distribution_config_path": _metadata_optional_text(task_distribution_metadata.get("task_distribution_config_path")),
+        "training_task_distribution_name": _metadata_optional_text(task_distribution_metadata.get("task_distribution_name")),
+        "training_task_is_distribution": sampled_per_episode,
+        "actual_training_task_source": "task_distribution_sampler" if sampled_per_episode else "representative_task_config",
+        "actual_training_task_kind": "task_distribution" if sampled_per_episode else "fixed_representative_task",
+        "representative_task_config_path": str(settings.task_config_path),
+        "representative_task_config_role": representative_role,
+        "own_task_eval_source": "task_distribution_representative" if sampled_per_episode else "training_task_snapshot",
+        "own_task_eval_config_path": None,
+        "own_task_fallback_used": False,
+        "own_task_fallback_reason": None,
+        "task_is_distribution": sampled_per_episode,
+        "sampled_per_episode": sampled_per_episode,
+        "constant_within_episode": True,
+        "variation_enabled": sampled_per_episode,
+        "variation_mode": "bounded_per_episode" if sampled_per_episode else "fixed",
+        **_training_task_hold_metadata(settings=settings, task=task, sampled_per_episode=sampled_per_episode),
+    }
+
+
+def _metadata_optional_text(value: Any) -> str | None:
+    """Return a non-empty metadata string or ``None``."""
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+def _training_task_hold_metadata(*, settings: PPOTrackingSmokeSettings, task: Mapping[str, Any], sampled_per_episode: bool) -> dict[str, Any]:
+    """Return configured start/final hold metadata for resolved training tasks."""
+    base_task = settings.task_distribution_settings.base_task if settings.task_distribution_settings is not None else {}
+    start_enabled = bool(_task_or_base_value(task, base_task, validation.contracts.FIELD_START_HOLD_ENABLED, sampled_per_episode))
+    final_enabled = bool(_task_or_base_value(task, base_task, validation.contracts.FIELD_FINAL_HOLD_ENABLED, sampled_per_episode))
+    return {
+        "start_hold_enabled": start_enabled,
+        "start_hold_sec": float(
+            _task_or_base_value(
+                task,
+                base_task,
+                validation.contracts.FIELD_START_HOLD_SEC,
+                envs.task_distribution.DEFAULT_START_HOLD_SEC if start_enabled else 0.0,
+            )
+        ),
+        "final_hold_enabled": final_enabled,
+        "final_hold_sec": float(
+            _task_or_base_value(
+                task,
+                base_task,
+                validation.contracts.FIELD_FINAL_HOLD_SEC,
+                envs.task_distribution.DEFAULT_FINAL_HOLD_SEC if final_enabled else 0.0,
+            )
+        ),
+    }
+
+
+def _task_or_base_value(task: Mapping[str, Any], base_task: Mapping[str, Any], key: str, default: Any) -> Any:
+    """Return a value from the selected representative task, distribution base task, or default."""
+    if key in task:
+        return task[key]
+    if key in base_task:
+        return base_task[key]
+    return default
+
+
+def _training_task_resolution_manifest_fields(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """Select source-of-truth task-resolution fields for manifests and W&B config."""
+    keys = (
+        "training_task_kind",
+        "training_task_config_path",
+        "training_task_config_role",
+        "training_task_index",
+        "training_task_distribution_config_path",
+        "training_task_distribution_name",
+        "training_task_is_distribution",
+        "actual_training_task_source",
+        "actual_training_task_kind",
+        "representative_task_config_path",
+        "representative_task_config_role",
+        "own_task_eval_source",
+        "own_task_eval_config_path",
+        "own_task_fallback_used",
+        "own_task_fallback_reason",
+        "task_is_distribution",
+        "sampled_per_episode",
+        "constant_within_episode",
+        "variation_enabled",
+        "variation_mode",
+        "start_hold_enabled",
+        "start_hold_sec",
+        "final_hold_enabled",
+        "final_hold_sec",
+    )
+    return {key: copy.deepcopy(metrics[key]) for key in keys if key in metrics}
+
+
 def _select_task(
     task_config_path: Path,
     default_task_index: int,
@@ -1391,7 +1525,7 @@ def _wandb_settings(
     task_shape: str | None = None,
     task_distribution_metadata: Mapping[str, Any] | None = None,
 ) -> utils.wandb.WandbTrackingSettings:
-    """Build W&B settings from PPO smoke settings and resolved task metadata."""
+    """Build W&B settings from PPO tracking settings and resolved task metadata."""
     run_name = _run_name(settings, task_shape)
     resolved_shape = task_shape or settings.task_shape or "unknown"
     return utils.wandb.WandbTrackingSettings(
@@ -1498,23 +1632,23 @@ def _net_arch_label(settings: PPOTrackingSmokeSettings) -> str:
     """Return a compact network-architecture tag label."""
     net_arch = _policy_net_arch(settings)
     if _matches_net_arch(net_arch, width=128):
-        return "net128_small"
+        return "net128_default"
     if _matches_net_arch(net_arch, width=256):
-        return "net256_default"
+        return "net256_comparison"
     if _matches_net_arch(net_arch, width=512):
-        return "net512_large"
+        return "net512_unscheduled"
     return "custom"
 
 
 def _net_arch_role(settings: PPOTrackingSmokeSettings) -> str:
     """Return the experiment role represented by the resolved net architecture."""
     label = _net_arch_label(settings)
-    if label == "net256_default":
+    if label == "net128_default":
         return "default"
-    if label == "net128_small":
-        return "small_arch_comparison"
-    if label == "net512_large":
-        return "large_arch_comparison"
+    if label == "net256_comparison":
+        return "architecture_comparison"
+    if label == "net512_unscheduled":
+        return "unscheduled_large_arch"
     return "custom_arch"
 
 
@@ -1549,6 +1683,10 @@ def _net_arch_metadata(settings: PPOTrackingSmokeSettings) -> dict[str, Any]:
 
 def _ppo_profile(settings: PPOTrackingSmokeSettings) -> str:
     """Infer the PPO profile represented by the resolved hyperparameters."""
+    if settings.ppo_config.clip_range == _CLIP010_RANGE:
+        return "clip010"
+    if settings.ppo_config.target_kl == _TARGETKL015_VALUE:
+        return "targetkl015"
     if settings.ppo_config.ent_coef == _ENT005_COEFFICIENT:
         return "ent005"
     if settings.ppo_config.learning_rate == _LOW_LR_LEARNING_RATE:
@@ -1660,6 +1798,7 @@ def _build_manifest(
         **_task_show_metadata(task),
         **_task_show_manifest_fields(metrics),
         **_task_distribution_manifest_fields(metrics),
+        **_training_task_resolution_manifest_fields(metrics),
         "total_timesteps": settings.total_timesteps,
         "num_envs": metrics.get("num_envs", settings.num_envs),
         "action_interface": metrics.get("action_interface", settings.action_interface),
@@ -1778,6 +1917,7 @@ def _build_run_manifest(
             "task_source": training_manifest["task_source"],
             **_task_show_manifest_fields(metrics),
             **_task_distribution_manifest_fields(metrics),
+            **_training_task_resolution_manifest_fields(metrics),
             "ppo_config": metrics.get("ppo_config", settings.ppo_config.to_dict()),
             "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
             "net_arch_label": metrics.get("net_arch_label", _net_arch_label(settings)),
@@ -1812,6 +1952,7 @@ def _build_run_manifest(
             ),
         },
         **_task_distribution_manifest_fields(metrics),
+        **_training_task_resolution_manifest_fields(metrics),
         "total_timesteps": settings.total_timesteps,
         "policy_kwargs": metrics.get("policy_kwargs", settings.ppo_config.to_dict().get("policy_kwargs")),
         "net_arch_label": metrics.get("net_arch_label", _net_arch_label(settings)),
@@ -2170,6 +2311,12 @@ def _wandb_config(
         "task_shape_requested": settings.task_shape,
         **_task_show_metadata(task),
         **dict(task_distribution_metadata or {}),
+        **_training_task_resolution_metadata(
+            settings=settings,
+            task=task,
+            selected_task_index=selected_task_index,
+            task_distribution_metadata=task_distribution_metadata or {},
+        ),
         "total_timesteps": settings.total_timesteps,
         "num_envs": settings.num_envs,
         "action_interface": settings.action_interface,

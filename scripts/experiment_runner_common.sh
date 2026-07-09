@@ -156,7 +156,7 @@ experiment_wandb_group() {
       if [[ "$run_name" == *taskdist_medium* ]]; then
         task_distribution="tracking_medium"
       else
-        task_distribution="fixed"
+        task_distribution="basic_training_show"
       fi
       echo "direct_ppo/${action_interface}/${task_distribution}/${variant}/seed${seed}"
       ;;

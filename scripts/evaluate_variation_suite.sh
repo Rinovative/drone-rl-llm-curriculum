@@ -7,7 +7,7 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 RUN_MANIFEST="$1"
-SUITE_CONFIG="${2:-configs/evaluation/evaluation_task_suite_variation.yaml}"
+SUITE_CONFIG="${2:-configs/evaluation/generalization_eval_suite.yaml}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/drone_eval_suite.XXXXXX")"
 STATUS_TSV="${TMP_ROOT}/task_status.tsv"

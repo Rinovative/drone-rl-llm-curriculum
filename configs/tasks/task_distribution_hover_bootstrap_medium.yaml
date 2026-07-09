@@ -1,4 +1,9 @@
 name: bootstrap_randomized_hover_target
+task_config_role: training_distribution
+task_is_distribution: true
+sampled_per_episode: true
+constant_within_episode: true
+variation_enabled: true
 task_distribution:
   name: bootstrap_randomized_hover_target
   enabled: true
@@ -11,11 +16,20 @@ task_distribution:
     shape: hover_stabilization
     duration_sec: 3.0
     sample_rate_hz: 10.0
-    position: [0.0, 0.0, 1.0]
+    position:
+    - 0.0
+    - 0.0
+    - 1.0
   family_weights:
     hover_stabilization: 1.0
   variations:
     hover_stabilization:
-      x_range_m: [-0.5, 0.5]
-      y_range_m: [-0.5, 0.5]
-      z_range_m: [0.7, 1.4]
+      x_range_m:
+      - -0.5
+      - 0.5
+      y_range_m:
+      - -0.5
+      - 0.5
+      z_range_m:
+      - 0.7
+      - 1.4

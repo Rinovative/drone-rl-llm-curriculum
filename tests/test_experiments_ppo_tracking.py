@@ -45,6 +45,7 @@ DIRECT_RPM_ACTION_DIM = 4
 DIRECT_RPM_DELTA_SCALE = 0.05
 POLICY_NET_ARCH = [128, 128]
 STRICT_TEST_LIMIT_VIOLATIONS = 2
+ACTIVE_DEFAULT_RUN_NAME = "direct_ppo_pid_dynprev_m-taskdist_medium_seed0"
 
 EXPECTED_PPO_CONFIG = {
     "policy": "MlpPolicy",
@@ -166,7 +167,7 @@ def _install_fast_ppo_smoke_fakes(
 
 def _manual_curriculum_task(stage_name: str) -> dict[str, object]:
     """Return a copied task from the manual line curriculum fixture."""
-    config = experiments_config.load_experiment_config("configs/curricula/curriculum_manual_line_smoke.yaml")
+    config = experiments_config.load_experiment_config("tests/fixtures/configs/curricula/curriculum_manual_line_smoke.yaml")
     for stage in config["stages"]:
         if stage["stage_name"] == stage_name:
             return dict(stage["task"])
@@ -180,13 +181,45 @@ def test_ppo_tracking_canonical_module_imports() -> None:
     assert ppo_tracking.PPOTrackingSmokeSettings is not None
 
 
+def test_training_task_resolution_metadata_distinguishes_distribution_from_representative() -> None:
+    """Verify training metadata reports the distribution source, not the representative task role."""
+    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_pid_dynprev_basic_show.yaml")
+    task, _, selected_task_index, _ = ppo_tracking._select_task(  # noqa: SLF001
+        task_config_path=settings.task_config_path,
+        default_task_index=settings.task_index,
+        task_shape=settings.task_shape,
+    )
+    assert settings.task_distribution_settings is not None
+    metadata = ppo_tracking._training_task_resolution_metadata(  # noqa: SLF001
+        settings=settings,
+        task=task,
+        selected_task_index=selected_task_index,
+        task_distribution_metadata=settings.task_distribution_settings.to_metadata(),
+    )
+
+    assert metadata["training_task_config_path"] == "configs/training/ppo_tracking_representative_tasks.yaml"
+    assert metadata["representative_task_config_path"] == "configs/training/ppo_tracking_representative_tasks.yaml"
+    assert metadata["training_task_config_role"] == "representative_eval_only"
+    assert metadata["training_task_distribution_config_path"] == "configs/tasks/task_distribution_basic_training_show.yaml"
+    assert metadata["training_task_is_distribution"] is True
+    assert metadata["task_is_distribution"] is True
+    assert metadata["sampled_per_episode"] is True
+    assert metadata["constant_within_episode"] is True
+    assert metadata["variation_enabled"] is True
+    assert metadata["variation_mode"] == "bounded_per_episode"
+    assert metadata["own_task_eval_source"] == "task_distribution_representative"
+    assert metadata["own_task_fallback_used"] is False
+    assert metadata["start_hold_enabled"] is True
+    assert metadata["final_hold_enabled"] is True
+
+
 def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify the smoke YAML file loads into validated settings."""
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_smoke.yaml")
+    settings = ppo_tracking.load_ppo_tracking_settings("tests/fixtures/configs/training/ppo_tracking_smoke.yaml")
 
-    assert settings.training_config_path == Path("configs/training/ppo_tracking_smoke.yaml")
-    assert settings.task_config_path == Path("configs/training/ppo_tracking_tasks.yaml")
+    assert settings.training_config_path == Path("tests/fixtures/configs/training/ppo_tracking_smoke.yaml")
+    assert settings.task_config_path == Path("configs/training/ppo_tracking_representative_tasks.yaml")
     assert settings.task_index == EXPECTED_SMOKE_TASK_INDEX
     assert settings.task_shape is None
     assert settings.run_name == "direct_ppo_line_smoke_seed0"
@@ -212,9 +245,9 @@ def test_load_ppo_tracking_smoke_config_returns_valid_settings(tmp_path: Path, m
     assert settings.wandb_name == "direct_ppo_line_smoke_seed0"
     assert settings.wandb_tags == ("smoke", "direct_ppo", "line")
     assert settings.wandb_dir is None
-    assert ppo_tracking.default_output_dir() == tmp_path / "runs" / "direct_ppo_line_smoke_seed0"
-    assert ppo_tracking.default_model_dir() == tmp_path / "runs" / "direct_ppo_line_smoke_seed0" / "training" / "models"
-    assert utils.wandb.default_wandb_dir("direct_ppo_line_smoke_seed0") == tmp_path / "runs" / "direct_ppo_line_smoke_seed0" / "training" / "wandb"
+    assert ppo_tracking.default_output_dir() == tmp_path / "runs" / ACTIVE_DEFAULT_RUN_NAME
+    assert ppo_tracking.default_model_dir() == tmp_path / "runs" / ACTIVE_DEFAULT_RUN_NAME / "training" / "models"
+    assert utils.wandb.default_wandb_dir(settings.run_name) == tmp_path / "runs" / settings.run_name / "training" / "wandb"
 
 
 @pytest.mark.parametrize(
@@ -261,7 +294,7 @@ def test_ppo_tracking_settings_reject_invalid_action_interface() -> None:
 
 def test_ppo_tracking_direct_rpm_config_loads() -> None:
     """Verify the direct-RPM smoke config resolves explicit action settings."""
-    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_direct_rpm_smoke.yaml")
+    settings = ppo_tracking.load_ppo_tracking_settings("tests/fixtures/configs/training/ppo_tracking_direct_rpm_smoke.yaml")
 
     assert settings.action_interface == "direct_rpm"
     assert settings.normalize_actions is True
@@ -276,7 +309,7 @@ def test_ppo_tracking_direct_rpm_config_loads() -> None:
 
 def test_ppo_tracking_dynamics_smoke_config_loads() -> None:
     """Verify the optional PID dynamics/previous-action smoke config resolves."""
-    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_dynamics_smoke.yaml")
+    settings = ppo_tracking.load_ppo_tracking_settings("tests/fixtures/configs/training/ppo_tracking_dynamics_smoke.yaml")
 
     assert settings.action_interface == "pid_position"
     assert settings.include_dynamics_observation is True
@@ -288,7 +321,7 @@ def test_ppo_tracking_dynamics_smoke_config_loads() -> None:
 
 def test_ppo_tracking_dynamics_medium_net_smoke_config_loads() -> None:
     """Verify the optional larger-network smoke config resolves policy kwargs."""
-    settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_dynamics_medium_net_smoke.yaml")
+    settings = ppo_tracking.load_ppo_tracking_settings("tests/fixtures/configs/training/ppo_tracking_dynamics_medium_net_smoke.yaml")
 
     assert settings.action_interface == "pid_position"
     assert settings.include_dynamics_observation is True
@@ -347,7 +380,7 @@ def test_ppo_tracking_settings_reject_invalid_run_name() -> None:
 def test_ppo_tracking_select_task_by_shape_uses_configured_task() -> None:
     """Verify task-shape selection reuses the configured task list."""
     task, task_source, task_index, warnings = ppo_tracking._select_task(  # noqa: SLF001
-        task_config_path=Path("configs/training/ppo_tracking_tasks.yaml"),
+        task_config_path=Path("configs/training/ppo_tracking_representative_tasks.yaml"),
         default_task_index=0,
         task_shape="line",
     )
@@ -403,7 +436,7 @@ def test_direct_ppo_wandb_naming_uses_run_name_group_and_identity_tags() -> None
     assert "observation:dynamics" in wandb_settings.tags
     assert "observation:previous_action" in wandb_settings.tags
     assert "task_distribution:tracking_medium" in wandb_settings.tags
-    assert "net:net256_default" in wandb_settings.tags
+    assert "net:net128_default" in wandb_settings.tags
     assert "net_role:default" in wandb_settings.tags
     assert "ppo_profile:default" in wandb_settings.tags
     assert "seed:0" in wandb_settings.tags
@@ -1433,7 +1466,7 @@ def test_cli_train_tracking_passes_num_envs_and_action_interface_overrides(monke
     status = cli_train_tracking.main(
         [
             "--config",
-            "configs/training/ppo_tracking_smoke.yaml",
+            "tests/fixtures/configs/training/ppo_tracking_smoke.yaml",
             "--num-envs",
             str(CLI_NUM_ENVS_OVERRIDE),
             "--action-interface",

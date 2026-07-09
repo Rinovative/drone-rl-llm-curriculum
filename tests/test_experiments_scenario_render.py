@@ -13,9 +13,9 @@ from src.experiments.cli import experiments_cli_render_scenario as cli_render_sc
 from src.experiments.rendering import experiments_rendering_policy as policy_render
 from src.experiments.rendering import experiments_rendering_scenario as scenario_render
 
-SCRIPTED_CONFIG = Path("configs/scenarios/scripted_reference_line_polyline.yaml")
-SHOWCASE_CONFIG = Path("configs/scenarios/showcase_hover_line_polyline.yaml")
-CIRCLE_CONFIG = Path("configs/scenarios/scripted_reference_circle_polyline.yaml")
+SCRIPTED_CONFIG = Path("tests/fixtures/configs/scenarios/scripted_reference_line_polyline.yaml")
+SHOWCASE_CONFIG = Path("tests/fixtures/configs/scenarios/showcase_hover_line_polyline.yaml")
+CIRCLE_CONFIG = Path("tests/fixtures/configs/scenarios/scripted_reference_circle_polyline.yaml")
 SHOW_EASY_CONFIG = Path("configs/evaluation/scenarios/show_easy.yaml")
 SHOW_MEDIUM_CONFIG = Path("configs/evaluation/scenarios/show_medium.yaml")
 SHOW_HARD_CONFIG = Path("configs/evaluation/scenarios/show_hard.yaml")
@@ -39,7 +39,7 @@ def test_load_scripted_scenario_settings_parses_concrete_geometry_and_holds() ->
     settings = scenario_render.load_scenario_render_settings(SCRIPTED_CONFIG)
 
     assert settings.scenario_name == "scripted_reference_line_polyline"
-    assert settings.task_config_path == Path("configs/smoke/trajectory_validation.yaml")
+    assert settings.task_config_path == Path("tests/fixtures/configs/smoke/trajectory_validation.yaml")
     assert settings.controller == policy_render.SCRIPTED_REFERENCE_CONTROLLER
     assert settings.max_steps == CONFIG_MAX_STEPS
     assert settings.seed == 0
@@ -446,7 +446,7 @@ def test_build_scenario_manifest_includes_required_fields(tmp_path: Path) -> Non
     assert payload["model_run_name"] is None
     assert payload["policy_predict_used"] is False
     assert payload["true_simulator_rendering"] is True
-    assert payload["task_config_path"] == "configs/smoke/trajectory_validation.yaml"
+    assert payload["task_config_path"] == "tests/fixtures/configs/smoke/trajectory_validation.yaml"
     assert payload["scenario_config_path"] == str(SCRIPTED_CONFIG)
     assert payload["phase_names"] == ["line_forward", "polyline_turns"]
     assert payload["phase_types"] == ["line", "polyline"]

@@ -33,8 +33,8 @@ import numpy as np
 from src import envs, utils
 from src.experiments import experiments_config as config_loader
 
-DEFAULT_TRAINING_CONFIG_PATH = Path("configs/smoke/training_smoke.yaml")
-DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
+DEFAULT_TRAINING_CONFIG_PATH = Path("tests/fixtures/configs/smoke/training_smoke.yaml")
+DEFAULT_TASK_CONFIG_PATH = Path("tests/fixtures/configs/smoke/trajectory_validation.yaml")
 DEFAULT_OUTPUT_FILENAME = "training_smoke_metrics.json"
 DEFAULT_INITIAL_ERROR_M = 0.2
 DEFAULT_MAX_STEPS = 16

@@ -37,7 +37,7 @@ VALID_PPO_CONFIG = {
 
 
 def test_ppo_config_loads_nested_config_values() -> None:
-    """Verify nested ppo config values include the project default net256 architecture."""
+    """Verify nested ppo config values include the project default net128 architecture."""
     config = ppo_config.load_ppo_config_from_mapping({"ppo": VALID_PPO_CONFIG})
     expected = {**VALID_PPO_CONFIG, "policy_kwargs": ppo_config.default_policy_kwargs()}
 
@@ -45,8 +45,8 @@ def test_ppo_config_loads_nested_config_values() -> None:
     assert config.to_sb3_kwargs() == expected
 
 
-def test_ppo_config_uses_net256_policy_kwargs_by_default() -> None:
-    """Verify omitted policy kwargs use the project net256 pi/vf architecture."""
+def test_ppo_config_uses_net128_policy_kwargs_by_default() -> None:
+    """Verify omitted policy kwargs use the project net128 pi/vf architecture."""
     config = ppo_config.PPOConfig()
 
     assert config.policy_kwargs == ppo_config.default_policy_kwargs()

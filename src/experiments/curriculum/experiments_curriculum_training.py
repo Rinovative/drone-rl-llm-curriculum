@@ -36,7 +36,7 @@ from src import envs, utils, validation
 from src.experiments import experiments_config as config_loader
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
-DEFAULT_CURRICULUM_CONFIG_PATH = Path("configs/curricula/curriculum_manual_line_smoke.yaml")
+DEFAULT_CURRICULUM_CONFIG_PATH = Path("configs/curricula/curriculum_pid_dynprev_m-taskdist_medium.yaml")
 MANUAL_CURRICULUM_KIND = "manual"
 STAGE_DISTRIBUTION_CONFIG_PATH_FIELDS = (
     "task_distribution_config_path",

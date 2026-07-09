@@ -1,4 +1,4 @@
-task_config_path: configs/training/ppo_tracking_tasks.yaml
+task_config_path: configs/training/ppo_tracking_representative_tasks.yaml
 task_index: 0
 task_distribution_config_path: configs/tasks/task_distribution_tracking_medium.yaml
 run_name: direct_ppo_pid_dynprev_m-taskdist_medium_targetkl015_seed0

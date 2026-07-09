@@ -46,7 +46,7 @@ PPO_CONFIG_KEYS = (
 
 SUPPORTED_POLICY_KWARGS_KEYS = ("net_arch",)
 NET_ARCH_POLICY_KEYS = ("pi", "vf")
-DEFAULT_NET_ARCH = {"pi": [256, 256], "vf": [256, 256]}
+DEFAULT_NET_ARCH = {"pi": [128, 128], "vf": [128, 128]}
 
 
 def default_policy_kwargs() -> dict[str, Any]:
@@ -89,7 +89,7 @@ class PPOConfig:
     target_kl
         Optional positive target KL early-stopping threshold.
     policy_kwargs
-        Explicit SB3 policy keyword arguments. Defaults to the project net256 pi/vf architecture. Only ``net_arch`` is supported.
+        Explicit SB3 policy keyword arguments. Defaults to the project net128 pi/vf architecture. Only ``net_arch`` is supported.
 
     """
 

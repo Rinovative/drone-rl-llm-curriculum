@@ -52,7 +52,7 @@ def test_summarize_loaded_config_dictionary_with_valid_tasks() -> None:
 
 def test_summarize_smoke_config_path() -> None:
     """Verify the smoke config can be loaded and summarized through the path helper."""
-    summary = curriculum_validation.summarize_config_path("configs/smoke/trajectory_validation.yaml")
+    summary = curriculum_validation.summarize_config_path("tests/fixtures/configs/smoke/trajectory_validation.yaml")
 
     expected_smoke_shapes = {"hover", "circle", "line", "vertical", "polyline"}
 

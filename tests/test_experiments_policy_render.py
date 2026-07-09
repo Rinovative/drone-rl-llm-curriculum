@@ -40,8 +40,10 @@ def test_policy_render_settings_defaults_are_expected() -> None:
     """Verify policy-render defaults stay aligned with reviewer-facing CLI expectations."""
     settings = policy_render.PolicyRenderSettings()
 
-    assert settings.model_path.as_posix().endswith("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip")
-    assert settings.config_path == Path("configs/training/ppo_tracking_smoke.yaml")
+    assert settings.model_path.as_posix().endswith(
+        "storage/runs/direct_ppo_pid_dynprev_m-taskdist_medium_seed0/training/models/direct_ppo_pid_dynprev_m-taskdist_medium_seed0.zip"
+    )
+    assert settings.config_path == Path("configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml")
     assert settings.output_dir is None
     assert settings.max_steps == policy_render.DEFAULT_MAX_STEPS
     assert settings.seed == 0
@@ -82,6 +84,83 @@ def test_policy_render_settings_reject_invalid_camera_distance() -> None:
         policy_render.PolicyRenderSettings(camera_distance=0.0)
 
 
+class _FakeObservationSpace:
+    """Tiny shape-bearing space for rollout observation-shape tests."""
+
+    def __init__(self, shape: tuple[int, ...]) -> None:
+        self.shape = shape
+
+    def __str__(self) -> str:
+        return f"FakeBox(shape={self.shape})"
+
+
+class _FakePolicyModel:
+    """Tiny model with an SB3-like observation_space attribute."""
+
+    def __init__(self, observation_shape: tuple[int, ...]) -> None:
+        self.observation_space = _FakeObservationSpace(observation_shape)
+
+    def predict(self, observation: np.ndarray, deterministic: bool) -> tuple[np.ndarray, None]:
+        del observation, deterministic
+        return np.zeros(3, dtype=np.float32), None
+
+
+class _FakePolicyEnv:
+    """Tiny env that only needs reset and observation_space before mismatch failure."""
+
+    def __init__(self, observation_shape: tuple[int, ...]) -> None:
+        self.observation_space = _FakeObservationSpace(observation_shape)
+
+    def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, object]]:
+        del seed
+        return np.zeros(self.observation_space.shape, dtype=np.float32), {}
+
+
+def test_policy_rollout_shape_mismatch_fails_before_model_predict(tmp_path: Path) -> None:
+    """Verify scenario rollouts report source-rich observation mismatches before SB3 predict."""
+    model_path = tmp_path / "policy.zip"
+    source_manifest_path = tmp_path / "run_manifest.json"
+    training_config_path = Path("configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml")
+    scenario_config_path = Path("configs/evaluation/scenarios/show_easy.yaml")
+    settings = policy_render.PolicyRenderSettings(
+        model_path=model_path,
+        max_steps=1,
+        source_manifest_path=source_manifest_path,
+        training_config_path=training_config_path,
+        evaluated_model_source="best",
+        scenario_name="show_easy",
+        scenario_config_path=scenario_config_path,
+        action_interface="pid_position",
+        normalize_actions=True,
+        include_dynamics_observation=True,
+        include_previous_action=True,
+    )
+
+    with pytest.raises(ValueError, match=r"policy rollout observation shape mismatch before model\.predict") as exc_info:
+        policy_render._run_policy_rollout(  # noqa: SLF001
+            model=_FakePolicyModel((22,)),
+            tracking_env=_FakePolicyEnv((10,)),
+            settings=settings,
+            seed=0,
+            task={"shape": "scenario", "scenario_name": "show_easy"},
+            task_shape="scenario",
+        )
+
+    message = str(exc_info.value)
+    assert "policy rollout observation shape mismatch before model.predict" in message
+    assert f"model_path={model_path}" in message
+    assert "evaluated_model_source=best" in message
+    assert f"run_manifest_path={source_manifest_path}" in message
+    assert "scenario_name=show_easy" in message
+    assert f"scenario_config_path={scenario_config_path}" in message
+    assert "model_observation_space=FakeBox(shape=(22,))" in message
+    assert "env_observation_space=FakeBox(shape=(10,))" in message
+    assert "actual_observation_shape=[10]" in message
+    assert "include_dynamics_observation=True" in message
+    assert "include_previous_action=True" in message
+    assert f"training_config_path={training_config_path}" in message
+
+
 def test_cli_parser_accepts_camera_and_render_task_options() -> None:
     """Verify parser exposes render-task and camera visibility controls."""
     parser = cli_render_policy.build_parser()
@@ -120,12 +199,14 @@ def test_cli_parser_accepts_camera_and_render_task_options() -> None:
     assert args.camera_yaw == PARSER_CAMERA_YAW
     assert args.camera_pitch == PARSER_CAMERA_PITCH
     assert args.output_dir is None
-    assert args.model_path.as_posix().endswith("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip")
+    assert args.model_path.as_posix().endswith(
+        "storage/runs/direct_ppo_pid_dynprev_m-taskdist_medium_seed0/training/models/direct_ppo_pid_dynprev_m-taskdist_medium_seed0.zip"
+    )
 
 
 def test_prepare_task_for_rollout_length_extends_short_reference() -> None:
     """Verify short tasks are densified so requested rollout lengths are reachable."""
-    config = experiments_config.load_experiment_config("configs/smoke/trajectory_validation.yaml")
+    config = experiments_config.load_experiment_config("tests/fixtures/configs/smoke/trajectory_validation.yaml")
     line_task = dict(config["tasks"][2])
 
     prepared_task, reference_samples, warnings = policy_render._prepare_task_for_rollout_length(  # noqa: SLF001
@@ -140,7 +221,7 @@ def test_prepare_task_for_rollout_length_extends_short_reference() -> None:
 
 def test_prepare_polyline_task_for_rollout_length_falls_back_to_duration_extension() -> None:
     """Verify polyline showcase tasks can be lengthened without invalid corner acceleration."""
-    config = experiments_config.load_experiment_config("configs/smoke/trajectory_validation.yaml")
+    config = experiments_config.load_experiment_config("tests/fixtures/configs/smoke/trajectory_validation.yaml")
     polyline_task = dict(config["tasks"][4])
 
     prepared_task, reference_samples, warnings = policy_render._prepare_task_for_rollout_length(  # noqa: SLF001
@@ -163,7 +244,7 @@ def test_policy_render_missing_model_path_raises_clear_error(tmp_path: Path) -> 
     with pytest.raises(FileNotFoundError, match="cli_train_tracking"):
         policy_render.run_trained_policy_render_from_paths(
             model_path=missing_model,
-            config_path=Path("configs/training/ppo_tracking_smoke.yaml"),
+            config_path=Path("tests/fixtures/configs/training/ppo_tracking_smoke.yaml"),
             output_dir=tmp_path,
             max_steps=4,
             seed=0,
@@ -173,19 +254,28 @@ def test_policy_render_missing_model_path_raises_clear_error(tmp_path: Path) -> 
 def test_policy_render_manifest_includes_rollout_summary_fields() -> None:
     """Verify manifest payload includes requested fields for rollout explainability."""
     settings = policy_render.PolicyRenderSettings()
+    render_root = "storage/runs/eval_direct_ppo_pid_dynprev_m-taskdist_medium_seed0_policy_render/evaluations/policy_render"
     payload = policy_render._build_manifest(  # noqa: SLF001
         settings=settings,
         evaluation_run_name=policy_render.DEFAULT_EVALUATION_RUN_NAME,
         mode=policy_render.TRAINED_POLICY_MODE,
-        model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
-        configured_model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
+        model_path=Path(
+            "storage/runs/direct_ppo_pid_dynprev_m-taskdist_medium_seed0/training/models/direct_ppo_pid_dynprev_m-taskdist_medium_seed0.zip"
+        ),
+        configured_model_path=Path(
+            "storage/runs/direct_ppo_pid_dynprev_m-taskdist_medium_seed0/training/models/direct_ppo_pid_dynprev_m-taskdist_medium_seed0.zip"
+        ),
         training_task_shape="line",
         evaluation_task_shape="line",
-        gif_path=Path("storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/renders/trained_policy_rollout.gif"),
-        trace_path=Path("storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/traces/trained_policy_rollout_trace.jsonl"),
+        gif_path=Path(
+            "storage/runs/eval_direct_ppo_pid_dynprev_m-taskdist_medium_seed0_policy_render/evaluations/policy_render/renders/trained_policy_rollout.gif"
+        ),
+        trace_path=Path(
+            "storage/runs/eval_direct_ppo_pid_dynprev_m-taskdist_medium_seed0_policy_render/evaluations/policy_render/traces/trained_policy_rollout_trace.jsonl"
+        ),
         plot_paths={
-            "trajectory_xy": "storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/plots/trajectory_xy.png",
-            "position_error": "storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/plots/position_error.png",
+            "trajectory_xy": f"{render_root}/plots/trajectory_xy.png",
+            "position_error": f"{render_root}/plots/position_error.png",
         },
         task_shape="line",
         task_source="config",
@@ -295,7 +385,7 @@ def test_policy_render_select_task_supports_showcase_shapes() -> None:
     selected_indices: list[int] = []
     for shape in SUPPORTED_RENDER_SHAPES:
         task, task_source, task_index, warnings = policy_render._select_task(  # noqa: SLF001
-            task_config_path=Path("configs/smoke/trajectory_validation.yaml"),
+            task_config_path=Path("tests/fixtures/configs/smoke/trajectory_validation.yaml"),
             default_task_index=0,
             render_task_shape=shape,
         )
@@ -316,12 +406,20 @@ def test_policy_render_manifest_marks_render_task_override() -> None:
         settings=settings,
         evaluation_run_name=policy_render.DEFAULT_EVALUATION_RUN_NAME,
         mode=policy_render.TRAINED_POLICY_MODE,
-        model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
-        configured_model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
+        model_path=Path(
+            "storage/runs/direct_ppo_pid_dynprev_m-taskdist_medium_seed0/training/models/direct_ppo_pid_dynprev_m-taskdist_medium_seed0.zip"
+        ),
+        configured_model_path=Path(
+            "storage/runs/direct_ppo_pid_dynprev_m-taskdist_medium_seed0/training/models/direct_ppo_pid_dynprev_m-taskdist_medium_seed0.zip"
+        ),
         training_task_shape=None,
         evaluation_task_shape="line",
-        gif_path=Path("storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/renders/trained_policy_rollout.gif"),
-        trace_path=Path("storage/runs/eval_direct_ppo_line_smoke_seed0_on_line/evaluations/policy_render/traces/trained_policy_rollout_trace.jsonl"),
+        gif_path=Path(
+            "storage/runs/eval_direct_ppo_pid_dynprev_m-taskdist_medium_seed0_policy_render/evaluations/policy_render/renders/trained_policy_rollout.gif"
+        ),
+        trace_path=Path(
+            "storage/runs/eval_direct_ppo_pid_dynprev_m-taskdist_medium_seed0_policy_render/evaluations/policy_render/traces/trained_policy_rollout_trace.jsonl"
+        ),
         plot_paths={},
         task_shape="line",
         task_source="render_override",
@@ -357,7 +455,9 @@ def test_policy_render_manifest_marks_scripted_reference_baseline() -> None:
         evaluation_run_name="eval_scripted_reference_on_line",
         mode=policy_render.SCRIPTED_REFERENCE_MODE,
         model_path=None,
-        configured_model_path=Path("storage/runs/direct_ppo_line_smoke_seed0/training/models/direct_ppo_line_smoke_seed0.zip"),
+        configured_model_path=Path(
+            "storage/runs/direct_ppo_pid_dynprev_m-taskdist_medium_seed0/training/models/direct_ppo_pid_dynprev_m-taskdist_medium_seed0.zip"
+        ),
         training_task_shape=None,
         evaluation_task_shape="line",
         gif_path=Path("storage/runs/eval_scripted_reference_on_line/evaluations/policy_render/renders/trained_policy_rollout.gif"),

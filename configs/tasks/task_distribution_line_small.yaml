@@ -1,4 +1,9 @@
 name: line_small
+task_config_role: training_distribution
+task_is_distribution: true
+sampled_per_episode: true
+constant_within_episode: true
+variation_enabled: true
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -21,8 +26,14 @@ task_distribution:
     start_hold_enabled: true
     start_hold_sec: 1.0
     exclude_start_hold_from_tracking_metrics: true
-    start: [0.0, 0.0, 1.0]
-    end: [0.5, 0.0, 1.0]
+    start:
+    - 0.0
+    - 0.0
+    - 1.0
+    end:
+    - 0.5
+    - 0.0
+    - 1.0
   family_weights:
     line: 0.75
     start_hold_then_line: 0.25
@@ -30,14 +41,30 @@ task_distribution:
     line:
       start_xy_radius_m: 0.12
       heading_jitter_deg: 20
-      length_range_m: [0.25, 0.65]
-      z_range_m: [0.85, 1.15]
-      duration_range_sec: [4.0, 7.0]
-      start_hold_range_sec: [0.5, 1.5]
+      length_range_m:
+      - 0.25
+      - 0.65
+      z_range_m:
+      - 0.85
+      - 1.15
+      duration_range_sec:
+      - 4.0
+      - 7.0
+      start_hold_range_sec:
+      - 0.5
+      - 1.5
     start_hold_then_line:
-      start_xy_radius_m: 0.10
+      start_xy_radius_m: 0.1
       heading_jitter_deg: 20
-      length_range_m: [0.20, 0.55]
-      z_range_m: [0.85, 1.15]
-      hold_duration_range_sec: [0.75, 1.75]
-      move_duration_range_sec: [3.0, 6.0]
+      length_range_m:
+      - 0.2
+      - 0.55
+      z_range_m:
+      - 0.85
+      - 1.15
+      hold_duration_range_sec:
+      - 0.75
+      - 1.75
+      move_duration_range_sec:
+      - 3.0
+      - 6.0

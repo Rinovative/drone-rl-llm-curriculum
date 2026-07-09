@@ -42,8 +42,8 @@ from . import experiments_rendering_policy as policy_render
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-DEFAULT_SCENARIO_CONFIG_PATH = Path("configs/scenarios/scripted_reference_line_polyline.yaml")
-DEFAULT_TASK_CONFIG_PATH = Path("configs/smoke/trajectory_validation.yaml")
+DEFAULT_SCENARIO_CONFIG_PATH = Path("configs/evaluation/scenarios/show_easy.yaml")
+DEFAULT_TASK_CONFIG_PATH = Path("configs/evaluation/scenario_task_catalog.yaml")
 DEFAULT_MAX_STEPS: int | None = None
 DEFAULT_MAX_STEP_SAFETY_MARGIN = 5
 DEFAULT_BASE_EPISODE_TIME_MARGIN_SEC = 1.0
@@ -236,6 +236,24 @@ class ScenarioRenderSettings:
         Optional initial stationary reference duration prepended before the first phase.
     final_hold_sec
         Optional final stationary reference duration appended after the last phase.
+    normalize_actions
+        Whether to wrap the scenario action space the same way training did.
+    action_interface
+        PPO-facing action interface used by the evaluated model.
+    rpm_delta_scale
+        RPM delta scale used by direct-RPM policies.
+    include_dynamics_observation
+        Whether the scenario env includes dynamics observations expected by training.
+    include_previous_action
+        Whether the scenario env includes previous-action observations expected by training.
+    source_manifest_path
+        Optional direct run or curriculum root manifest path used for diagnostics.
+    training_config_path
+        Optional training config path used for diagnostics.
+    final_stage_manifest_path
+        Optional curriculum final-stage manifest path used for diagnostics.
+    evaluated_model_source
+        Label describing whether the evaluated checkpoint came from best or last.
 
     """
 
@@ -261,6 +279,15 @@ class ScenarioRenderSettings:
     image_height: int = policy_render.DEFAULT_IMAGE_HEIGHT
     start_hold_sec: float = DEFAULT_START_HOLD_SEC
     final_hold_sec: float = DEFAULT_FINAL_HOLD_SEC
+    normalize_actions: bool = True
+    action_interface: str = "pid_position"
+    rpm_delta_scale: float = 0.05
+    include_dynamics_observation: bool = False
+    include_previous_action: bool = False
+    source_manifest_path: Path | None = None
+    training_config_path: Path | None = None
+    final_stage_manifest_path: Path | None = None
+    evaluated_model_source: str | None = None
 
     def __post_init__(self) -> None:
         """Validate scenario-render settings."""
@@ -270,6 +297,7 @@ class ScenarioRenderSettings:
         if self.controller not in policy_render.SUPPORTED_CONTROLLERS:
             message = f"controller must be one of: {', '.join(policy_render.SUPPORTED_CONTROLLERS)}"
             raise ValueError(message)
+        envs.actions.parse_action_interface(self.action_interface)
         if self.controller == policy_render.PPO_CONTROLLER and not self.model_run_name and self.model_path is None:
             message = "PPO scenario rendering requires model_run_name or model_path"
             raise ValueError(message)
@@ -521,12 +549,11 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
             raise RuntimeError(message)
         model = PPO.load(str(model_path), device="cpu")
 
-    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
-        composition.reference,
-        gui=False,
-        record=False,
-        max_steps=effective_max_steps,
-        episode_len_sec=base_time_limit_sec,
+    tracking_env = _make_scenario_tracking_env(
+        settings=active_settings,
+        composition=composition,
+        effective_max_steps=effective_max_steps,
+        base_time_limit_sec=base_time_limit_sec,
     )
     try:
         rollout_payload = policy_render._run_policy_rollout(  # noqa: SLF001
@@ -601,6 +628,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         completion=completion,
         policy_predict_used=bool(rollout_payload["policy_predict_used"]),
         warnings=tuple(warnings),
+        observation_check=rollout_payload.get("observation_check"),
     )
     manifest = _build_scenario_manifest(
         settings=active_settings,
@@ -627,6 +655,7 @@ def run_scenario_render(settings: ScenarioRenderSettings | None = None) -> Scena
         actual_positions=actual_positions,
         rollout_reference_positions=reference_positions,
         output_dir=output_dir,
+        observation_check=rollout_payload.get("observation_check"),
     )
     policy_render._write_manifest(manifest_path, manifest)  # noqa: SLF001
     return ScenarioRenderResult(gif_path=str(gif_path), manifest_path=str(manifest_path), metrics=metrics, warnings=tuple(warnings))
@@ -843,6 +872,11 @@ def _settings_from_mapping(config: dict[str, Any], scenario_config_path: Path) -
         camera_pitch=float(camera.get("pitch", policy_render.DEFAULT_CAMERA_PITCH_DEG)),
         start_hold_sec=float(config.get("start_hold_sec", DEFAULT_START_HOLD_SEC)),
         final_hold_sec=float(config.get("final_hold_sec", DEFAULT_FINAL_HOLD_SEC)),
+        normalize_actions=bool(config.get("normalize_actions", True)),
+        action_interface=str(config.get("action_interface", "pid_position")),
+        rpm_delta_scale=float(config.get("rpm_delta_scale") or 0.05),
+        include_dynamics_observation=bool(config.get("include_dynamics_observation", False)),
+        include_previous_action=bool(config.get("include_previous_action", False)),
     )
 
 
@@ -1839,6 +1873,30 @@ def _base_time_limit_sec(composition: ScenarioComposition) -> float:
     return float(composition.scenario_duration_sec + DEFAULT_BASE_EPISODE_TIME_MARGIN_SEC)
 
 
+def _make_scenario_tracking_env(
+    *,
+    settings: ScenarioRenderSettings,
+    composition: ScenarioComposition,
+    effective_max_steps: int,
+    base_time_limit_sec: float,
+) -> Any:
+    """Build the scenario env with the evaluated model's training action/observation flags."""
+    real_env = envs.tracking_env.make_trajectory_tracking_env(
+        composition.reference,
+        gui=False,
+        record=False,
+        max_steps=effective_max_steps,
+        episode_len_sec=base_time_limit_sec,
+        action_interface=settings.action_interface,
+        rpm_delta_scale=settings.rpm_delta_scale,
+        include_dynamics_observation=settings.include_dynamics_observation,
+        include_previous_action=settings.include_previous_action,
+    )
+    if settings.normalize_actions or envs.actions.parse_action_interface(settings.action_interface) == envs.actions.ActionInterface.DIRECT_RPM:
+        return envs.tracking_env.make_normalized_action_env(real_env)
+    return real_env
+
+
 def _resolve_model_path(settings: ScenarioRenderSettings) -> Path | None:
     """Resolve the PPO model path from storage/runs/<model_run_name>/training/models."""
     if settings.controller != policy_render.PPO_CONTROLLER:
@@ -1882,6 +1940,17 @@ def _policy_settings(
         frame_interval=active_settings.frame_interval,
         image_width=active_settings.image_width,
         image_height=active_settings.image_height,
+        normalize_actions=active_settings.normalize_actions,
+        action_interface=active_settings.action_interface,
+        rpm_delta_scale=active_settings.rpm_delta_scale,
+        include_dynamics_observation=active_settings.include_dynamics_observation,
+        include_previous_action=active_settings.include_previous_action,
+        source_manifest_path=active_settings.source_manifest_path,
+        training_config_path=active_settings.training_config_path,
+        final_stage_manifest_path=active_settings.final_stage_manifest_path,
+        evaluated_model_source=active_settings.evaluated_model_source,
+        scenario_name=_scenario_name(active_settings),
+        scenario_config_path=active_settings.scenario_config_path,
     )
 
 
@@ -1988,6 +2057,7 @@ def _build_scenario_metrics(
     completion: dict[str, Any],
     policy_predict_used: bool,
     warnings: tuple[str, ...],
+    observation_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build JSON-serializable metrics for a scenario rollout."""
     if not rewards or not position_errors:
@@ -2016,6 +2086,22 @@ def _build_scenario_metrics(
         "truncated": bool(truncated),
         "termination_reason": termination_reason,
         "warnings": list(warnings),
+        "action_interface": settings.action_interface,
+        "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == "direct_rpm" else None,
+        "normalize_actions": bool(settings.normalize_actions),
+        "include_dynamics_observation": bool(settings.include_dynamics_observation),
+        "include_previous_action": bool(settings.include_previous_action),
+        "source_manifest_path": None if settings.source_manifest_path is None else str(settings.source_manifest_path),
+        "training_config_path": None if settings.training_config_path is None else str(settings.training_config_path),
+        "final_stage_manifest_path": None if settings.final_stage_manifest_path is None else str(settings.final_stage_manifest_path),
+        "evaluated_model_source": settings.evaluated_model_source,
+        "observation_check": {} if observation_check is None else dict(observation_check),
+        "model_observation_space": None if observation_check is None else observation_check.get("model_observation_space"),
+        "model_observation_space_shape": None if observation_check is None else observation_check.get("model_observation_space_shape"),
+        "env_observation_space": None if observation_check is None else observation_check.get("env_observation_space"),
+        "env_observation_space_shape": None if observation_check is None else observation_check.get("env_observation_space_shape"),
+        "actual_reset_observation_shape": None if observation_check is None else observation_check.get("actual_reset_observation_shape"),
+        "actual_step_observation_shape": None if observation_check is None else observation_check.get("actual_step_observation_shape"),
         **completion,
     }
 
@@ -2045,6 +2131,7 @@ def _build_scenario_manifest(
     actual_positions: list[np.ndarray] | None = None,
     rollout_reference_positions: list[np.ndarray] | None = None,
     output_dir: Path | None = None,
+    observation_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the scenario render manifest payload."""
     info = {} if final_info is None else final_info
@@ -2067,6 +2154,22 @@ def _build_scenario_manifest(
         "policy_predict_used": bool(policy_predict_used),
         "true_simulator_rendering": bool(true_simulator_rendering),
         "training_task_shape": training_task_shape,
+        "evaluated_model_source": settings.evaluated_model_source,
+        "source_manifest_path": None if settings.source_manifest_path is None else str(settings.source_manifest_path),
+        "training_config_path": None if settings.training_config_path is None else str(settings.training_config_path),
+        "final_stage_manifest_path": None if settings.final_stage_manifest_path is None else str(settings.final_stage_manifest_path),
+        "action_interface": settings.action_interface,
+        "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == "direct_rpm" else None,
+        "normalize_actions": bool(settings.normalize_actions),
+        "include_dynamics_observation": bool(settings.include_dynamics_observation),
+        "include_previous_action": bool(settings.include_previous_action),
+        "observation_check": {} if observation_check is None else dict(observation_check),
+        "model_observation_space": None if observation_check is None else observation_check.get("model_observation_space"),
+        "model_observation_space_shape": None if observation_check is None else observation_check.get("model_observation_space_shape"),
+        "env_observation_space": None if observation_check is None else observation_check.get("env_observation_space"),
+        "env_observation_space_shape": None if observation_check is None else observation_check.get("env_observation_space_shape"),
+        "actual_reset_observation_shape": None if observation_check is None else observation_check.get("actual_reset_observation_shape"),
+        "actual_step_observation_shape": None if observation_check is None else observation_check.get("actual_step_observation_shape"),
         "task_config_path": str(settings.task_config_path),
         "scenario_config_path": str(settings.scenario_config_path),
         "run_name": settings.run_name,

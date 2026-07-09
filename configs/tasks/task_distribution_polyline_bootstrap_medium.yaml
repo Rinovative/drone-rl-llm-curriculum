@@ -1,4 +1,9 @@
 name: polyline_bootstrap_medium
+task_config_role: training_distribution
+task_is_distribution: true
+sampled_per_episode: true
+constant_within_episode: true
+variation_enabled: true
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -23,18 +28,36 @@ task_distribution:
     start_hold_sec: 1.0
     exclude_start_hold_from_tracking_metrics: true
     points:
-    - [0.0, 0.0, 1.0]
-    - [0.45, 0.0, 1.0]
-    - [0.45, 0.35, 1.05]
+    - - 0.0
+      - 0.0
+      - 1.0
+    - - 0.45
+      - 0.0
+      - 1.0
+    - - 0.45
+      - 0.35
+      - 1.05
   family_weights:
     l_shape: 1.0
   variations:
     l_shape:
       start_xy_radius_m: 0.15
       heading_jitter_deg: 30
-      leg1_range_m: [0.3, 0.6]
-      leg2_range_m: [0.25, 0.5]
-      z_range_m: [0.9, 1.2]
-      final_z_offset_range_m: [-0.1, 0.1]
-      duration_range_sec: [6.5, 8.5]
-      start_hold_range_sec: [1.0, 1.0]
+      leg1_range_m:
+      - 0.3
+      - 0.6
+      leg2_range_m:
+      - 0.25
+      - 0.5
+      z_range_m:
+      - 0.9
+      - 1.2
+      final_z_offset_range_m:
+      - -0.1
+      - 0.1
+      duration_range_sec:
+      - 6.5
+      - 8.5
+      start_hold_range_sec:
+      - 1.0
+      - 1.0

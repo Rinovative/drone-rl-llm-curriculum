@@ -1,5 +1,5 @@
 scenario_name: show_medium
-task_config_path: configs/smoke/trajectory_validation.yaml
+task_config_path: configs/evaluation/scenario_task_catalog.yaml
 
 controller: scripted_reference
 max_steps: 420

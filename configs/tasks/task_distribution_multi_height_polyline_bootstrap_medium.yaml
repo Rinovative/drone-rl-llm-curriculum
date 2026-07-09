@@ -1,5 +1,11 @@
 name: multi_height_polyline_bootstrap
-notes: Bounded altitude-changing polyline bootstrap distribution for LLM curriculum stages.
+task_config_role: training_distribution
+task_is_distribution: true
+sampled_per_episode: true
+constant_within_episode: true
+variation_enabled: true
+notes: Bounded altitude-changing polyline bootstrap distribution for LLM curriculum
+  stages.
 validation_limits:
   arena_xy_limit: 2.0
   min_height: 0.2
@@ -25,17 +31,35 @@ task_distribution:
     final_hold_enabled: true
     final_hold_sec: 1.0
     exclude_final_hold_from_tracking_metrics: true
-    start: [0.0, 0.0, 1.0]
-    end: [0.55, 0.0, 1.0]
+    start:
+    - 0.0
+    - 0.0
+    - 1.0
+    end:
+    - 0.55
+    - 0.0
+    - 1.0
   family_weights:
     multi_height_polyline: 1.0
   variations:
     multi_height_polyline:
-      start_xy_radius_m: 0.10
+      start_xy_radius_m: 0.1
       heading_jitter_deg: 25
-      length_range_m: [0.35, 0.75]
-      height_offset_range_m: [-0.12, 0.14]
-      z_range_m: [0.85, 1.25]
-      duration_range_sec: [6.5, 10.0]
-      start_hold_range_sec: [0.75, 1.5]
-      final_hold_range_sec: [0.75, 1.1]
+      length_range_m:
+      - 0.35
+      - 0.75
+      height_offset_range_m:
+      - -0.12
+      - 0.14
+      z_range_m:
+      - 0.85
+      - 1.25
+      duration_range_sec:
+      - 6.5
+      - 10.0
+      start_hold_range_sec:
+      - 0.75
+      - 1.5
+      final_hold_range_sec:
+      - 0.75
+      - 1.1

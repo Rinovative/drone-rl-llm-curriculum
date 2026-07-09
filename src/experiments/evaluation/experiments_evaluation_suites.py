@@ -34,7 +34,7 @@ from src import utils, validation
 from src.experiments import experiments_config as config
 
 DEFAULT_RENDER_FPS = 20
-DEFAULT_EVALUATION_SUITE_PATH = Path("configs/evaluation/final_benchmark_eval_suite.yaml")
+DEFAULT_EVALUATION_SUITE_PATH = Path("configs/evaluation/generalization_eval_suite.yaml")
 
 
 @dataclass(frozen=True)

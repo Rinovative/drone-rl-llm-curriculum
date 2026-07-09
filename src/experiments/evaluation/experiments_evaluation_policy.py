@@ -24,9 +24,11 @@ Boundaries:
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +261,20 @@ class PolicyScenarioEvaluationResult:
     metrics_path: str
     manifest_path: str
     metrics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _ScenarioEvaluationEnvSettings:
+    """PPO-facing env settings resolved for standard scenario evaluation."""
+
+    normalize_actions: bool
+    action_interface: str
+    rpm_delta_scale: float
+    include_dynamics_observation: bool
+    include_previous_action: bool
+    source_manifest_path: Path | None
+    training_config_path: Path | None
+    final_stage_manifest_path: Path | None
 
 
 def run_policy_evaluation(
@@ -614,13 +630,33 @@ def run_standard_scenario_evaluations(
     evaluated_model_source: str | None,
     run_manifest_path: Path | None = None,
     scenario_config_paths: Mapping[str, Path] | None = None,
+    normalize_actions: bool | None = None,
+    action_interface: str | None = None,
+    rpm_delta_scale: float | None = None,
+    include_dynamics_observation: bool | None = None,
+    include_previous_action: bool | None = None,
+    training_config_path: Path | None = None,
+    final_stage_manifest_path: Path | None = None,
 ) -> PolicyScenarioEvaluationResult:
     """Evaluate one trained model on the standard easy, medium, and hard show scenarios."""
     scenario_paths = dict(scenario_config_paths or STANDARD_SCENARIO_CONFIG_PATHS)
+    env_settings = _scenario_evaluation_env_settings(
+        run_manifest_path=run_manifest_path,
+        run_root=run_root,
+        source_run_kind=source_run_kind,
+        normalize_actions=normalize_actions,
+        action_interface=action_interface,
+        rpm_delta_scale=rpm_delta_scale,
+        include_dynamics_observation=include_dynamics_observation,
+        include_previous_action=include_previous_action,
+        training_config_path=training_config_path,
+        final_stage_manifest_path=final_stage_manifest_path,
+    )
     output_root = run_root / utils.artifacts.EVALUATIONS_DIRNAME / STANDARD_SCENARIO_EVALUATION_NAME
     entries: list[dict[str, Any]] = []
     for scenario_label, scenario_path in scenario_paths.items():
         loaded = scenario_render.load_scenario_render_settings(scenario_path)
+        composition = scenario_render.compose_scenario_reference(loaded)
         output_dir = output_root / _safe_name(scenario_label)
         settings = scenario_render.ScenarioRenderSettings(
             scenario_config_path=loaded.scenario_config_path,
@@ -645,15 +681,44 @@ def run_standard_scenario_evaluations(
             image_height=loaded.image_height,
             start_hold_sec=loaded.start_hold_sec,
             final_hold_sec=loaded.final_hold_sec,
+            normalize_actions=env_settings.normalize_actions,
+            action_interface=env_settings.action_interface,
+            rpm_delta_scale=env_settings.rpm_delta_scale,
+            include_dynamics_observation=env_settings.include_dynamics_observation,
+            include_previous_action=env_settings.include_previous_action,
+            source_manifest_path=env_settings.source_manifest_path,
+            training_config_path=env_settings.training_config_path,
+            final_stage_manifest_path=env_settings.final_stage_manifest_path,
+            evaluated_model_source=evaluated_model_source,
         )
         scenario_result = scenario_render.run_scenario_render(settings)
+        scenario_artifacts = _write_standard_scenario_metrics_and_diagnostics(
+            run_root=run_root,
+            run_name=run_name,
+            output_dir=output_dir,
+            scenario_label=scenario_label,
+            scenario_path=scenario_path,
+            settings=settings,
+            composition=composition,
+            scenario_result=scenario_result,
+            model_path=model_path,
+            model_run_name=model_run_name,
+            source_run_kind=source_run_kind,
+            source_curriculum_kind=source_curriculum_kind,
+            model_scope=model_scope,
+            evaluated_model_source=evaluated_model_source,
+        )
         entry = {
             "scenario_label": scenario_label,
-            "scenario_name": scenario_result.metrics.get("scenario_name"),
+            "scenario_name": scenario_artifacts["metrics"].get("scenario_name"),
             "evaluation_name": STANDARD_SCENARIO_EVALUATION_NAME,
             "scenario_config_path": str(scenario_path),
             "output_dir": str(output_dir),
             "output_dir_relative": utils.artifacts.path_relative_to(output_dir, run_root),
+            "metrics_path": str(scenario_artifacts["metrics_path"]),
+            "metrics_path_relative": utils.artifacts.path_relative_to(scenario_artifacts["metrics_path"], run_root),
+            "diagnostics_path": str(scenario_artifacts["diagnostics_path"]),
+            "diagnostics_path_relative": utils.artifacts.path_relative_to(scenario_artifacts["diagnostics_path"], run_root),
             "manifest_path": scenario_result.manifest_path,
             "manifest_path_relative": utils.artifacts.path_relative_to(scenario_result.manifest_path, run_root),
             "gif_path": scenario_result.gif_path,
@@ -666,8 +731,12 @@ def run_standard_scenario_evaluations(
             "source_curriculum_kind": source_curriculum_kind,
             "model_scope": model_scope,
             "evaluated_model_source": evaluated_model_source,
+            "failure_overall_status": scenario_artifacts["diagnostics"].get("failure_overall_status"),
+            "failure_primary_mode": scenario_artifacts["diagnostics"].get("failure_primary_mode"),
+            "failure_modes": scenario_artifacts["diagnostics"].get("failure_modes"),
             "warnings": list(scenario_result.warnings),
-            "metrics": dict(scenario_result.metrics),
+            "metrics": dict(scenario_artifacts["metrics"]),
+            "diagnostics": dict(scenario_artifacts["diagnostics"]),
         }
         entries.append(entry)
 
@@ -755,6 +824,423 @@ def run_standard_scenario_evaluations(
         )
 
     return PolicyScenarioEvaluationResult(metrics_path=str(metrics_path), manifest_path=str(manifest_path), metrics=aggregate_metrics)
+
+
+def _write_standard_scenario_metrics_and_diagnostics(
+    *,
+    run_root: Path,
+    run_name: str,
+    output_dir: Path,
+    scenario_label: str,
+    scenario_path: Path,
+    settings: scenario_render.ScenarioRenderSettings,
+    composition: scenario_render.ScenarioComposition,
+    scenario_result: scenario_render.ScenarioRenderResult,
+    model_path: Path,
+    model_run_name: str | None,
+    source_run_kind: str,
+    source_curriculum_kind: str | None,
+    model_scope: str,
+    evaluated_model_source: str | None,
+) -> dict[str, Any]:
+    """Write per-scenario metrics and diagnostics under one scenario output folder."""
+    metrics_dir = output_dir / utils.artifacts.METRICS_DIRNAME
+    diagnostics_dir = output_dir / utils.artifacts.DIAGNOSTICS_DIRNAME
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+
+    filename_stem = f"{_safe_name(run_name)}_{_safe_name(scenario_label)}_scenario"
+    metrics_path = metrics_dir / f"{filename_stem}_metrics.json"
+    diagnostics_path = diagnostics_dir / f"{filename_stem}_diagnostics.json"
+    reference_metadata = _scenario_reference_metadata(composition)
+    metrics_payload = {
+        **dict(scenario_result.metrics),
+        **reference_metadata,
+        "run_type": "evaluation",
+        "run_kind": source_run_kind,
+        "mode": "standard_scenario_evaluation",
+        "evaluation_name": STANDARD_SCENARIO_EVALUATION_NAME,
+        "evaluation_suite_name": STANDARD_SCENARIO_EVALUATION_NAME,
+        "scenario_label": scenario_label,
+        "scenario_name": scenario_result.metrics.get("scenario_name") or settings.scenario_name,
+        "scenario_config_path": str(scenario_path),
+        "task_config_path": str(settings.task_config_path),
+        "output_dir": str(output_dir),
+        "output_dir_relative": utils.artifacts.path_relative_to(output_dir, run_root),
+        "model_path": str(model_path),
+        "model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
+        "model_run_name": model_run_name,
+        "source_run_name": run_name,
+        "source_run_kind": source_run_kind,
+        "source_curriculum_kind": source_curriculum_kind,
+        "model_scope": model_scope,
+        "evaluated_model_source": evaluated_model_source,
+        "source_manifest_path": None if settings.source_manifest_path is None else str(settings.source_manifest_path),
+        "training_config_path": None if settings.training_config_path is None else str(settings.training_config_path),
+        "final_stage_manifest_path": None if settings.final_stage_manifest_path is None else str(settings.final_stage_manifest_path),
+        "action_interface": settings.action_interface,
+        "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == "direct_rpm" else None,
+        "normalize_actions": bool(settings.normalize_actions),
+        "include_dynamics_observation": bool(settings.include_dynamics_observation),
+        "include_previous_action": bool(settings.include_previous_action),
+        "evaluated_model_path": str(model_path),
+        "evaluated_model_path_relative": utils.artifacts.path_relative_to(model_path, run_root),
+        "manifest_path": scenario_result.manifest_path,
+        "manifest_path_relative": utils.artifacts.path_relative_to(scenario_result.manifest_path, run_root),
+        "gif_path": scenario_result.gif_path,
+        "gif_path_relative": utils.artifacts.path_relative_to(scenario_result.gif_path, run_root),
+        "metrics_path": str(metrics_path),
+        "metrics_path_relative": utils.artifacts.path_relative_to(metrics_path, run_root),
+        "diagnostics_path": str(diagnostics_path),
+        "diagnostics_path_relative": utils.artifacts.path_relative_to(diagnostics_path, run_root),
+    }
+    diagnostics_payload = _standard_scenario_failure_diagnostics(metrics_payload)
+    metrics_payload.update(
+        {
+            "failure_overall_status": diagnostics_payload["failure_overall_status"],
+            "failure_primary_mode": diagnostics_payload["failure_primary_mode"],
+            "failure_modes": list(diagnostics_payload["failure_modes"]),
+            "diagnostics_summary": diagnostics_payload,
+        }
+    )
+    _write_json(diagnostics_path, diagnostics_payload)
+    _write_json(metrics_path, metrics_payload)
+    _augment_standard_scenario_manifest(
+        manifest_path=Path(scenario_result.manifest_path),
+        run_root=run_root,
+        metrics_path=metrics_path,
+        diagnostics_path=diagnostics_path,
+        output_dir=output_dir,
+        metrics=metrics_payload,
+    )
+    return {
+        "metrics_path": metrics_path,
+        "diagnostics_path": diagnostics_path,
+        "metrics": metrics_payload,
+        "diagnostics": diagnostics_payload,
+    }
+
+
+def _augment_standard_scenario_manifest(
+    *,
+    manifest_path: Path,
+    run_root: Path,
+    metrics_path: Path,
+    diagnostics_path: Path,
+    output_dir: Path,
+    metrics: Mapping[str, Any],
+) -> None:
+    """Add standard-evaluation paths and completion metadata to the scenario manifest."""
+    manifest = _read_json(manifest_path)
+    trace_path = _required_existing_path(manifest.get("trace_path"), "trace_path")
+    gif_path = _required_existing_path(manifest.get("gif_path"), "gif_path")
+    plot_paths = manifest.get("plot_paths")
+    if not isinstance(plot_paths, Mapping) or not plot_paths:
+        message = f"scenario manifest must include non-empty plot_paths: {manifest_path}"
+        raise ValueError(message)
+    for plot_name, plot_path in plot_paths.items():
+        _required_existing_path(plot_path, f"plot_paths.{plot_name}")
+
+    renders_dir = output_dir / utils.artifacts.RENDERS_DIRNAME
+    traces_dir = output_dir / utils.artifacts.TRACES_DIRNAME
+    plots_dir = output_dir / utils.artifacts.PLOTS_DIRNAME
+    manifests_dir = output_dir / utils.artifacts.MANIFESTS_DIRNAME
+    manifest.update(
+        {
+            "evaluation_name": STANDARD_SCENARIO_EVALUATION_NAME,
+            "metrics_path": str(metrics_path),
+            "metrics_path_relative": utils.artifacts.path_relative_to(metrics_path, run_root),
+            "diagnostics_path": str(diagnostics_path),
+            "diagnostics_path_relative": utils.artifacts.path_relative_to(diagnostics_path, run_root),
+            "trace_path_relative": utils.artifacts.path_relative_to(trace_path, run_root),
+            "gif_path_relative": utils.artifacts.path_relative_to(gif_path, run_root),
+            "plots_dir": str(plots_dir),
+            "plots_dir_relative": utils.artifacts.path_relative_to(plots_dir, run_root),
+            "traces_dir": str(traces_dir),
+            "traces_dir_relative": utils.artifacts.path_relative_to(traces_dir, run_root),
+            "renders_dir": str(renders_dir),
+            "renders_dir_relative": utils.artifacts.path_relative_to(renders_dir, run_root),
+            "manifests_dir": str(manifests_dir),
+            "manifests_dir_relative": utils.artifacts.path_relative_to(manifests_dir, run_root),
+            "scenario_complete": True,
+            "scenario_completion_requirements": {
+                "metrics": True,
+                "diagnostics": True,
+                "manifest": True,
+                "trace": True,
+                "plot": True,
+                "render": True,
+            },
+            "render_source": "evaluated_policy_rollout_trace",
+            "policy_rollout_render_required": True,
+            "standard_scenario_metrics": dict(metrics),
+        }
+    )
+    _write_json(manifest_path, manifest)
+
+
+def _required_existing_path(value: Any, field_name: str) -> Path:
+    """Return an existing artifact path or raise a scenario-completeness error."""
+    if value is None or not str(value).strip():
+        message = f"scenario artifact manifest missing {field_name}"
+        raise ValueError(message)
+    path = Path(str(value))
+    if not path.exists():
+        message = f"scenario artifact {field_name} does not exist: {path}"
+        raise FileNotFoundError(message)
+    return path
+
+
+def _scenario_reference_metadata(composition: scenario_render.ScenarioComposition) -> dict[str, Any]:
+    """Return deterministic reference geometry metadata for scenario metrics."""
+    positions = composition.reference.positions
+    path_length_m = _reference_path_length_m(positions)
+    moving_duration_sec = max(float(composition.scenario_duration_sec) - float(composition.start_hold_sec) - float(composition.final_hold_sec), 0.0)
+    return {
+        "scenario_duration_sec": float(composition.scenario_duration_sec),
+        "scenario_reference_path_length_m": path_length_m,
+        "scenario_reference_mean_speed_mps": None if moving_duration_sec <= 0.0 else float(path_length_m / moving_duration_sec),
+        "scenario_phase_count": len(composition.phases),
+        "scenario_phase_names": [phase.name for phase in composition.phases],
+        "scenario_phase_types": [phase.phase_type for phase in composition.phases],
+        "scenario_segments": _scenario_segments(composition),
+        "start_hold_enabled": bool(composition.start_hold_sec > 0.0),
+        "start_hold_sec": float(composition.start_hold_sec),
+        "start_hold_steps": int(composition.start_hold_steps),
+        "start_hold_step_range": None if composition.start_hold_step_range is None else dict(composition.start_hold_step_range),
+        "final_hold_enabled": bool(composition.final_hold_sec > 0.0),
+        "final_hold_sec": float(composition.final_hold_sec),
+        "final_hold_steps": int(composition.final_hold_steps),
+        "final_hold_step_range": None if composition.final_hold_step_range is None else dict(composition.final_hold_step_range),
+        "reference_motion_steps": int(composition.reference_motion_steps),
+        "total_reference_steps": int(composition.total_reference_steps),
+    }
+
+
+def _scenario_segments(composition: scenario_render.ScenarioComposition) -> list[dict[str, Any]]:
+    """Return manifest-ready segment metadata for a composed scenario."""
+    segments: list[dict[str, Any]] = []
+    for index, phase in enumerate(composition.phases):
+        segments.append(
+            {
+                "index": index,
+                "name": phase.name,
+                "type": phase.phase_type,
+                "task_shape": phase.task_shape,
+                "duration_sec": phase.duration_sec,
+                "step_range": dict(composition.phase_step_ranges[index]),
+                "time_range": dict(composition.phase_time_ranges[index]),
+                "start_position": list(composition.phase_start_positions[index]),
+                "end_position": list(composition.phase_end_positions[index]),
+                "geometry": dict(composition.phase_geometry[index]),
+            }
+        )
+    return segments
+
+
+def _reference_path_length_m(positions: Any) -> float:
+    """Return cumulative XYZ path length for a sampled reference position array."""
+    rows = [tuple(float(value) for value in row) for row in positions]
+    return float(sum(math.dist(previous, current) for previous, current in pairwise(rows)))
+
+
+def _standard_scenario_failure_diagnostics(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """Build compact failure diagnostics from scenario rollout metrics."""
+    failure_modes: list[str] = []
+    if metrics.get("truncated") is True:
+        failure_modes.append("truncated")
+    if metrics.get("completed_reference_motion") is False:
+        failure_modes.append("incomplete_reference_motion")
+    if metrics.get("completed_phase_holds") is False:
+        failure_modes.append("incomplete_phase_holds")
+    if metrics.get("completed_final_hold") is False:
+        failure_modes.append("incomplete_final_hold")
+    if metrics.get("completed_reference") is False:
+        failure_modes.append("incomplete_reference")
+    ended_normally = metrics.get("ended_normally")
+    if ended_normally is False and not failure_modes:
+        failure_modes.append("abnormal_termination")
+
+    deduplicated_modes = list(dict.fromkeys(failure_modes))
+    status = "passed" if not deduplicated_modes else "failed"
+    primary_mode = "none" if not deduplicated_modes else deduplicated_modes[0]
+    return {
+        "run_type": "evaluation",
+        "evaluation_name": STANDARD_SCENARIO_EVALUATION_NAME,
+        "scenario_label": metrics.get("scenario_label"),
+        "scenario_name": metrics.get("scenario_name"),
+        "failure_overall_status": status,
+        "failure_primary_mode": primary_mode,
+        "failure_modes": deduplicated_modes,
+        "termination_reason": metrics.get("termination_reason"),
+        "terminated": metrics.get("terminated"),
+        "truncated": metrics.get("truncated"),
+        "completed_reference": metrics.get("completed_reference"),
+        "completed_reference_motion": metrics.get("completed_reference_motion"),
+        "completed_phase_holds": metrics.get("completed_phase_holds"),
+        "completed_final_hold": metrics.get("completed_final_hold"),
+        "mean_position_error_m": metrics.get("mean_position_error_m"),
+        "final_position_error_m": metrics.get("final_position_error_m"),
+        "max_position_error_m": metrics.get("max_position_error_m"),
+        "warnings": list(metrics.get("warnings") or []),
+        "evaluated_model_path": metrics.get("evaluated_model_path"),
+        "evaluated_model_source": metrics.get("evaluated_model_source"),
+        "model_scope": metrics.get("model_scope"),
+    }
+
+
+def _scenario_evaluation_env_settings(
+    *,
+    run_manifest_path: Path | None,
+    run_root: Path,
+    source_run_kind: str,
+    normalize_actions: bool | None,
+    action_interface: str | None,
+    rpm_delta_scale: float | None,
+    include_dynamics_observation: bool | None,
+    include_previous_action: bool | None,
+    training_config_path: Path | None,
+    final_stage_manifest_path: Path | None,
+) -> _ScenarioEvaluationEnvSettings:
+    """Resolve scenario env flags from run/final-stage manifests, with explicit overrides."""
+    inferred = _infer_scenario_evaluation_env_settings(
+        run_manifest_path=run_manifest_path,
+        run_root=run_root,
+        source_run_kind=source_run_kind,
+    )
+    return _ScenarioEvaluationEnvSettings(
+        normalize_actions=inferred.normalize_actions if normalize_actions is None else bool(normalize_actions),
+        action_interface=inferred.action_interface if action_interface is None else str(action_interface),
+        rpm_delta_scale=inferred.rpm_delta_scale if rpm_delta_scale is None else float(rpm_delta_scale),
+        include_dynamics_observation=inferred.include_dynamics_observation
+        if include_dynamics_observation is None
+        else bool(include_dynamics_observation),
+        include_previous_action=inferred.include_previous_action if include_previous_action is None else bool(include_previous_action),
+        source_manifest_path=inferred.source_manifest_path,
+        training_config_path=inferred.training_config_path if training_config_path is None else training_config_path,
+        final_stage_manifest_path=inferred.final_stage_manifest_path if final_stage_manifest_path is None else final_stage_manifest_path,
+    )
+
+
+def _infer_scenario_evaluation_env_settings(
+    *,
+    run_manifest_path: Path | None,
+    run_root: Path,
+    source_run_kind: str,
+) -> _ScenarioEvaluationEnvSettings:
+    """Infer scenario env settings from direct run or curriculum summary manifests."""
+    default = _default_scenario_evaluation_env_settings(run_manifest_path)
+    if run_manifest_path is None or not Path(run_manifest_path).exists():
+        return default
+
+    manifest_path = Path(run_manifest_path)
+    manifest = _read_json(manifest_path)
+    run_kind = str(manifest.get("run_kind") or source_run_kind)
+    if run_kind == "direct_ppo":
+        return _direct_scenario_evaluation_env_settings(manifest=manifest, manifest_path=manifest_path, run_root=run_root)
+    if run_kind == "curriculum":
+        return _curriculum_scenario_evaluation_env_settings(manifest=manifest, manifest_path=manifest_path, run_root=run_root)
+    return default
+
+
+def _default_scenario_evaluation_env_settings(source_manifest_path: Path | None) -> _ScenarioEvaluationEnvSettings:
+    """Return conservative default scenario env settings for compatibility-only callers."""
+    return _ScenarioEvaluationEnvSettings(
+        normalize_actions=True,
+        action_interface="pid_position",
+        rpm_delta_scale=0.05,
+        include_dynamics_observation=False,
+        include_previous_action=False,
+        source_manifest_path=source_manifest_path,
+        training_config_path=None,
+        final_stage_manifest_path=None,
+    )
+
+
+def _direct_scenario_evaluation_env_settings(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    run_root: Path,
+) -> _ScenarioEvaluationEnvSettings:
+    """Resolve scenario env settings from a direct PPO run manifest."""
+    env_kwargs = _evaluation_env_kwargs_from_manifest(manifest, manifest_path)
+    config_payload = _mapping_or_empty(manifest.get("config"))
+    return _ScenarioEvaluationEnvSettings(
+        normalize_actions=bool(manifest.get("normalize_actions", config_payload.get("normalize_actions", True))),
+        action_interface=str(env_kwargs["action_interface"]),
+        rpm_delta_scale=float(env_kwargs["rpm_delta_scale"]),
+        include_dynamics_observation=bool(env_kwargs["include_dynamics_observation"]),
+        include_previous_action=bool(env_kwargs["include_previous_action"]),
+        source_manifest_path=manifest_path,
+        training_config_path=_training_config_path_from_manifest_payload(manifest, run_root=run_root),
+        final_stage_manifest_path=None,
+    )
+
+
+def _curriculum_scenario_evaluation_env_settings(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    run_root: Path,
+) -> _ScenarioEvaluationEnvSettings:
+    """Resolve scenario env settings from the final stage of a curriculum manifest."""
+    stages = manifest.get("stages")
+    if not isinstance(stages, list) or not stages:
+        return _default_scenario_evaluation_env_settings(manifest_path)
+    final_stage = _mapping_or_empty(stages[-1])
+    stage_manifest_path = None
+    if isinstance(final_stage.get("manifest_path"), str) and str(final_stage.get("manifest_path")).strip():
+        stage_manifest_path = _resolve_manifest_path(str(final_stage["manifest_path"]), run_root=run_root)
+    stage_manifest = _mapping_or_empty(_read_json(stage_manifest_path) if stage_manifest_path is not None and stage_manifest_path.exists() else {})
+    stage_config = _mapping_or_empty(stage_manifest.get("config"))
+    return _ScenarioEvaluationEnvSettings(
+        normalize_actions=bool(
+            final_stage.get("normalize_actions", stage_manifest.get("normalize_actions", stage_config.get("normalize_actions", True)))
+        ),
+        action_interface=str(
+            final_stage.get("action_interface") or stage_manifest.get("action_interface") or stage_config.get("action_interface") or "pid_position"
+        ),
+        rpm_delta_scale=float(
+            final_stage.get("rpm_delta_scale") or stage_manifest.get("rpm_delta_scale") or stage_config.get("rpm_delta_scale") or 0.05
+        ),
+        include_dynamics_observation=bool(
+            final_stage.get(
+                "include_dynamics_observation",
+                stage_manifest.get("include_dynamics_observation", stage_config.get("include_dynamics_observation", False)),
+            )
+        ),
+        include_previous_action=bool(
+            final_stage.get(
+                "include_previous_action",
+                stage_manifest.get("include_previous_action", stage_config.get("include_previous_action", False)),
+            )
+        ),
+        source_manifest_path=manifest_path,
+        training_config_path=_training_config_path_from_manifest_payload(stage_manifest, run_root=run_root),
+        final_stage_manifest_path=stage_manifest_path,
+    )
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    """Return a mapping payload or an empty mapping for optional manifest sections."""
+    return value if isinstance(value, Mapping) else {}
+
+
+def _training_config_path_from_manifest_payload(manifest: Mapping[str, Any], *, run_root: Path) -> Path | None:
+    """Resolve the training config path recorded in a run or stage manifest."""
+    config_payload = _mapping_or_empty(manifest.get("config"))
+    for candidate in (
+        manifest.get("training_config_path"),
+        manifest.get("source_config_path"),
+        config_payload.get("training_config_snapshot_path_relative"),
+        config_payload.get("training_config_snapshot_path"),
+        config_payload.get("training_config_path"),
+        config_payload.get("source_config_path"),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return _resolve_manifest_path(candidate, run_root=run_root)
+    return None
 
 
 def run_direct_policy_suite_evaluation(
@@ -1430,6 +1916,13 @@ def _write_render_artifact(
         seed=spec.seed,
         gif_filename="scenario_rollout.gif",
         frame_interval=_frame_interval_for_fps(render_fps),
+        normalize_actions=spec.normalize_actions,
+        action_interface=spec.action_interface,
+        rpm_delta_scale=spec.rpm_delta_scale,
+        include_dynamics_observation=spec.include_dynamics_observation,
+        include_previous_action=spec.include_previous_action,
+        source_manifest_path=spec.source_manifest_path,
+        evaluated_model_source=spec.evaluated_model_source,
     )
     render_env = _make_policy_evaluation_env(spec=spec, task=task, record=False, max_steps=render_steps)
     try:

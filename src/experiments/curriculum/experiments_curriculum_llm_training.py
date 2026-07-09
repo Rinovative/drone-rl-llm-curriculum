@@ -38,7 +38,7 @@ from src.experiments import experiments_config as config_loader
 from src.experiments.curriculum import experiments_curriculum_training as manual_curriculum
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
-DEFAULT_LLM_CURRICULUM_CONFIG_PATH = Path("configs/curricula/curriculum_llm_smoke.yaml")
+DEFAULT_LLM_CURRICULUM_CONFIG_PATH = Path("configs/curricula/llm_curriculum_pid_dynprev_m-taskdist_medium.yaml")
 LLM_CURRICULUM_KIND = "llm"
 LLM_CURRICULUM_MODE = "llm_curriculum"
 DEFAULT_RECENT_CONTEXT_LIMIT = 3
@@ -2276,6 +2276,7 @@ def _llm_context_history_item(entry: Mapping[str, Any]) -> dict[str, Any]:
 def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metrics_summary: Mapping[str, Any]) -> dict[str, Any]:
     """Return aggregate LLM context that avoids readiness labels."""
     family_counts: dict[str, int] = {}
+    family_errors: dict[str, list[float]] = {}
     position_errors: list[float] = []
     repeated_failure_modes: dict[str, int] = {}
     for entry in stage_entries:
@@ -2284,30 +2285,69 @@ def _llm_context_summary(stage_entries: Sequence[Mapping[str, Any]], latest_metr
             family_counts[family] = family_counts.get(family, 0) + 1
         error = entry.get("mean_position_error_tracking_m", entry.get("mean_position_error_m"))
         if isinstance(error, (int, float)):
-            position_errors.append(float(error))
+            error_value = float(error)
+            position_errors.append(error_value)
+            if family:
+                family_errors.setdefault(family, []).append(error_value)
         failure_mode = entry.get("failure_primary_mode")
         if failure_mode is not None and str(failure_mode).strip():
             key = str(failure_mode)
             repeated_failure_modes[key] = repeated_failure_modes.get(key, 0) + 1
+
+    ranked_families = _rank_task_families_by_error(family_errors)
+    trend = _position_error_trend(position_errors)
+    allowed_families = [
+        family for family in envs.task_distribution.supported_task_families() if family != envs.task_distribution.FAMILY_BASIC_TRAINING_SHOW
+    ]
     return {
         "completed_stage_count": len(stage_entries),
+        "previous_stage_task_family": _accepted_stage_family(stage_entries[-1]) if stage_entries else None,
+        "previous_stage_task_shape": stage_entries[-1].get("task_shape") if stage_entries else None,
         "accepted_task_family_counts": family_counts,
         "last_accepted_task_family": _accepted_stage_family(stage_entries[-1]) if stage_entries else None,
-        "position_error_trend": _position_error_trend(position_errors),
+        "position_error_trend": trend,
+        "trend_status": trend,
+        "recent_improvements": ["mean_position_error_tracking_m"] if trend == "improving" else [],
+        "recent_regressions": ["mean_position_error_tracking_m"] if trend == "worsening" else [],
         "repeated_failure_modes": repeated_failure_modes,
+        "top_repeated_failure_modes": _top_repeated_failure_modes(repeated_failure_modes),
+        "strongest_task_families": ranked_families[:3],
+        "weakest_task_families": list(reversed(ranked_families[-3:])),
         "latest_metrics_summary": dict(latest_metrics_summary),
-        "allowed_task_families": [
-            family for family in envs.task_distribution.supported_task_families() if family != envs.task_distribution.FAMILY_BASIC_TRAINING_SHOW
-        ],
-        "task_families_with_bounded_variation_support": list(envs.task_distribution.supported_task_families()),
+        "recommended_avoid_immediate_duplicate_family": True,
+        "allowed_task_families": allowed_families,
+        "task_families_with_bounded_variation_support": allowed_families,
+        "task_families_without_bounded_variation_support": [],
+        "own_task_status": "tracked_separately_from_llm_prompt" if latest_metrics_summary else "unknown",
+        "generalization_status": "tracked_separately_from_llm_prompt",
+        "scenario_status": "stress_test_not_readiness_gate",
         "readiness_level_omitted_from_llm_context": True,
         "diagnostic_guidance": {
             "prefer_metrics_over_readiness_label": True,
+            "do_not_overreact_to_single_failure_mode": True,
             "action_saturation": "treat_as_task_difficulty_signal_unless_crash_or_divergence_confirms_instability",
+            "z_instability": "treat_as_diagnostic_signal_unless_repeated_or_control_divergence_confirms_instability",
             "reference_too_fast": "treat_as_task_difficulty_signal_unless_crash_or_divergence_confirms_instability",
+            "reference_too_fast_or_too_hard": "treat_as_task_difficulty_signal_not_policy_instability",
             "accepted_concrete_tasks_are_materialized_as_bounded_distributions": True,
+            "hard_scenarios_are_stress_tests_not_whole_policy_readiness_labels": True,
         },
     }
+
+
+def _rank_task_families_by_error(family_errors: Mapping[str, Sequence[float]]) -> list[str]:
+    """Return task families ordered from lowest to highest recent tracking error."""
+    means = []
+    for family, errors in family_errors.items():
+        if errors:
+            means.append((sum(float(error) for error in errors) / len(errors), family))
+    return [family for _, family in sorted(means)]
+
+
+def _top_repeated_failure_modes(failure_modes: Mapping[str, int]) -> list[dict[str, Any]]:
+    """Return the top repeated failure modes as compact prompt records."""
+    ranked = sorted(((int(count), str(mode)) for mode, count in failure_modes.items()), reverse=True)
+    return [{"failure_mode": mode, "count": count} for count, mode in ranked[:3]]
 
 
 def _position_error_trend(errors: Sequence[float]) -> str:

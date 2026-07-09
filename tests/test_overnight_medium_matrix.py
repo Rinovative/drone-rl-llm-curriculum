@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -65,27 +66,27 @@ LLM_BUDGET_PROFILE_TIMESTEPS = {
     "extend": 400000,
 }
 LLM_BUDGET_MULTIPLIERS = {"bootstrap": 1.0, "short": 0.35, "normal": 0.5, "recovery": 0.65, "extend": 0.8}
+FINAL_DIRECT_PPO_COUNT = 14
 BASIC_TRAINING_SHOW_DIRECT_PPO_IDS = {
-    "direct_ppo_pid_baseline_medium_seed0",
-    "direct_ppo_pid_dynprev_medium_seed0",
-    "direct_ppo_directrpm_dynprev_medium_seed0",
+    "direct_ppo_pid_dynprev_basic_show_seed0",
+    "direct_ppo_directrpm_dynprev_basic_show_seed0",
 }
 
 EXPECTED_EXPERIMENT_IDS = {
-    "direct_ppo_pid_baseline_medium_seed0",
-    "direct_ppo_pid_dynprev_medium_seed0",
-    "direct_ppo_directrpm_dynprev_medium_seed0",
+    "direct_ppo_pid_dynprev_basic_show_seed0",
+    "direct_ppo_directrpm_dynprev_basic_show_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_seed0",
-    "direct_ppo_pid_dynprev_net128_small_m-taskdist_medium_seed0",
-    "direct_ppo_pid_dynprev_net512_large_m-taskdist_medium_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_seed0",
-    "direct_ppo_directrpm_dynprev_net512_large_m-taskdist_medium_seed0",
+    "direct_ppo_pid_dynprev_net256_m-taskdist_medium_seed0",
+    "direct_ppo_directrpm_dynprev_net256_m-taskdist_medium_seed0",
     "direct_ppo_pid_dynprev_m-taskdist_medium_low_lr_seed0",
-    "direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0",
-    "direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0",
-    "direct_ppo_pid_dynprev_m-taskdist_medium_targetkl015_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_low_lr_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_ent005_seed0",
     "direct_ppo_directrpm_dynprev_m-taskdist_medium_ent005_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_clip010_seed0",
+    "direct_ppo_directrpm_dynprev_m-taskdist_medium_clip010_seed0",
+    "direct_ppo_pid_dynprev_m-taskdist_medium_targetkl015_seed0",
+    "direct_ppo_directrpm_dynprev_m-taskdist_medium_targetkl015_seed0",
     "curriculum_manual_pid_dynprev_m-taskdist_medium_seed0",
     "curriculum_manual_directrpm_dynprev_m-taskdist_medium_seed0",
     "llm_curriculum_pid_dynprev_m-taskdist_medium_seed0",
@@ -107,6 +108,43 @@ def _assert_randomized_distribution_config(config_path: Path) -> envs.task_distr
     sampled = envs.task_distribution.sample_task(settings)
     assert validation.tasks.validate_task(sampled, limits=settings.validation_limits).is_valid
     return settings
+
+
+def _task_smoke_signature(task: dict[str, object]) -> dict[str, object]:
+    """Return compact source-of-truth fields for one sampled episode task."""
+    points = task.get("points")
+    point_list = points if isinstance(points, list) else []
+    return {
+        "task_family": task.get("training_task_kind") or task.get("show_name") or task.get("shape"),
+        "task_shape": task.get("shape"),
+        "start": task.get("start") or task.get("position") or (point_list[0] if point_list else None),
+        "end": task.get("end") or (point_list[-1] if point_list else None),
+        "duration_sec": task.get("duration_sec"),
+        "start_hold_sec": task.get("start_hold_sec"),
+        "final_hold_sec": task.get("final_hold_sec"),
+        "reference_signature": json.dumps(task, sort_keys=True, default=str),
+    }
+
+
+def _assert_varied_reproducible_episode_sampling(config_path: Path) -> list[dict[str, object]]:
+    """Verify a training distribution samples varied, reproducible per-episode tasks."""
+    settings = _assert_randomized_distribution_config(config_path)
+    first_sampler = envs.task_distribution.TaskDistributionSampler(settings, env_rank=0)
+    repeated_sampler = envs.task_distribution.TaskDistributionSampler(settings, env_rank=0)
+
+    first_tasks = [first_sampler.sample_task() for _ in range(4)]
+    repeated_tasks = [repeated_sampler.sample_task() for _ in range(4)]
+    signatures = [_task_smoke_signature(task) for task in first_tasks]
+
+    assert first_tasks == repeated_tasks
+    assert len({signature["reference_signature"] for signature in signatures}) > 1
+    for task in first_tasks:
+        if "sampled_per_episode" in task:
+            assert task["sampled_per_episode"] is True
+        if "constant_within_episode" in task:
+            assert task["constant_within_episode"] is True
+        assert validation.tasks.validate_task(task, limits=settings.validation_limits).is_valid
+    return signatures
 
 
 def _assert_manual_medium_curriculum_stage_distributions(settings: manual_training.ManualCurriculumSettings) -> None:
@@ -154,6 +192,33 @@ def test_lane_assignment_contains_exact_approved_matrix() -> None:
     assert all("task_distribution_tracking_small" not in row["config_path"] for row in rows)
 
 
+def test_final_direct_ppo_variants_are_symmetric_and_minimal() -> None:
+    """Verify final direct-PPO variants are paired across PID and direct-RPM."""
+    direct_ids = {row["experiment_id"] for row in _assignment_rows() if row["kind"] == "direct_ppo"}
+    expected_suffixes = {
+        "basic_show",
+        "m-taskdist_medium",
+        "net256_m-taskdist_medium",
+        "m-taskdist_medium_low_lr",
+        "m-taskdist_medium_ent005",
+        "m-taskdist_medium_clip010",
+        "m-taskdist_medium_targetkl015",
+    }
+
+    assert len(direct_ids) == FINAL_DIRECT_PPO_COUNT
+    assert not any("net512" in experiment_id for experiment_id in direct_ids)
+    assert not any("net128_small" in experiment_id for experiment_id in direct_ids)
+    assert not any("baseline" in experiment_id for experiment_id in direct_ids)
+    for suffix in expected_suffixes:
+        assert f"direct_ppo_pid_dynprev_{suffix}_seed0" in direct_ids
+        assert f"direct_ppo_directrpm_dynprev_{suffix}_seed0" in direct_ids
+
+    profile_suffixes = {"low_lr", "ent005", "clip010", "targetkl015"}
+    for profile in profile_suffixes:
+        assert f"direct_ppo_pid_dynprev_m-taskdist_medium_{profile}_seed0" in direct_ids
+        assert f"direct_ppo_directrpm_dynprev_m-taskdist_medium_{profile}_seed0" in direct_ids
+
+
 def test_lane_unit_counts_are_balanced() -> None:
     """Verify each lane has the same inferred unit count."""
     totals: dict[str, int] = {}
@@ -183,12 +248,10 @@ def test_all_listed_configs_exist_and_match_run_names() -> None:
             assert settings.termination_limits.terminate_on_base_truncation is False
             assert settings.ppo_config.policy_kwargs is not None
             net_arch = settings.ppo_config.policy_kwargs["net_arch"]
-            if "net128_small" in row["experiment_id"]:
-                assert net_arch == {"pi": [128, 128], "vf": [128, 128]}
-            elif "net512_large" in row["experiment_id"]:
-                assert net_arch == {"pi": [512, 512], "vf": [512, 512]}
-            else:
+            if "net256" in row["experiment_id"]:
                 assert net_arch == {"pi": [256, 256], "vf": [256, 256]}
+            else:
+                assert net_arch == {"pi": [128, 128], "vf": [128, 128]}
             if row["experiment_id"].endswith("_low_lr_seed0"):
                 assert settings.ppo_config.learning_rate == LOW_LR_PPO_LEARNING_RATE
                 assert settings.ppo_config.ent_coef == DEFAULT_PPO_ENT_COEF
@@ -295,11 +358,55 @@ def test_direct_ppo_training_configs_use_intended_task_distribution() -> None:
             assert settings.task_index == BASIC_TRAINING_SHOW_TASK_INDEX
             task_config = yaml.safe_load(settings.task_config_path.read_text(encoding="utf-8"))
             task = task_config["tasks"][settings.task_index]
+            assert task_config["task_config_role"] == "representative_eval_only"
+            assert task_config["training_task_distribution_config_paths"]["basic_training_show"] == str(BASIC_TRAINING_SHOW_DISTRIBUTION_CONFIG)
             assert task["shape"] == validation.contracts.SHAPE_BASIC_TRAINING_SHOW
             assert task["show_name"] == "basic_training_show"
             assert task["task_is_show"] is True
         else:
             assert settings.task_distribution_config_path is None
+
+
+def test_overnight_training_distribution_paths_sample_varied_reproducible_episode_tasks() -> None:
+    """Smoke-test scheduled no-training task sources for varied per-episode sampling."""
+    direct_distribution_paths = {
+        "direct_basic_show_pid": ppo_tracking.load_ppo_tracking_settings(
+            "configs/training/ppo_tracking_pid_dynprev_basic_show.yaml"
+        ).task_distribution_config_path,
+        "direct_basic_show_directrpm": ppo_tracking.load_ppo_tracking_settings(
+            "configs/training/ppo_tracking_directrpm_dynprev_basic_show.yaml"
+        ).task_distribution_config_path,
+        "direct_tracking_medium_pid": ppo_tracking.load_ppo_tracking_settings(
+            "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml"
+        ).task_distribution_config_path,
+        "direct_tracking_medium_directrpm": ppo_tracking.load_ppo_tracking_settings(
+            "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium.yaml"
+        ).task_distribution_config_path,
+    }
+    manual_settings = manual_training.load_manual_curriculum_settings("configs/curricula/curriculum_pid_dynprev_m-taskdist_medium.yaml")
+    llm_settings = llm_training.load_llm_curriculum_settings("configs/curricula/llm_curriculum_pid_dynprev_m-taskdist_medium.yaml")
+    distribution_paths = {
+        **direct_distribution_paths,
+        **{f"manual_stage_{index}": stage.training_task_distribution_config_path for index, stage in enumerate(manual_settings.stages, start=1)},
+        "llm_stage_1_bootstrap": llm_settings.bootstrap_stage.task_distribution_config_path,
+    }
+
+    assert distribution_paths["direct_basic_show_pid"] == BASIC_TRAINING_SHOW_DISTRIBUTION_CONFIG
+    assert distribution_paths["direct_basic_show_directrpm"] == BASIC_TRAINING_SHOW_DISTRIBUTION_CONFIG
+    assert distribution_paths["direct_tracking_medium_pid"] == TRACKING_MEDIUM_DISTRIBUTION_CONFIG
+    assert distribution_paths["direct_tracking_medium_directrpm"] == TRACKING_MEDIUM_DISTRIBUTION_CONFIG
+    assert [distribution_paths[f"manual_stage_{index}"] for index in range(1, 6)] == list(MANUAL_STAGE_DISTRIBUTION_CONFIGS)
+    assert distribution_paths["llm_stage_1_bootstrap"] == BOOTSTRAP_HOVER_DISTRIBUTION_CONFIG
+
+    signatures_by_source = {label: _assert_varied_reproducible_episode_sampling(config_path) for label, config_path in distribution_paths.items()}
+
+    assert signatures_by_source["direct_basic_show_pid"][0]["task_shape"] == validation.contracts.SHAPE_BASIC_TRAINING_SHOW
+    assert signatures_by_source["direct_basic_show_directrpm"][0]["task_shape"] == validation.contracts.SHAPE_BASIC_TRAINING_SHOW
+    assert signatures_by_source["manual_stage_1"][0]["task_shape"] == "hover_stabilization"
+    assert signatures_by_source["manual_stage_2"][0]["task_shape"] == "vertical"
+    assert signatures_by_source["manual_stage_3"][0]["task_shape"] == "start_hold_then_short_line"
+    assert signatures_by_source["manual_stage_4"][0]["task_shape"] == "polyline"
+    assert signatures_by_source["llm_stage_1_bootstrap"][0]["task_shape"] == "hover_stabilization"
 
 
 def test_task_distribution_configs_and_families_validate() -> None:
@@ -439,13 +546,13 @@ def test_runner_and_helper_scripts_have_valid_bash_syntax() -> None:
 
 
 def test_local_llm_smoke_config_still_loads() -> None:
-    """Verify the old local LLM smoke config remains valid but unscheduled."""
-    settings = llm_training.load_llm_curriculum_settings("configs/curricula/curriculum_llm_local_smoke.yaml")
+    """Verify the local LLM smoke fixture remains valid but unscheduled."""
+    settings = llm_training.load_llm_curriculum_settings("tests/fixtures/configs/curricula/llm_curriculum_local_smoke.yaml")
 
-    assert settings.curriculum_name == "curriculum_llm_local_smoke"
+    assert settings.curriculum_name == "llm_curriculum_local_smoke"
     assert settings.llm_provider == "openai_compatible"
     llm_training.validate_llm_curriculum(settings)
-    assert "curriculum_llm_local_smoke" not in {row["experiment_id"] for row in _assignment_rows()}
+    assert "llm_curriculum_local_smoke" not in {row["experiment_id"] for row in _assignment_rows()}
 
 
 def test_no_source_controlled_output_dirs_in_matrix_configs() -> None:
@@ -457,6 +564,39 @@ def test_no_source_controlled_output_dirs_in_matrix_configs() -> None:
             value = payload.get(key) if isinstance(payload, dict) else None
             if isinstance(value, str):
                 assert not value.startswith(forbidden_prefixes)
+
+
+def test_active_evaluation_paths_do_not_reference_compatibility_configs() -> None:
+    """Verify overnight and standard-evaluation paths use only canonical active eval configs."""
+    assert not Path("configs/evaluation/compatibility").exists()
+
+    active_files = [
+        Path("scripts/experiment_matrix.sh"),
+        Path("scripts/experiment_runner_common.sh"),
+        Path("scripts/evaluate_variation_suite.sh"),
+        Path("scripts/render_run_gifs.sh"),
+        Path("docs/experiments/overnight_lane_assignment.tsv"),
+        Path("docs/experiments/overnight_runner_usage.md"),
+        Path("docs/experiments/config_structure.md"),
+        Path("src/experiments/evaluation/experiments_evaluation_policy.py"),
+        Path("src/experiments/evaluation/experiments_evaluation_suites.py"),
+        Path("src/experiments/rendering/experiments_rendering_scenario.py"),
+    ]
+    for active_file in active_files:
+        assert "configs/evaluation/compatibility" not in active_file.read_text(encoding="utf-8")
+
+    variation_helper = Path("scripts/evaluate_variation_suite.sh").read_text(encoding="utf-8")
+    assert "configs/evaluation/generalization_eval_suite.yaml" in variation_helper
+
+    scenario_paths = sorted(path.as_posix() for path in Path("configs/evaluation/scenarios").glob("*.yaml"))
+    assert scenario_paths == [
+        "configs/evaluation/scenarios/show_easy.yaml",
+        "configs/evaluation/scenarios/show_hard.yaml",
+        "configs/evaluation/scenarios/show_medium.yaml",
+    ]
+    for scenario_path in scenario_paths:
+        payload = yaml.safe_load(Path(scenario_path).read_text(encoding="utf-8"))
+        assert payload["task_config_path"] == "configs/evaluation/scenario_task_catalog.yaml"
 
 
 def test_runner_preserves_wandb_and_simplified_evaluation_phase_order() -> None:

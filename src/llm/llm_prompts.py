@@ -101,7 +101,11 @@ def build_task_proposal_messages(
         "Propose the next training task using this bounded context. Prefer a small, feasible progression from the latest accepted task. "
         "Do not repeat immediate_previous_stage_task_shape; choose a different task family/shape as a concrete task or known distribution. "
         "Use curriculum_history and curriculum_summary to avoid looping on the same family and to choose concrete, safe progressions. "
-        "Treat action_saturation and reference_too_fast as task-difficulty signals, not automatic instability labels. "
+        "Use concrete metrics and trends instead of a single readiness_level; readiness_level is intentionally omitted from context. "
+        "Do not overreact to one failure mode. Treat action_saturation, z_instability, and reference_too_fast_or_too_hard "
+        "as diagnostic context or task-difficulty signals unless repeated crash/divergence metrics confirm true control instability. "
+        "Do not choose broad shows, scenarios, or basic_training_show as normal LLM stages; "
+        "every accepted stage should train on a bounded per-episode distribution. "
         "If adaptive budget profiles are enabled, choose only a stage_budget_profile from llm_stage_budget.allowed_profile_names; "
         "bootstrap is for stage 1 warmup, short is for easy confirmation, normal is default progression, "
         "recovery is for unstable but promising behavior, and extend is for appropriate but undertrained stages. "
@@ -184,8 +188,9 @@ def build_task_repair_messages(
         "Return either a concrete task with task_type and shape, or a valid task-distribution reference from the supported list "
         "using task_distribution_id or task_distribution_config_path. "
         "Use supported shapes, supported task-distribution families, concrete safe task values, "
-        "and remember that action_saturation/reference_too_fast diagnose difficulty unless other metrics show instability, "
-        "known distribution ids/paths, and one budget profile from llm_stage_budget.allowed_profile_names. "
+        "and remember that action_saturation, z_instability, and reference_too_fast_or_too_hard diagnose difficulty "
+        "unless repeated crash/divergence metrics show true instability. Do not choose broad shows, scenarios, or basic_training_show "
+        "as normal LLM stages; known distribution ids/paths and one budget profile from llm_stage_budget.allowed_profile_names are required. "
         "If stage_budget_profile is invalid, repair it to an allowed profile; "
         "bootstrap is for stage 1 only and arbitrary timestep values are forbidden. "
         "Return a replacement JSON object only.\n"
@@ -226,8 +231,12 @@ def _context_payload(
             "readiness_level_omitted": True,
             "use_concrete_metrics_and_trends": True,
             "action_saturation": "difficulty_signal_not_automatic_instability",
+            "z_instability": "diagnostic_signal_not_automatic_instability",
             "reference_too_fast": "difficulty_signal_not_automatic_instability",
+            "reference_too_fast_or_too_hard": "difficulty_signal_not_automatic_instability",
             "instability_requires_supporting_crash_or_divergence_metrics": True,
+            "avoid_normal_stage_families": ["basic_training_show", "broad_suite", "variation_suite", "scenario", "show"],
+            "accepted_stages_train_on_bounded_per_episode_distributions": True,
         },
     }
 

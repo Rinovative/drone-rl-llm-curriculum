@@ -245,10 +245,9 @@ def test_task_distribution_training_configs_load() -> None:
     """Verify new task-distribution training configs resolve through the PPO loader."""
     for config_path in (
         "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
-        "configs/training/ppo_tracking_pid_dynprev_net128_small_m-taskdist_medium.yaml",
-        "configs/training/ppo_tracking_pid_dynprev_net512_large_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_pid_dynprev_net256_m-taskdist_medium.yaml",
         "configs/training/ppo_tracking_directrpm_dynprev_m-taskdist_medium.yaml",
-        "configs/training/ppo_tracking_directrpm_dynprev_net512_large_m-taskdist_medium.yaml",
+        "configs/training/ppo_tracking_directrpm_dynprev_net256_m-taskdist_medium.yaml",
     ):
         settings = ppo_tracking.load_ppo_tracking_settings(config_path)
         assert settings.task_distribution_settings is not None
@@ -257,10 +256,10 @@ def test_task_distribution_training_configs_load() -> None:
         assert settings.include_previous_action is True
 
 
-def test_new_evaluation_suites_load() -> None:
-    """Verify variation and broad suites validate every fixed task."""
-    variation = evaluation_suites.load_evaluation_suite("configs/evaluation/evaluation_task_suite_variation.yaml")
-    broad = evaluation_suites.load_evaluation_suite("configs/evaluation/evaluation_task_suite_broad.yaml")
+def test_legacy_evaluation_suite_fixtures_load() -> None:
+    """Verify legacy variation and broad suite fixtures validate every fixed task."""
+    variation = evaluation_suites.load_evaluation_suite("tests/fixtures/configs/evaluation/evaluation_task_suite_variation.yaml")
+    broad = evaluation_suites.load_evaluation_suite("tests/fixtures/configs/evaluation/evaluation_task_suite_broad.yaml")
 
     assert "line_slow" in variation.task_names
     assert "circle_slow" in broad.task_names

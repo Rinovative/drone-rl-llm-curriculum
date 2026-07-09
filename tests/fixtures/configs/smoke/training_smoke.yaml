@@ -1,5 +1,5 @@
 name: training_smoke_mvp
-task_config_path: configs/smoke/trajectory_validation.yaml
+task_config_path: tests/fixtures/configs/smoke/trajectory_validation.yaml
 task_index: 0
 max_steps: 16
 output_filename: training_smoke_metrics.json

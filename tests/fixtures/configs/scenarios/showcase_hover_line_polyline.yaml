@@ -1,5 +1,5 @@
 scenario_name: showcase_hover_line_polyline
-task_config_path: configs/smoke/trajectory_validation.yaml
+task_config_path: tests/fixtures/configs/smoke/trajectory_validation.yaml
 
 controller: ppo
 model_run_name: direct_ppo_line_final_seed0

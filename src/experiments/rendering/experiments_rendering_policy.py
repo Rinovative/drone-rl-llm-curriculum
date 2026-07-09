@@ -5,7 +5,7 @@ experiments_rendering_policy.py
 Render a trained PPO policy rollout on TrajectoryTrackingEnv with external camera capture.
 
 Responsibilities:
-  - Load PPO smoke settings and a persisted Stable-Baselines3 PPO model
+  - Load PPO tracking settings and a persisted Stable-Baselines3 PPO model
   - Run a bounded deterministic policy rollout on TrajectoryTrackingEnv
   - Capture true simulator external-camera frames and encode a GIF artifact
   - Add visual-only simulator overlays for reference, target, and flown path review
@@ -26,7 +26,7 @@ Boundaries:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -37,11 +37,11 @@ from src import envs, evaluation, utils
 from src.experiments import experiments_config as config_loader
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
 
-DEFAULT_PPO_CONFIG_PATH = Path("configs/training/ppo_tracking_smoke.yaml")
-DEFAULT_MODEL_RUN_NAME = "direct_ppo_line_smoke_seed0"
+DEFAULT_PPO_CONFIG_PATH = Path("configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml")
+DEFAULT_MODEL_RUN_NAME = "direct_ppo_pid_dynprev_m-taskdist_medium_seed0"
 DEFAULT_MODEL_FILENAME = f"{DEFAULT_MODEL_RUN_NAME}.zip"
 DEFAULT_METRICS_FILENAME = f"{DEFAULT_MODEL_RUN_NAME}_metrics.json"
-DEFAULT_EVALUATION_RUN_NAME = "eval_direct_ppo_line_smoke_seed0_on_line"
+DEFAULT_EVALUATION_RUN_NAME = "eval_direct_ppo_pid_dynprev_m-taskdist_medium_seed0_policy_render"
 DEFAULT_MODEL_PATH = Path(f"storage/runs/{DEFAULT_MODEL_RUN_NAME}/training/models/{DEFAULT_MODEL_FILENAME}")
 DEFAULT_OUTPUT_DIR = Path(f"storage/runs/{DEFAULT_EVALUATION_RUN_NAME}/evaluations/policy_render")
 DEFAULT_MAX_STEPS = 60
@@ -137,6 +137,28 @@ class PolicyRenderSettings:
         Captured frame width in pixels.
     image_height
         Captured frame height in pixels.
+    normalize_actions
+        Whether to wrap direct-control action spaces the same way training did.
+    action_interface
+        Action interface used by the PPO-facing tracking environment.
+    rpm_delta_scale
+        RPM delta scale used when ``action_interface`` is ``direct_rpm``.
+    include_dynamics_observation
+        Whether the policy observation includes velocity, attitude, and angular velocity.
+    include_previous_action
+        Whether the policy observation includes the previous action.
+    source_manifest_path
+        Optional run or stage manifest path used for observation-shape diagnostics.
+    training_config_path
+        Optional training config path used for observation-shape diagnostics.
+    final_stage_manifest_path
+        Optional curriculum final-stage manifest path used for observation-shape diagnostics.
+    evaluated_model_source
+        Label describing whether the loaded model came from a best or last checkpoint.
+    scenario_name
+        Optional scenario label used for observation-shape diagnostics.
+    scenario_config_path
+        Optional scenario config path used for observation-shape diagnostics.
 
     """
 
@@ -159,6 +181,17 @@ class PolicyRenderSettings:
     frame_interval: int = DEFAULT_FRAME_INTERVAL
     image_width: int = DEFAULT_IMAGE_WIDTH
     image_height: int = DEFAULT_IMAGE_HEIGHT
+    normalize_actions: bool = True
+    action_interface: str = "pid_position"
+    rpm_delta_scale: float = 0.05
+    include_dynamics_observation: bool = False
+    include_previous_action: bool = False
+    source_manifest_path: Path | None = None
+    training_config_path: Path | None = None
+    final_stage_manifest_path: Path | None = None
+    evaluated_model_source: str | None = None
+    scenario_name: str | None = None
+    scenario_config_path: Path | None = None
 
     def __post_init__(self) -> None:
         """Validate policy-render settings."""
@@ -187,6 +220,7 @@ class PolicyRenderSettings:
         if self.camera_mode not in SUPPORTED_CAMERA_MODES:
             message = f"camera_mode must be one of: {', '.join(SUPPORTED_CAMERA_MODES)}"
             raise ValueError(message)
+        envs.actions.parse_action_interface(self.action_interface)
         if not np.isfinite(self.camera_distance) or self.camera_distance <= 0.0:
             message = "camera_distance must be finite and positive"
             raise ValueError(message)
@@ -261,7 +295,7 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         message = (
             "trained PPO model was not found at "
             f"{model_path}. Create it with: "
-            "python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking_smoke.yaml"
+            "python -m src.experiments.cli.experiments_cli_train_tracking --config configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml"
         )
         raise FileNotFoundError(message)
 
@@ -300,18 +334,27 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
 
         model = PPO.load(str(model_path), device="cpu")
 
-    tracking_env = envs.tracking_env.make_trajectory_tracking_env(
+    rollout_settings = replace(
+        active_settings,
+        normalize_actions=ppo_settings.normalize_actions,
+        action_interface=ppo_settings.action_interface,
+        rpm_delta_scale=ppo_settings.rpm_delta_scale,
+        include_dynamics_observation=ppo_settings.include_dynamics_observation,
+        include_previous_action=ppo_settings.include_previous_action,
+        training_config_path=active_settings.config_path,
+    )
+    tracking_env = _make_policy_render_env(
         prepared_task,
-        gui=False,
         record=False,
         max_steps=active_settings.max_steps,
+        settings=rollout_settings,
     )
 
     try:
         rollout_payload = _run_policy_rollout(
             model=model,
             tracking_env=tracking_env,
-            settings=active_settings,
+            settings=rollout_settings,
             seed=seed,
             task=prepared_task,
             task_shape=str(prepared_task.get("shape", "unknown")),
@@ -391,6 +434,7 @@ def run_trained_policy_render(settings: PolicyRenderSettings | None = None) -> P
         final_info=final_info,
         final_action=rollout_payload.get("final_action"),
         output_dir=output_dir,
+        observation_check=rollout_payload.get("observation_check"),
     )
     _write_manifest(manifest_path, manifest)
 
@@ -490,6 +534,23 @@ def _review_artifact_dirs(output_dir: Path) -> tuple[Path, Path]:
     return output_dir / "traces", output_dir / "plots"
 
 
+def _make_policy_render_env(task: Any, *, record: bool, max_steps: int | None, settings: PolicyRenderSettings) -> Any:
+    """Build a policy-render env using the same action and observation flags as training."""
+    real_env = envs.tracking_env.make_trajectory_tracking_env(
+        task,
+        gui=False,
+        record=record,
+        max_steps=max_steps,
+        action_interface=settings.action_interface,
+        rpm_delta_scale=settings.rpm_delta_scale,
+        include_dynamics_observation=settings.include_dynamics_observation,
+        include_previous_action=settings.include_previous_action,
+    )
+    if settings.normalize_actions or envs.actions.parse_action_interface(settings.action_interface) == envs.actions.ActionInterface.DIRECT_RPM:
+        return envs.tracking_env.make_normalized_action_env(real_env)
+    return real_env
+
+
 def _run_policy_rollout(
     model: Any | None,
     tracking_env: Any,
@@ -500,6 +561,15 @@ def _run_policy_rollout(
 ) -> dict[str, Any]:
     """Step TrajectoryTrackingEnv with deterministic controller actions and capture camera frames."""
     observation, info = tracking_env.reset(seed=seed)
+    observation_check = _validate_rollout_observation_compatibility(
+        model=model,
+        tracking_env=tracking_env,
+        observation=observation,
+        settings=settings,
+        task_shape=task_shape,
+        observation_source="reset",
+        step_index=None,
+    )
 
     rewards: list[float] = []
     position_errors: list[float] = []
@@ -521,6 +591,15 @@ def _run_policy_rollout(
     terminated = False
     truncated = False
     for step_index in range(settings.max_steps):
+        _validate_rollout_observation_compatibility(
+            model=model,
+            tracking_env=tracking_env,
+            observation=observation,
+            settings=settings,
+            task_shape=task_shape,
+            observation_source="reset" if step_index == 0 else "step",
+            step_index=None if step_index == 0 else step_index - 1,
+        )
         action, used_policy_predict = _controller_action(
             model=model,
             observation=observation,
@@ -531,6 +610,23 @@ def _run_policy_rollout(
         final_action = np.asarray(action, dtype=float)
         policy_predict_used = policy_predict_used or used_policy_predict
         observation, reward, terminated, truncated, info = tracking_env.step(action)
+        step_observation_check = _validate_rollout_observation_compatibility(
+            model=model,
+            tracking_env=tracking_env,
+            observation=observation,
+            settings=settings,
+            task_shape=task_shape,
+            observation_source="step",
+            step_index=step_index,
+        )
+        observation_check.update(
+            {
+                "actual_observation_shape": step_observation_check["actual_observation_shape"],
+                "actual_step_observation_shape": step_observation_check["actual_step_observation_shape"],
+                "actual_observation_source": step_observation_check["actual_observation_source"],
+                "actual_observation_step_index": step_observation_check["actual_observation_step_index"],
+            }
+        )
         final_info = dict(info)
 
         current_position = np.asarray(info["current_position"], dtype=float)
@@ -577,7 +673,114 @@ def _run_policy_rollout(
         "policy_predict_used": policy_predict_used,
         "final_info": final_info,
         "final_action": final_action,
+        "observation_check": observation_check,
     }
+
+
+def _validate_rollout_observation_compatibility(
+    *,
+    model: Any | None,
+    tracking_env: Any,
+    observation: Any,
+    settings: PolicyRenderSettings,
+    task_shape: str,
+    observation_source: str,
+    step_index: int | None,
+) -> dict[str, Any]:
+    """Validate PPO rollout observation shape before policy prediction."""
+    metadata = _rollout_observation_metadata(
+        model=model,
+        tracking_env=tracking_env,
+        observation=observation,
+        settings=settings,
+        task_shape=task_shape,
+        observation_source=observation_source,
+        step_index=step_index,
+    )
+    if settings.controller != PPO_CONTROLLER or model is None:
+        return metadata
+
+    model_shape = metadata["model_observation_space_shape"]
+    env_shape = metadata["env_observation_space_shape"]
+    actual_shape = metadata["actual_observation_shape"]
+    if model_shape is not None and (env_shape != model_shape or actual_shape != model_shape):
+        message = _rollout_observation_shape_error(metadata)
+        raise ValueError(message)
+    return metadata
+
+
+def _rollout_observation_metadata(
+    *,
+    model: Any | None,
+    tracking_env: Any,
+    observation: Any,
+    settings: PolicyRenderSettings,
+    task_shape: str,
+    observation_source: str,
+    step_index: int | None,
+) -> dict[str, Any]:
+    """Build compact observation-space metadata for rollout manifests and errors."""
+    model_space = getattr(model, "observation_space", None)
+    env_space = getattr(tracking_env, "observation_space", None)
+    actual_shape = _shape_list(getattr(observation, "shape", np.asarray(observation).shape))
+    return {
+        "model_path": str(settings.model_path),
+        "evaluated_model_source": settings.evaluated_model_source,
+        "source_manifest_path": None if settings.source_manifest_path is None else str(settings.source_manifest_path),
+        "training_config_path": None if settings.training_config_path is None else str(settings.training_config_path),
+        "final_stage_manifest_path": None if settings.final_stage_manifest_path is None else str(settings.final_stage_manifest_path),
+        "scenario_name": settings.scenario_name,
+        "scenario_config_path": None if settings.scenario_config_path is None else str(settings.scenario_config_path),
+        "task_shape": task_shape,
+        "action_interface": settings.action_interface,
+        "rpm_delta_scale": settings.rpm_delta_scale if settings.action_interface == "direct_rpm" else None,
+        "normalize_actions": bool(settings.normalize_actions),
+        "include_dynamics_observation": bool(settings.include_dynamics_observation),
+        "include_previous_action": bool(settings.include_previous_action),
+        "model_observation_space": str(model_space),
+        "model_observation_space_shape": _space_shape(model_space),
+        "env_observation_space": str(env_space),
+        "env_observation_space_shape": _space_shape(env_space),
+        "actual_observation_shape": actual_shape,
+        "actual_reset_observation_shape": actual_shape if observation_source == "reset" else None,
+        "actual_step_observation_shape": actual_shape if observation_source == "step" else None,
+        "actual_observation_source": observation_source,
+        "actual_observation_step_index": step_index,
+    }
+
+
+def _space_shape(space: Any) -> list[int] | None:
+    """Return a JSON-ready shape list for a Gym space, when available."""
+    shape = getattr(space, "shape", None)
+    if shape is None:
+        return None
+    return _shape_list(shape)
+
+
+def _shape_list(shape: Any) -> list[int]:
+    """Return a JSON-ready integer shape list."""
+    return [int(dimension) for dimension in tuple(shape)]
+
+
+def _rollout_observation_shape_error(metadata: dict[str, Any]) -> str:
+    """Return a source-rich observation mismatch error message."""
+    return (
+        "policy rollout observation shape mismatch before model.predict: "
+        f"model_path={metadata['model_path']}; "
+        f"evaluated_model_source={metadata['evaluated_model_source']}; "
+        f"run_manifest_path={metadata['source_manifest_path']}; "
+        f"scenario_name={metadata['scenario_name']}; "
+        f"scenario_config_path={metadata['scenario_config_path']}; "
+        f"model_observation_space={metadata['model_observation_space']}; "
+        f"env_observation_space={metadata['env_observation_space']}; "
+        f"actual_observation_shape={metadata['actual_observation_shape']}; "
+        f"action_interface={metadata['action_interface']}; "
+        f"normalize_actions={metadata['normalize_actions']}; "
+        f"include_dynamics_observation={metadata['include_dynamics_observation']}; "
+        f"include_previous_action={metadata['include_previous_action']}; "
+        f"training_config_path={metadata['training_config_path']}; "
+        f"final_stage_manifest_path={metadata['final_stage_manifest_path']}"
+    )
 
 
 def _controller_action(
@@ -1090,6 +1293,7 @@ def _build_manifest(
     final_info: dict[str, Any] | None = None,
     final_action: Any | None = None,
     output_dir: Path | None = None,
+    observation_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a trained-policy render manifest payload."""
     info = {} if final_info is None else final_info
@@ -1155,6 +1359,11 @@ def _build_manifest(
         "final_angular_velocity": _array_to_jsonable(info.get("angular_velocity", [])),
         "final_action": _array_to_jsonable(final_action if final_action is not None else []),
         "final_last_action": _array_to_jsonable(info.get("last_action", [])),
+        "observation_check": {} if observation_check is None else dict(observation_check),
+        "model_observation_space": None if observation_check is None else observation_check.get("model_observation_space"),
+        "env_observation_space": None if observation_check is None else observation_check.get("env_observation_space"),
+        "actual_reset_observation_shape": None if observation_check is None else observation_check.get("actual_reset_observation_shape"),
+        "actual_step_observation_shape": None if observation_check is None else observation_check.get("actual_step_observation_shape"),
         "true_simulator_rendering": bool(true_simulator_rendering),
         "policy_predict_used": bool(policy_predict_used),
         "model_path": None if model_path is None else str(model_path),
