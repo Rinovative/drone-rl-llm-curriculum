@@ -49,6 +49,19 @@ DEFAULT_PROPOSAL_FALLBACK_DISTRIBUTION_ID = "tracking_medium"
 DEFAULT_PROPOSAL_FALLBACK_PROFILE = "short"
 DEFAULT_READY_PROPOSAL_FALLBACK_PROFILE = "normal"
 GENERATED_TASK_DISTRIBUTION_STRENGTH = 0.35
+GENERATED_TASK_DISTRIBUTION_LABELS = {
+    validation.contracts.SHAPE_HOVER: "hover",
+    validation.contracts.SHAPE_HOVER_STABILIZATION: "hover",
+    validation.contracts.SHAPE_NEARBY_TARGET_HOVER: "nearby_hover",
+    validation.contracts.SHAPE_START_HOLD_THEN_SHORT_LINE: "short_line",
+    validation.contracts.SHAPE_SHORT_SLOW_LINE: "short_line",
+    validation.contracts.SHAPE_LINE: "line",
+    validation.contracts.SHAPE_VERTICAL: "vertical",
+    validation.contracts.SHAPE_POLYLINE: "polyline",
+    validation.contracts.SHAPE_CIRCLE: "circle",
+    validation.contracts.SHAPE_ELLIPSE: "ellipse",
+    validation.contracts.SHAPE_FIGURE_EIGHT: "fig8",
+}
 RESOLVED_DISTRIBUTION_MAX_ATTEMPTS = 16
 MIN_ERRORS_FOR_TREND = 2
 
@@ -1494,6 +1507,23 @@ def _resolve_task_distribution_stage_task(
     }
 
 
+def _generated_task_distribution_id(*, stage_index: int, stage_name: str, task: Mapping[str, Any]) -> str:
+    """Return a compact deterministic ID for a materialized concrete LLM task."""
+    raw_shape = task.get(validation.contracts.FIELD_SHAPE)
+    source_label = str(raw_shape or stage_name).strip()
+    compact_label = GENERATED_TASK_DISTRIBUTION_LABELS.get(source_label) or _compact_generated_identifier(source_label)
+    return f"gen_stage{stage_index:02d}_{compact_label}"
+
+
+def _compact_generated_identifier(value: str) -> str:
+    """Return a short ASCII identifier segment for an unknown generated task shape."""
+    normalized = "".join(character.lower() if character.isascii() and character.isalnum() else "_" for character in value)
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    compact = normalized.strip("_")[:24].rstrip("_")
+    return compact or "task"
+
+
 def _materialize_concrete_task_distribution(
     *,
     settings: LLMCurriculumSettings,
@@ -1506,7 +1536,7 @@ def _materialize_concrete_task_distribution(
     curriculum_run_name = _curriculum_artifact_run_name(settings.curriculum_name, settings.seed)
     config_dir = utils.artifacts.get_run_config_dir(curriculum_run_name)
     config_dir.mkdir(parents=True, exist_ok=True)
-    distribution_id = f"generated_stage{stage_index:02d}_{stage_name}_bounded"
+    distribution_id = _generated_task_distribution_id(stage_index=stage_index, stage_name=stage_name, task=task_payload)
     config_path = config_dir / f"stage{stage_index:02d}_{stage_name}_task_distribution.yaml"
     fixed_settings = envs.task_distribution.normalize_fixed_task_to_distribution(
         task_payload,
@@ -1541,6 +1571,8 @@ def _materialize_concrete_task_distribution(
             llm.task_schema.TASK_DISTRIBUTION_ID_FIELD: distribution_id,
             llm.task_schema.TASK_DISTRIBUTION_CONFIG_PATH_FIELD: str(config_path),
             "generated_from_concrete_task": True,
+            "source_stage_name": stage_name,
+            "source_task_shape": task_payload.get(validation.contracts.FIELD_SHAPE),
         },
         "resolved_task_sample_metadata": distribution_settings.to_metadata(),
     }

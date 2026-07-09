@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from src import utils
 from src.experiments.cli import experiments_cli_train_curriculum as cli_train_curriculum
 from src.experiments.curriculum import experiments_curriculum_training as curriculum_training
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
@@ -91,6 +92,45 @@ def test_manual_curriculum_stage_naming_uses_concrete_task_shape() -> None:
     assert curriculum_training.derive_stage_run_name(settings.curriculum_name, 1, stage.stage_name, settings.seed) == (
         "curriculum_manual_shape_unit_stage01_line_seed0"
     )
+
+
+def test_manual_curriculum_stage_wandb_tags_are_sanitized() -> None:
+    """Verify manual curriculum caller-owned stage tags flow through the shared W&B sanitizer."""
+    long_stage_name = "hover_stabilization_short_line_bounded_" * 2
+    stage = curriculum_training.ManualCurriculumStage(
+        stage_name=long_stage_name,
+        task_shape="line",
+        task={
+            "task_type": "trajectory",
+            "shape": "line",
+            "duration_sec": 3.0,
+            "sample_rate_hz": 10.0,
+            "start": [0.0, 0.0, 1.0],
+            "end": [0.2, 0.0, 1.0],
+        },
+        total_timesteps=8,
+        eval_steps=4,
+    )
+    stage_tags = curriculum_training._stage_wandb_tags(1, stage)  # noqa: SLF001
+    long_tag = f"stage:{long_stage_name}"
+    settings = ppo_tracking.PPOTrackingSmokeSettings(
+        run_name="curriculum_manual_long_tag_stage01_line_seed0",
+        task_shape="line",
+        total_timesteps=4096,
+        run_metadata={
+            "run_kind": "curriculum_stage",
+            "curriculum_kind": "manual",
+            "curriculum_run_name": "curriculum_manual_long_tag_seed0",
+        },
+        wandb_tags=stage_tags,
+    )
+
+    wandb_settings = ppo_tracking._wandb_settings(settings, "line", {"task_distribution_name": "tracking_medium"})  # noqa: SLF001
+
+    assert long_tag in stage_tags
+    assert long_tag not in wandb_settings.tags
+    assert utils.wandb.sanitize_wandb_tags([long_tag])[0] in wandb_settings.tags
+    assert all(1 <= len(tag) <= utils.wandb.MAX_WANDB_TAG_LENGTH for tag in wandb_settings.tags)
 
 
 def test_manual_curriculum_invalid_stage_fails_clearly() -> None:

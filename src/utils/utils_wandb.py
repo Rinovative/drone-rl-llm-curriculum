@@ -24,6 +24,7 @@ Boundaries:
 
 from __future__ import annotations
 
+import hashlib
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -41,6 +42,9 @@ WANDB_MODE_OFFLINE = "offline"
 WANDB_MODE_ONLINE = "online"
 WANDB_MODES = (WANDB_MODE_AUTO, WANDB_MODE_ONLINE, WANDB_MODE_OFFLINE, WANDB_MODE_DISABLED)
 DEFAULT_WANDB_PROJECT = "drone-rl-llm-curriculum"
+MAX_WANDB_TAG_LENGTH = 64
+WANDB_TAG_HASH_LENGTH = 8
+WANDB_TAG_SEPARATOR = "~"
 
 
 @dataclass(frozen=True)
@@ -102,12 +106,33 @@ def resolve_wandb_mode(mode: str) -> str:
 
 
 def parse_wandb_tags(value: str | Sequence[str] | None) -> tuple[str, ...]:
-    """Parse comma-separated or sequence W&B tags into a clean tuple."""
+    """Parse comma-separated or sequence W&B tags into a clean, W&B-safe tuple."""
     if value is None:
         return ()
     if isinstance(value, str):
-        return tuple(tag.strip() for tag in value.split(",") if tag.strip())
-    return tuple(str(tag).strip() for tag in value if str(tag).strip())
+        return sanitize_wandb_tags(value.split(","))
+    return sanitize_wandb_tags(value)
+
+
+def sanitize_wandb_tags(value: Any) -> tuple[str, ...]:
+    """
+    Return deterministic W&B-safe tags with readable shortening and no duplicates.
+
+    Parameters
+    ----------
+    value
+        A tag, an iterable of tags, or ``None``. Individual tags are converted to
+        strings, stripped, de-duplicated, and shortened to W&B's 64-character tag
+        limit when needed.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Stable ordered tags whose lengths are between 1 and 64 characters.
+
+    """
+    _, sanitized_tags, _ = _sanitize_wandb_tags_with_metadata(value)
+    return sanitized_tags
 
 
 @contextmanager
@@ -181,6 +206,14 @@ def start_wandb_run(settings: WandbTrackingSettings, config: dict[str, Any]) -> 
     if settings.dir is None and settings.name is None:
         message = "W&B tracking requires settings.dir or settings.name to resolve a run-scoped directory"
         raise RuntimeError(message)
+    original_tags, sanitized_tags, shortening_map = _sanitize_wandb_tags_with_metadata(settings.tags)
+    wandb_config = _wandb_config_with_tag_sanitization_metadata(
+        config,
+        original_tags=original_tags,
+        sanitized_tags=sanitized_tags,
+        shortening_map=shortening_map,
+    )
+
     wandb_dir = settings.dir or default_wandb_dir(str(settings.name))
     wandb_dir.mkdir(parents=True, exist_ok=True)
     os.environ["WANDB_MODE"] = resolved_mode
@@ -190,8 +223,8 @@ def start_wandb_run(settings: WandbTrackingSettings, config: dict[str, Any]) -> 
         entity=settings.entity,
         group=settings.group,
         name=settings.name,
-        tags=list(settings.tags),
-        config=config,
+        tags=list(sanitized_tags),
+        config=wandb_config,
         dir=str(wandb_dir),
         mode=wandb_mode,
         sync_tensorboard=True,
@@ -259,6 +292,94 @@ FAILURE_SUMMARY_MODES = (
     "reference_too_fast_or_too_hard",
     "no_failure_detected",
 )
+
+
+def _sanitize_wandb_tags_with_metadata(value: Any) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, str]]:
+    """Return cleaned source tags, safe W&B tags, and the shortening map."""
+    original_tags: list[str] = []
+    sanitized_tags: list[str] = []
+    shortening_map: dict[str, str] = {}
+    seen: dict[str, str] = {}
+
+    for raw_tag in _iter_wandb_tag_values(value):
+        if raw_tag is None:
+            continue
+        clean_tag = _safe_wandb_tag_text(raw_tag).strip()
+        if not clean_tag:
+            continue
+        original_tags.append(clean_tag)
+        sanitized_tag = _shorten_wandb_tag(clean_tag) if len(clean_tag) > MAX_WANDB_TAG_LENGTH else clean_tag
+        if sanitized_tag in seen:
+            if seen[sanitized_tag] == clean_tag:
+                continue
+            sanitized_tag = _resolve_wandb_tag_collision(clean_tag, seen)
+        sanitized_tags.append(sanitized_tag)
+        seen[sanitized_tag] = clean_tag
+        if sanitized_tag != clean_tag:
+            shortening_map[clean_tag] = sanitized_tag
+
+    return tuple(original_tags), tuple(sanitized_tags), shortening_map
+
+
+def _iter_wandb_tag_values(value: Any) -> tuple[Any, ...]:
+    """Return tag values without splitting a single string into characters."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    try:
+        return tuple(value)
+    except TypeError:
+        return (value,)
+
+
+def _safe_wandb_tag_text(value: Any) -> str:
+    """Convert an arbitrary tag value to text without surfacing custom ``__str__`` errors."""
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001  # pragma: no cover - defensive for unusual user tag objects
+        return f"<{type(value).__name__}>"
+
+
+def _shorten_wandb_tag(tag: str, *, hash_length: int = WANDB_TAG_HASH_LENGTH) -> str:
+    """Shorten one non-empty tag to W&B's length limit using a stable hash suffix."""
+    max_hash_length = MAX_WANDB_TAG_LENGTH - len(WANDB_TAG_SEPARATOR) - 1
+    safe_hash_length = min(max(1, hash_length), max_hash_length)
+    digest = hashlib.sha256(tag.encode("utf-8")).hexdigest()[:safe_hash_length]
+    suffix = f"{WANDB_TAG_SEPARATOR}{digest}"
+    prefix_length = MAX_WANDB_TAG_LENGTH - len(suffix)
+    prefix = tag[:prefix_length].rstrip() or tag[:prefix_length]
+    return f"{prefix}{suffix}"
+
+
+def _resolve_wandb_tag_collision(tag: str, seen: dict[str, str]) -> str:
+    """Return a deterministic alternate shortened tag for a distinct collision."""
+    max_hash_length = MAX_WANDB_TAG_LENGTH - len(WANDB_TAG_SEPARATOR) - 1
+    for hash_length in range(WANDB_TAG_HASH_LENGTH + 1, max_hash_length + 1):
+        candidate = _shorten_wandb_tag(tag, hash_length=hash_length)
+        if candidate not in seen:
+            return candidate
+    message = "distinct W&B tags collapsed after deterministic shortening"
+    raise ValueError(message)
+
+
+def _wandb_config_with_tag_sanitization_metadata(
+    config: dict[str, Any],
+    *,
+    original_tags: tuple[str, ...],
+    sanitized_tags: tuple[str, ...],
+    shortening_map: dict[str, str],
+) -> dict[str, Any]:
+    """Return W&B config with tag sanitization metadata when tags changed."""
+    if original_tags == sanitized_tags:
+        return config
+    wandb_config = dict(config)
+    wandb_config["wandb_tags_original"] = list(original_tags)
+    wandb_config["wandb_tags_sanitized"] = list(sanitized_tags)
+    wandb_config["wandb_tags_were_shortened"] = bool(shortening_map)
+    if shortening_map:
+        wandb_config["wandb_tag_shortening_map"] = dict(shortening_map)
+    return wandb_config
 
 
 def log_wandb_metrics(run: Any | None, metrics: dict[str, Any]) -> None:
@@ -378,6 +499,7 @@ def _is_summary_scalar(value: Any) -> bool:
 
 __all__ = [
     "DEFAULT_WANDB_PROJECT",
+    "MAX_WANDB_TAG_LENGTH",
     "WANDB_MODES",
     "WANDB_MODE_AUTO",
     "WANDB_MODE_DISABLED",
@@ -391,6 +513,7 @@ __all__ = [
     "log_wandb_summary",
     "parse_wandb_tags",
     "resolve_wandb_mode",
+    "sanitize_wandb_tags",
     "start_wandb_run",
     "wandb_run",
 ]

@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import builtins
+import sys
+import types
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -20,6 +22,8 @@ ACTION_MEAN_0 = 0.1
 REAL_ACTION_SATURATION_0 = 0.5
 REAL_ACTION_MEAN_2 = 0.75
 EVAL_STEPS = 120
+EXPECTED_SHORT_HASH_LENGTH = 8
+EXPECTED_DISTINCT_LONG_TAG_COUNT = 2
 
 
 def test_wandb_defaults_are_auto_and_training_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,6 +61,93 @@ def test_wandb_tags_parse_comma_separated_values() -> None:
     assert utils.wandb.parse_wandb_tags(" smoke, docker ,,offline ") == ("smoke", "docker", "offline")
     assert utils.wandb.parse_wandb_tags(None) == ()
     assert utils.wandb.parse_wandb_tags([" smoke ", "", "docker"]) == ("smoke", "docker")
+
+
+def test_sanitize_wandb_tags_preserves_normal_tags_and_drops_empty_values() -> None:
+    """Verify normal W&B tags stay readable while empty values are removed."""
+    assert utils.wandb.sanitize_wandb_tags([" smoke ", "", "direct_ppo", None, 7]) == ("smoke", "direct_ppo", "7")
+
+
+class _BadTag:
+    """Tag value whose string conversion fails."""
+
+    def __str__(self) -> str:
+        """Raise like a hostile user-provided object."""
+        message = "cannot stringify"
+        raise RuntimeError(message)
+
+
+def test_sanitize_wandb_tags_converts_values_safely() -> None:
+    """Verify unusual tag objects are converted without crashing tag preparation."""
+    assert utils.wandb.sanitize_wandb_tags([_BadTag()]) == ("<_BadTag>",)
+
+
+def test_sanitize_wandb_tags_shortens_long_tags_deterministically() -> None:
+    """Verify long tags use a stable readable prefix plus an 8-hex hash suffix."""
+    long_tag = "task_distribution:generated_hover_stabilization_short_line_bounded"
+    assert len(long_tag) > utils.wandb.MAX_WANDB_TAG_LENGTH
+
+    first = utils.wandb.sanitize_wandb_tags([long_tag])[0]
+    second = utils.wandb.sanitize_wandb_tags([long_tag])[0]
+    prefix, hash_suffix = first.rsplit("~", 1)
+
+    assert first == second
+    assert len(first) <= utils.wandb.MAX_WANDB_TAG_LENGTH
+    assert first.startswith("task_distribution:generated_hover_stabilization")
+    assert prefix
+    assert len(hash_suffix) == EXPECTED_SHORT_HASH_LENGTH
+    assert int(hash_suffix, 16) >= 0
+
+
+def test_sanitize_wandb_tags_keeps_distinct_long_tags_unique_and_deduped() -> None:
+    """Verify shortening never returns duplicate W&B tags for distinct long inputs."""
+    first_long_tag = "task_distribution:" + "generated_hover_stabilization_short_line_bounded_" * 2
+    second_long_tag = "task_distribution:" + "generated_hover_stabilization_short_line_offset_" * 2
+
+    tags = utils.wandb.sanitize_wandb_tags([first_long_tag, first_long_tag, second_long_tag])
+
+    assert len(tags) == EXPECTED_DISTINCT_LONG_TAG_COUNT
+    assert len(set(tags)) == len(tags)
+    assert all(1 <= len(tag) <= utils.wandb.MAX_WANDB_TAG_LENGTH for tag in tags)
+
+
+def test_start_wandb_run_sanitizes_tags_before_wandb_init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify the final W&B init guard only passes tags within W&B's 64-character limit."""
+    long_name = "generated_hover_stabilization_short_line_bounded"
+    long_tag = f"task_distribution:{long_name}"
+    original_config = {"task_distribution_name": long_name, "total_timesteps": 1}
+    captured_init: dict[str, Any] = {}
+    fake_run = object()
+
+    def fake_init(**kwargs: Any) -> object:
+        """Capture W&B init arguments without importing the real client."""
+        captured_init.update(kwargs)
+        return fake_run
+
+    fake_wandb = types.ModuleType("wandb")
+    fake_wandb.init = fake_init
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    result = utils.wandb.start_wandb_run(
+        utils.wandb.WandbTrackingSettings(
+            mode="offline",
+            name="long_tag_unit",
+            tags=("training", long_tag),
+            dir=tmp_path / "wandb",
+        ),
+        config=original_config,
+    )
+
+    assert result is fake_run
+    assert original_config == {"task_distribution_name": long_name, "total_timesteps": 1}
+    assert captured_init["tags"][0] == "training"
+    assert all(1 <= len(tag) <= utils.wandb.MAX_WANDB_TAG_LENGTH for tag in captured_init["tags"])
+    assert captured_init["tags"][1] != long_tag
+    assert captured_init["config"]["task_distribution_name"] == long_name
+    assert captured_init["config"]["wandb_tags_original"] == ["training", long_tag]
+    assert captured_init["config"]["wandb_tags_sanitized"] == captured_init["tags"]
+    assert captured_init["config"]["wandb_tags_were_shortened"] is True
+    assert captured_init["config"]["wandb_tag_shortening_map"][long_tag] == captured_init["tags"][1]
 
 
 def test_auto_wandb_mode_resolves_from_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

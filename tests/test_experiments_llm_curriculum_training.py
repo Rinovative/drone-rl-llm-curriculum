@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from src import envs, validation
+from src import envs, utils, validation
 from src.experiments.cli import experiments_cli_train_llm_curriculum as cli_train_llm_curriculum
 from src.experiments.curriculum import experiments_curriculum_llm_training as llm_curriculum_training
 from src.experiments.training import experiments_training_ppo_tracking as ppo_tracking
@@ -244,8 +244,10 @@ def test_llm_curriculum_training_uses_ppo_stage_helper_and_model_transfer(tmp_pa
     assert generated_distribution.exists()
     assert summary["stages"][1]["proposal_type"] == "task"
     assert summary["stages"][1]["task_distribution_config_path"] == str(generated_distribution)
-    assert summary["stages"][1]["task_distribution_id"] == "generated_stage02_line_bounded"
+    assert summary["stages"][1]["task_distribution_id"] == "gen_stage02_line"
     assert summary["stages"][1]["task_distribution_reference"]["generated_from_concrete_task"] is True
+    assert summary["stages"][1]["task_distribution_reference"]["source_stage_name"] == "line"
+    assert summary["stages"][1]["task_distribution_reference"]["source_task_shape"] == "line"
     assert summary["stages"][1]["previous_stage_task_shape"] == "hover_stabilization"
     assert summary["stages"][1]["requested_stage_task_shape"] == "line"
     assert summary["stages"][1]["accepted_stage_task_shape"] == "line"
@@ -392,6 +394,57 @@ def test_llm_concrete_tasks_materialize_to_varied_bounded_distributions(tmp_path
         assert {sample[validation.contracts.FIELD_SHAPE] for sample in first_samples} == {task[validation.contracts.FIELD_SHAPE]}
         for sample in first_samples:
             assert validation.tasks.validate_task(sample, limits=distribution_settings.validation_limits).is_valid
+
+
+def test_llm_materialized_distribution_uses_compact_id_and_safe_wandb_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify long generated LLM distribution identities remain safe for W&B tags."""
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    settings = llm_curriculum_training.llm_curriculum_settings_from_mapping(
+        {
+            "curriculum_name": "curriculum_llm_long_generated_name_unit",
+            "base_training_config": "configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml",
+            "seed": 5,
+            "wandb_mode": "disabled",
+            "max_stages": 1,
+            "stage_defaults": {"total_timesteps": 8, "eval_steps": 4},
+            "bootstrap": False,
+            "llm": {"provider": "mock", "model": "mock"},
+        }
+    )
+    long_stage_name = "hover_stabilization_short_line_bounded"
+    task = {
+        validation.contracts.FIELD_TASK_TYPE: validation.contracts.TASK_TYPE_TRAJECTORY,
+        validation.contracts.FIELD_SHAPE: validation.contracts.SHAPE_LINE,
+        validation.contracts.FIELD_DURATION_SEC: 4.0,
+        validation.contracts.FIELD_SAMPLE_RATE_HZ: 10.0,
+        validation.contracts.FIELD_START: [0.0, 0.0, 1.0],
+        validation.contracts.FIELD_END: [0.4, 0.0, 1.0],
+    }
+
+    materialized = llm_curriculum_training._materialize_concrete_task_distribution(  # noqa: SLF001
+        settings=settings,
+        stage_index=2,
+        stage_name=long_stage_name,
+        task=task,
+    )
+    distribution_settings = envs.task_distribution.load_task_distribution_settings(materialized["task_distribution_config_path"])
+    distribution_metadata = distribution_settings.to_metadata()
+    old_style_long_tag = "task_distribution:generated_hover_stabilization_short_line_bounded"
+    training_settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml")
+    wandb_settings = ppo_tracking._wandb_settings(training_settings, "line", distribution_metadata)  # noqa: SLF001
+
+    assert len(old_style_long_tag) > utils.wandb.MAX_WANDB_TAG_LENGTH
+    assert utils.wandb.sanitize_wandb_tags([old_style_long_tag])[0] != old_style_long_tag
+    assert materialized["task_distribution_id"] == "gen_stage02_line"
+    assert distribution_metadata["task_distribution_name"] == "gen_stage02_line"
+    assert materialized["task_distribution_reference"]["source_stage_name"] == long_stage_name
+    assert materialized["task_distribution_reference"]["source_task_shape"] == "line"
+    assert f"task_distribution:{distribution_metadata['task_distribution_name']}" in wandb_settings.tags
+    assert old_style_long_tag not in wandb_settings.tags
+    assert all(1 <= len(tag) <= utils.wandb.MAX_WANDB_TAG_LENGTH for tag in wandb_settings.tags)
 
 
 def test_llm_taskdist_reference_resolves_to_concrete_stage_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

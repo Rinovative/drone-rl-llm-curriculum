@@ -1585,7 +1585,7 @@ def _wandb_tags(
         f"seed:{settings.seed}",
         f"config:{config_stem}",
     )
-    return _dedupe_tags((*derived, *settings.wandb_tags))
+    return utils.wandb.sanitize_wandb_tags((*derived, *settings.wandb_tags))
 
 
 def _resolved_wandb_name_override(
@@ -1728,7 +1728,7 @@ def _wandb_run_metadata(settings: utils.wandb.WandbTrackingSettings, run: Any | 
         "entity": settings.entity,
         "group": settings.group,
         "name": settings.name,
-        "tags": list(settings.tags),
+        "tags": list(utils.wandb.sanitize_wandb_tags(settings.tags)),
         "dir": str(settings.dir) if settings.dir is not None else None,
         "run_id": _optional_wandb_string(getattr(run, "id", None) if run is not None else None),
         "url": _optional_wandb_string(getattr(run, "url", None) if run is not None else None),

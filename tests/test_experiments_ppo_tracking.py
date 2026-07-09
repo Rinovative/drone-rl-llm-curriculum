@@ -442,6 +442,63 @@ def test_direct_ppo_wandb_naming_uses_run_name_group_and_identity_tags() -> None
     assert "seed:0" in wandb_settings.tags
 
 
+def test_ppo_wandb_settings_sanitize_long_distribution_and_stage_tags(tmp_path: Path) -> None:
+    """Verify direct and curriculum PPO tags use the central W&B tag sanitizer."""
+    long_distribution_name = "generated_hover_stabilization_short_line_bounded"
+    long_distribution_tag = f"task_distribution:{long_distribution_name}"
+    distribution_metadata = {
+        "task_distribution_enabled": True,
+        "task_distribution_mode": "randomized",
+        "task_distribution_strength": 0.35,
+        "task_distribution_sample_on_reset": True,
+        "task_distribution_config_path": str(tmp_path / "generated_task_distribution.yaml"),
+        "task_distribution_name": long_distribution_name,
+    }
+    direct_settings = ppo_tracking.load_ppo_tracking_settings("configs/training/ppo_tracking_pid_dynprev_m-taskdist_medium.yaml")
+
+    direct_wandb_settings = ppo_tracking._wandb_settings(direct_settings, "line", distribution_metadata)  # noqa: SLF001
+    direct_wandb_config = ppo_tracking._wandb_config(  # noqa: SLF001
+        settings=direct_settings,
+        run_name=str(direct_wandb_settings.name),
+        model_path=tmp_path / "model.zip",
+        metrics_path=tmp_path / "metrics.json",
+        manifest_path=tmp_path / "manifest.json",
+        logs_dir=tmp_path / "logs",
+        diagnostics_dir=tmp_path / "diagnostics",
+        selected_task_index=0,
+        task={"shape": "line"},
+        task_distribution_metadata=distribution_metadata,
+    )
+
+    assert long_distribution_tag not in direct_wandb_settings.tags
+    assert utils.wandb.sanitize_wandb_tags([long_distribution_tag])[0] in direct_wandb_settings.tags
+    assert all(1 <= len(tag) <= utils.wandb.MAX_WANDB_TAG_LENGTH for tag in direct_wandb_settings.tags)
+    assert direct_wandb_config["task_distribution_name"] == long_distribution_name
+    assert direct_wandb_config["training_task_distribution_name"] == long_distribution_name
+
+    long_stage_name = "stage:" + "hover_stabilization_short_line_bounded_" * 2
+    curriculum_settings = ppo_tracking.PPOTrackingSmokeSettings(
+        run_name="curriculum_llm_long_tag_stage01_line_seed0",
+        artifact_root=tmp_path / "stage01_line" / "training",
+        task_shape="line",
+        total_timesteps=32,
+        ppo_config=ppo_config.PPOConfig(n_steps=16, batch_size=8),
+        run_metadata={
+            "run_kind": "curriculum_stage",
+            "curriculum_kind": "llm",
+            "curriculum_run_name": "curriculum_llm_long_tag_seed0",
+        },
+        wandb_tags=(long_stage_name, "llm_provider:mock"),
+    )
+
+    curriculum_wandb_settings = ppo_tracking._wandb_settings(curriculum_settings, "line", distribution_metadata)  # noqa: SLF001
+
+    assert long_stage_name not in curriculum_wandb_settings.tags
+    assert utils.wandb.sanitize_wandb_tags([long_stage_name])[0] in curriculum_wandb_settings.tags
+    assert utils.wandb.sanitize_wandb_tags([long_distribution_tag])[0] in curriculum_wandb_settings.tags
+    assert all(1 <= len(tag) <= utils.wandb.MAX_WANDB_TAG_LENGTH for tag in curriculum_wandb_settings.tags)
+
+
 def test_run_name_override_becomes_default_wandb_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify config W&B names do not leak into curriculum stage run overrides."""
     captured: dict[str, object] = {}
